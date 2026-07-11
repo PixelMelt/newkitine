@@ -1,0 +1,201 @@
+<script>
+  import { settings, applyTheme } from '../lib/stores.js';
+  import { put, post } from '../lib/api.js';
+
+  const pages = [
+    ['network', 'Network'],
+    ['shares', 'Shares'],
+    ['downloads', 'Downloads'],
+    ['uploads', 'Uploads'],
+    ['profile', 'User Profile'],
+    ['ui', 'User Interface'],
+  ];
+  const themes = [
+    ['dark', 'Dark'],
+    ['light', 'Light'],
+    ['catppuccin', 'Catppuccin'],
+  ];
+
+  let page = 'network';
+  let draft = null;
+  let newShare = { virtual_name: '', path: '', buddy_only: false };
+  let saveError = '';
+  let saved = false;
+
+  $: if (!draft && $settings.settings) draft = structuredClone($settings.settings);
+  $: locked = new Set($settings.locked);
+  $: portManaged = $settings.gluetun || locked.has('listen_port');
+
+  function addShare() {
+    if (!newShare.virtual_name.trim() || !newShare.path.trim()) return;
+    draft.shares = [...draft.shares, { ...newShare }];
+    newShare = { virtual_name: '', path: '', buddy_only: false };
+  }
+
+  function removeShare(index) {
+    draft.shares = draft.shares.filter((_, i) => i !== index);
+  }
+
+  function selectTheme() {
+    applyTheme(draft.theme);
+  }
+
+  function revert() {
+    draft = structuredClone($settings.settings);
+    applyTheme(draft.theme);
+    saveError = '';
+    saved = false;
+  }
+
+  async function save() {
+    saveError = '';
+    saved = false;
+    try {
+      await put('/settings', { ...draft, incomplete_dir: draft.incomplete_dir || null });
+      saved = true;
+    } catch (error) {
+      saveError = error.message;
+    }
+  }
+</script>
+
+{#if draft}
+  <div class="split">
+    <div class="side">
+      <div class="list">
+        {#each pages as [id, label]}
+          <div class:selected={page === id} on:click={() => (page = id)}>{label}</div>
+        {/each}
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="scroll settings-page">
+        {#if page === 'network'}
+          <h3>Network</h3>
+          <div class="form-row">
+            <label for="set-username">Username</label>
+            <input id="set-username" bind:value={draft.username} disabled={locked.has('username')} />
+            {#if locked.has('username')}<span class="hint">set by environment</span>{/if}
+          </div>
+          <div class="form-row">
+            <label for="set-password">Password</label>
+            <input id="set-password" type="password" bind:value={draft.password}
+              disabled={locked.has('password')} />
+            {#if locked.has('password')}<span class="hint">set by environment</span>{/if}
+          </div>
+          <div class="form-row">
+            <label for="set-server">Server address</label>
+            <input id="set-server" bind:value={draft.server} disabled={locked.has('server')} />
+            {#if locked.has('server')}<span class="hint">set by environment</span>{/if}
+          </div>
+          <div class="form-row">
+            <label for="set-port">Listen port</label>
+            <input id="set-port" type="number" min="1024" max="65535"
+              bind:value={draft.listen_port} disabled={portManaged} />
+            {#if $settings.gluetun}<span class="hint">managed by Gluetun port forwarding</span>
+            {:else if locked.has('listen_port')}<span class="hint">set by environment</span>{/if}
+          </div>
+          <div class="form-row">
+            <label for="set-reconnect">
+              <input id="set-reconnect" type="checkbox" bind:checked={draft.auto_reconnect} />
+              Reconnect automatically when the connection is lost
+            </label>
+          </div>
+          <p class="hint">
+            Changing the username, password or server reconnects to the Soulseek network.
+          </p>
+
+        {:else if page === 'shares'}
+          <h3>Shares</h3>
+          <table>
+            <thead>
+              <tr><th>Virtual Folder</th><th class="grow">Folder</th><th>Buddies Only</th><th></th></tr>
+            </thead>
+            <tbody>
+              {#each draft.shares as share, i}
+                <tr>
+                  <td>{share.virtual_name}</td>
+                  <td class="grow">{share.path}</td>
+                  <td><input type="checkbox" bind:checked={share.buddy_only} /></td>
+                  <td><button on:click={() => removeShare(i)}>Remove</button></td>
+                </tr>
+              {/each}
+              <tr>
+                <td><input placeholder="Virtual name…" bind:value={newShare.virtual_name} /></td>
+                <td class="grow"><input placeholder="Folder path on the server…" style="width: 100%"
+                  bind:value={newShare.path} /></td>
+                <td><input type="checkbox" bind:checked={newShare.buddy_only} /></td>
+                <td><button on:click={addShare}>Add</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="toolbar">
+            <button on:click={() => post('/shares/rescan')}>Rescan Shares Now</button>
+            <span class="hint">Saved share changes are rescanned automatically.</span>
+          </div>
+
+        {:else if page === 'downloads'}
+          <h3>Downloads</h3>
+          <div class="form-row">
+            <label for="set-downdir">Download folder</label>
+            <input id="set-downdir" bind:value={draft.download_dir}
+              disabled={locked.has('download_dir')} />
+            {#if locked.has('download_dir')}<span class="hint">set by environment</span>{/if}
+          </div>
+          <div class="form-row">
+            <label for="set-incompletedir">Incomplete file folder</label>
+            <input id="set-incompletedir" bind:value={draft.incomplete_dir}
+              placeholder="{draft.download_dir}/incomplete" />
+          </div>
+          <div class="form-row">
+            <label for="set-downlimit">Download speed limit (KiB/s)</label>
+            <input id="set-downlimit" type="number" min="0" bind:value={draft.download_limit_kbps} />
+            <span class="hint">0 = unlimited</span>
+          </div>
+
+        {:else if page === 'uploads'}
+          <h3>Uploads</h3>
+          <div class="form-row">
+            <label for="set-slots">Upload slots</label>
+            <input id="set-slots" type="number" min="1" bind:value={draft.upload_slots} />
+          </div>
+          <div class="form-row">
+            <label for="set-queuelimit">Queue limit per user (files)</label>
+            <input id="set-queuelimit" type="number" min="1" bind:value={draft.queue_file_limit} />
+          </div>
+          <div class="form-row">
+            <label for="set-uplimit">Upload speed limit (KiB/s)</label>
+            <input id="set-uplimit" type="number" min="0" bind:value={draft.upload_limit_kbps} />
+            <span class="hint">0 = unlimited</span>
+          </div>
+
+        {:else if page === 'profile'}
+          <h3>User Profile</h3>
+          <p class="hint">Shown to users who view your profile.</p>
+          <textarea rows="10" bind:value={draft.description}></textarea>
+
+        {:else if page === 'ui'}
+          <h3>User Interface</h3>
+          <div class="form-row">
+            <label for="set-theme">Theme</label>
+            <select id="set-theme" bind:value={draft.theme} on:change={selectTheme}>
+              {#each themes as [id, label]}
+                <option value={id}>{label}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+      </div>
+
+      <div class="toolbar">
+        <button on:click={save}>Save</button>
+        <button on:click={revert}>Revert</button>
+        {#if saveError}<span class="notice">{saveError}</span>
+        {:else if saved}<span class="hint">Saved.</span>{/if}
+      </div>
+    </div>
+  </div>
+{:else}
+  <p>Loading settings…</p>
+{/if}

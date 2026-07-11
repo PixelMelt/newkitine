@@ -1,0 +1,9 @@
+target
+web/node_modules
+web/dist
+mysql-data
+gluetun-config
+config
+data
+.env
+reference

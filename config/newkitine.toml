@@ -1,0 +1,2 @@
+database_url = "mysql://newkitine:newkitine@localhost:3306/newkitine"
+web_bind = "0.0.0.0:8080"
