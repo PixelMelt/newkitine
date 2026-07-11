@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 
 use super::wire::{MessageReader, ProtocolError};
-use crate::types::{SimilarUser, UserData, UserStats};
+use crate::types::{Recommendations, SimilarUser, UserData, UserStats};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginOutcome {
@@ -26,78 +26,289 @@ pub struct ParentCandidate {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerResponse {
     Login(LoginOutcome),
-    GetPeerAddress { user: String, ip_address: Ipv4Addr, port: u32, obfuscation_type: u32, obfuscated_port: u16 },
-    WatchUser { user: String, user_exists: bool, status: Option<u32>, stats: Option<UserStats>, country: Option<String> },
-    GetUserStatus { user: String, status: u32, privileged: bool },
-    IgnoreUser { user: String },
-    UnignoreUser { user: String },
-    SayChatroom { room: String, user: String, message: String },
-    JoinRoom { room: String, users: Vec<UserData>, owner: Option<String>, operators: Vec<String> },
-    LeaveRoom { room: String },
-    UserJoinedRoom { room: String, userdata: UserData },
-    UserLeftRoom { room: String, username: String },
-    ConnectToPeer { user: String, conn_type: String, ip_address: Ipv4Addr, port: u32, token: u32, privileged: bool, obfuscation_type: u32, obfuscated_port: u32 },
-    MessageUser { message_id: u32, timestamp: u32, user: String, message: String, is_new_message: bool },
-    FileSearch { search_username: String, token: u32, search_term: String },
+    GetPeerAddress {
+        user: String,
+        ip_address: Ipv4Addr,
+        port: u32,
+        obfuscation_type: u32,
+        obfuscated_port: u16,
+    },
+    WatchUser {
+        user: String,
+        user_exists: bool,
+        status: Option<u32>,
+        stats: Option<UserStats>,
+        country: Option<String>,
+    },
+    GetUserStatus {
+        user: String,
+        status: u32,
+        privileged: bool,
+    },
+    IgnoreUser {
+        user: String,
+    },
+    UnignoreUser {
+        user: String,
+    },
+    SayChatroom {
+        room: String,
+        user: String,
+        message: String,
+    },
+    JoinRoom {
+        room: String,
+        users: Vec<UserData>,
+        owner: Option<String>,
+        operators: Vec<String>,
+    },
+    LeaveRoom {
+        room: String,
+    },
+    UserJoinedRoom {
+        room: String,
+        userdata: UserData,
+    },
+    UserLeftRoom {
+        room: String,
+        username: String,
+    },
+    ConnectToPeer {
+        user: String,
+        conn_type: String,
+        ip_address: Ipv4Addr,
+        port: u32,
+        token: u32,
+        privileged: bool,
+        obfuscation_type: u32,
+        obfuscated_port: u32,
+    },
+    MessageUser {
+        message_id: u32,
+        timestamp: u32,
+        user: String,
+        message: String,
+        is_new_message: bool,
+    },
+    FileSearch {
+        search_username: String,
+        token: u32,
+        search_term: String,
+    },
     ServerPing,
-    SendConnectToken { user: String, token: u32 },
-    GetUserStats { user: String, stats: UserStats },
-    UploadSlotsFull { user: String, slotsfull: u32 },
+    SendConnectToken {
+        user: String,
+        token: u32,
+    },
+    GetUserStats {
+        user: String,
+        stats: UserStats,
+    },
+    UploadSlotsFull {
+        user: String,
+        slotsfull: u32,
+    },
     Relogged,
-    SimilarRecommendations { recommendation: String, similar_recommendations: Vec<String> },
-    Recommendations { recommendations: Vec<(String, i32)>, unrecommendations: Vec<(String, i32)> },
-    MyRecommendations { my_recommendations: Vec<String> },
-    GlobalRecommendations { recommendations: Vec<(String, i32)>, unrecommendations: Vec<(String, i32)> },
-    UserInterests { user: String, likes: Vec<String>, hates: Vec<String> },
-    PlaceInLineRequest { user: String, token: u32 },
-    PlaceInLineResponse { user: String, token: u32, place: u32 },
-    RoomAdded { room: String },
-    RoomRemoved { room: String },
-    RoomList { rooms: Vec<(String, u32)>, rooms_owner: Vec<(String, u32)>, rooms_member: Vec<(String, u32)>, rooms_operator: Vec<String> },
-    ExactFileSearch { user: String, token: u32, file: String, folder: String, size: u64, checksum: u32 },
-    AdminMessage { msg: String },
-    GlobalUserList { users: Vec<UserData> },
-    TunneledMessage { user: String, code: u32, token: u32, ip_address: Ipv4Addr, port: u32, msg: String },
-    PrivilegedUsers { users: Vec<String> },
-    ParentMinSpeed { speed: u32 },
-    ParentSpeedRatio { ratio: u32 },
-    ParentInactivityTimeout { seconds: u32 },
-    SearchInactivityTimeout { seconds: u32 },
-    MinParentsInCache { num: u32 },
-    DistribPingInterval { seconds: u32 },
-    AddToPrivileged { user: String },
-    CheckPrivileges { seconds: u32 },
-    EmbeddedMessage { distrib_code: u8, distrib_message: Vec<u8> },
-    PossibleParents { parents: Vec<ParentCandidate> },
-    WishlistInterval { seconds: u32 },
-    SimilarUsers { users: Vec<SimilarUser> },
-    ItemRecommendations { thing: String, recommendations: Vec<(String, i32)>, unrecommendations: Vec<(String, i32)> },
-    ItemSimilarUsers { thing: String, usernames: Vec<String> },
-    RoomTickers { room: String, tickers: Vec<(String, String)> },
-    RoomTickerAdded { room: String, user: String, msg: String },
-    RoomTickerRemoved { room: String, user: String },
-    UserPrivileged { user: String, privileged: bool },
-    NotifyPrivileges { token: u32, user: String },
-    AckNotifyPrivileges { token: u32 },
+    SimilarRecommendations {
+        recommendation: String,
+        similar_recommendations: Vec<String>,
+    },
+    Recommendations {
+        recommendations: Recommendations,
+        unrecommendations: Recommendations,
+    },
+    MyRecommendations {
+        my_recommendations: Vec<String>,
+    },
+    GlobalRecommendations {
+        recommendations: Recommendations,
+        unrecommendations: Recommendations,
+    },
+    UserInterests {
+        user: String,
+        likes: Vec<String>,
+        hates: Vec<String>,
+    },
+    PlaceInLineRequest {
+        user: String,
+        token: u32,
+    },
+    PlaceInLineResponse {
+        user: String,
+        token: u32,
+        place: u32,
+    },
+    RoomAdded {
+        room: String,
+    },
+    RoomRemoved {
+        room: String,
+    },
+    RoomList {
+        rooms: Vec<(String, u32)>,
+        rooms_owner: Vec<(String, u32)>,
+        rooms_member: Vec<(String, u32)>,
+        rooms_operator: Vec<String>,
+    },
+    ExactFileSearch {
+        user: String,
+        token: u32,
+        file: String,
+        folder: String,
+        size: u64,
+        checksum: u32,
+    },
+    AdminMessage {
+        msg: String,
+    },
+    GlobalUserList {
+        users: Vec<UserData>,
+    },
+    TunneledMessage {
+        user: String,
+        code: u32,
+        token: u32,
+        ip_address: Ipv4Addr,
+        port: u32,
+        msg: String,
+    },
+    PrivilegedUsers {
+        users: Vec<String>,
+    },
+    ParentMinSpeed {
+        speed: u32,
+    },
+    ParentSpeedRatio {
+        ratio: u32,
+    },
+    ParentInactivityTimeout {
+        seconds: u32,
+    },
+    SearchInactivityTimeout {
+        seconds: u32,
+    },
+    MinParentsInCache {
+        num: u32,
+    },
+    DistribPingInterval {
+        seconds: u32,
+    },
+    AddToPrivileged {
+        user: String,
+    },
+    CheckPrivileges {
+        seconds: u32,
+    },
+    EmbeddedMessage {
+        distrib_code: u8,
+        distrib_message: Vec<u8>,
+    },
+    PossibleParents {
+        parents: Vec<ParentCandidate>,
+    },
+    WishlistInterval {
+        seconds: u32,
+    },
+    SimilarUsers {
+        users: Vec<SimilarUser>,
+    },
+    ItemRecommendations {
+        thing: String,
+        recommendations: Recommendations,
+        unrecommendations: Recommendations,
+    },
+    ItemSimilarUsers {
+        thing: String,
+        usernames: Vec<String>,
+    },
+    RoomTickers {
+        room: String,
+        tickers: Vec<(String, String)>,
+    },
+    RoomTickerAdded {
+        room: String,
+        user: String,
+        msg: String,
+    },
+    RoomTickerRemoved {
+        room: String,
+        user: String,
+    },
+    UserPrivileged {
+        user: String,
+        privileged: bool,
+    },
+    NotifyPrivileges {
+        token: u32,
+        user: String,
+    },
+    AckNotifyPrivileges {
+        token: u32,
+    },
     ResetDistributed,
-    RoomMembers { room: String, members: Vec<String> },
-    AddRoomMember { room: String, user: String },
-    RemoveRoomMember { room: String, user: String },
-    RoomSomething { room: String },
-    RoomMembershipGranted { room: String },
-    RoomMembershipRevoked { room: String },
-    EnableRoomInvitations { enabled: bool },
-    ChangePassword { password: String },
-    AddRoomOperator { room: String, user: String },
-    RemoveRoomOperator { room: String, user: String },
-    RoomOperatorshipGranted { room: String },
-    RoomOperatorshipRevoked { room: String },
-    RoomOperators { room: String, operators: Vec<String> },
-    GlobalRoomMessage { room: String, user: String, message: String },
-    RelatedSearch { query: String, terms: Vec<(String, u32)> },
-    ExcludedSearchPhrases { phrases: Vec<String> },
-    CantConnectToPeer { token: u32 },
-    CantCreateRoom { room: String },
+    RoomMembers {
+        room: String,
+        members: Vec<String>,
+    },
+    AddRoomMember {
+        room: String,
+        user: String,
+    },
+    RemoveRoomMember {
+        room: String,
+        user: String,
+    },
+    RoomSomething {
+        room: String,
+    },
+    RoomMembershipGranted {
+        room: String,
+    },
+    RoomMembershipRevoked {
+        room: String,
+    },
+    EnableRoomInvitations {
+        enabled: bool,
+    },
+    ChangePassword {
+        password: String,
+    },
+    AddRoomOperator {
+        room: String,
+        user: String,
+    },
+    RemoveRoomOperator {
+        room: String,
+        user: String,
+    },
+    RoomOperatorshipGranted {
+        room: String,
+    },
+    RoomOperatorshipRevoked {
+        room: String,
+    },
+    RoomOperators {
+        room: String,
+        operators: Vec<String>,
+    },
+    GlobalRoomMessage {
+        room: String,
+        user: String,
+        message: String,
+    },
+    RelatedSearch {
+        query: String,
+        terms: Vec<(String, u32)>,
+    },
+    ExcludedSearchPhrases {
+        phrases: Vec<String>,
+    },
+    CantConnectToPeer {
+        token: u32,
+    },
+    CantCreateRoom {
+        room: String,
+    },
 }
 
 fn read_user_stats(r: &mut MessageReader) -> Result<UserStats, ProtocolError> {
@@ -120,8 +331,11 @@ fn read_users(r: &mut MessageReader) -> Result<Vec<UserData>, ProtocolError> {
         });
     }
 
-    fn entry<'u>(users: &'u mut [UserData], i: usize) -> Result<&'u mut UserData, ProtocolError> {
-        users.get_mut(i).ok_or(ProtocolError::InvalidValue { field: "user_index", value: i as u64 })
+    fn entry(users: &mut [UserData], i: usize) -> Result<&mut UserData, ProtocolError> {
+        users.get_mut(i).ok_or(ProtocolError::InvalidValue {
+            field: "user_index",
+            value: i as u64,
+        })
     }
 
     let status_len = r.read_u32()? as usize;
@@ -149,14 +363,18 @@ fn read_users(r: &mut MessageReader) -> Result<Vec<UserData>, ProtocolError> {
 
 fn read_recommendation_group(
     r: &mut MessageReader,
-    recommendations: &mut Vec<(String, i32)>,
-    unrecommendations: &mut Vec<(String, i32)>,
+    recommendations: &mut Recommendations,
+    unrecommendations: &mut Recommendations,
 ) -> Result<(), ProtocolError> {
     let num = r.read_u32()?;
     for _ in 0..num {
         let key = r.read_string()?;
         let rating = r.read_i32()?;
-        let list = if rating >= 0 { &mut *recommendations } else { &mut *unrecommendations };
+        let list = if rating >= 0 {
+            &mut *recommendations
+        } else {
+            &mut *unrecommendations
+        };
         let item = (key, rating);
         if !list.contains(&item) {
             list.push(item);
@@ -167,7 +385,7 @@ fn read_recommendation_group(
 
 fn read_recommendations(
     r: &mut MessageReader,
-) -> Result<(Vec<(String, i32)>, Vec<(String, i32)>), ProtocolError> {
+) -> Result<(Recommendations, Recommendations), ProtocolError> {
     let mut recommendations = Vec::new();
     let mut unrecommendations = Vec::new();
     read_recommendation_group(r, &mut recommendations, &mut unrecommendations)?;
@@ -194,7 +412,10 @@ fn read_rooms_with_counts(r: &mut MessageReader) -> Result<Vec<(String, u32)>, P
         let count = r.read_u32()?;
         rooms
             .get_mut(i)
-            .ok_or(ProtocolError::InvalidValue { field: "room_index", value: i as u64 })?
+            .ok_or(ProtocolError::InvalidValue {
+                field: "room_index",
+                value: i as u64,
+            })?
             .1 = count;
     }
     Ok(rooms)
@@ -208,14 +429,22 @@ impl ServerResponse {
                 let success = r.read_bool()?;
                 if !success {
                     let reason = r.read_string()?;
-                    let detail = if r.has_remaining() { Some(r.read_string()?) } else { None };
+                    let detail = if r.has_remaining() {
+                        Some(r.read_string()?)
+                    } else {
+                        None
+                    };
                     Self::Login(LoginOutcome::Failure { reason, detail })
                 } else {
                     let banner = r.read_string()?;
                     let ip_address = r.read_ip()?;
                     let _checksum = r.read_string()?;
                     let is_supporter = r.read_bool()?;
-                    Self::Login(LoginOutcome::Success { banner, ip_address, is_supporter })
+                    Self::Login(LoginOutcome::Success {
+                        banner,
+                        ip_address,
+                        is_supporter,
+                    })
                 }
             }
             3 => Self::GetPeerAddress {
@@ -229,12 +458,28 @@ impl ServerResponse {
                 let user = r.read_string()?;
                 let user_exists = r.read_bool()?;
                 if !user_exists {
-                    Self::WatchUser { user, user_exists, status: None, stats: None, country: None }
+                    Self::WatchUser {
+                        user,
+                        user_exists,
+                        status: None,
+                        stats: None,
+                        country: None,
+                    }
                 } else {
                     let status = r.read_u32()?;
                     let stats = read_user_stats(r)?;
-                    let country = if r.has_remaining() { Some(r.read_string()?) } else { None };
-                    Self::WatchUser { user, user_exists, status: Some(status), stats: Some(stats), country }
+                    let country = if r.has_remaining() {
+                        Some(r.read_string()?)
+                    } else {
+                        None
+                    };
+                    Self::WatchUser {
+                        user,
+                        user_exists,
+                        status: Some(status),
+                        stats: Some(stats),
+                        country,
+                    }
                 }
             }
             7 => Self::GetUserStatus {
@@ -242,8 +487,12 @@ impl ServerResponse {
                 status: r.read_u32()?,
                 privileged: r.read_bool()?,
             },
-            11 => Self::IgnoreUser { user: r.read_string()? },
-            12 => Self::UnignoreUser { user: r.read_string()? },
+            11 => Self::IgnoreUser {
+                user: r.read_string()?,
+            },
+            12 => Self::UnignoreUser {
+                user: r.read_string()?,
+            },
             13 => Self::SayChatroom {
                 room: r.read_string()?,
                 user: r.read_string()?,
@@ -258,9 +507,16 @@ impl ServerResponse {
                     owner = Some(r.read_string()?);
                     operators = read_string_list(r)?;
                 }
-                Self::JoinRoom { room, users, owner, operators }
+                Self::JoinRoom {
+                    room,
+                    users,
+                    owner,
+                    operators,
+                }
             }
-            15 => Self::LeaveRoom { room: r.read_string()? },
+            15 => Self::LeaveRoom {
+                room: r.read_string()?,
+            },
             16 => Self::UserJoinedRoom {
                 room: r.read_string()?,
                 userdata: UserData {
@@ -271,7 +527,10 @@ impl ServerResponse {
                     country: Some(r.read_string()?),
                 },
             },
-            17 => Self::UserLeftRoom { room: r.read_string()?, username: r.read_string()? },
+            17 => Self::UserLeftRoom {
+                room: r.read_string()?,
+                username: r.read_string()?,
+            },
             18 => Self::ConnectToPeer {
                 user: r.read_string()?,
                 conn_type: r.read_string()?,
@@ -295,9 +554,18 @@ impl ServerResponse {
                 search_term: r.read_string()?,
             },
             32 => Self::ServerPing,
-            33 => Self::SendConnectToken { user: r.read_string()?, token: r.read_u32()? },
-            36 => Self::GetUserStats { user: r.read_string()?, stats: read_user_stats(r)? },
-            40 => Self::UploadSlotsFull { user: r.read_string()?, slotsfull: r.read_u32()? },
+            33 => Self::SendConnectToken {
+                user: r.read_string()?,
+                token: r.read_u32()?,
+            },
+            36 => Self::GetUserStats {
+                user: r.read_string()?,
+                stats: read_user_stats(r)?,
+            },
+            40 => Self::UploadSlotsFull {
+                user: r.read_string()?,
+                slotsfull: r.read_u32()?,
+            },
             41 => Self::Relogged,
             50 => Self::SimilarRecommendations {
                 recommendation: r.read_string()?,
@@ -305,26 +573,41 @@ impl ServerResponse {
             },
             54 => {
                 let (recommendations, unrecommendations) = read_recommendations(r)?;
-                Self::Recommendations { recommendations, unrecommendations }
+                Self::Recommendations {
+                    recommendations,
+                    unrecommendations,
+                }
             }
-            55 => Self::MyRecommendations { my_recommendations: read_string_list(r)? },
+            55 => Self::MyRecommendations {
+                my_recommendations: read_string_list(r)?,
+            },
             56 => {
                 let (recommendations, unrecommendations) = read_recommendations(r)?;
-                Self::GlobalRecommendations { recommendations, unrecommendations }
+                Self::GlobalRecommendations {
+                    recommendations,
+                    unrecommendations,
+                }
             }
             57 => Self::UserInterests {
                 user: r.read_string()?,
                 likes: read_string_list(r)?,
                 hates: read_string_list(r)?,
             },
-            59 => Self::PlaceInLineRequest { user: r.read_string()?, token: r.read_u32()? },
+            59 => Self::PlaceInLineRequest {
+                user: r.read_string()?,
+                token: r.read_u32()?,
+            },
             60 => Self::PlaceInLineResponse {
                 user: r.read_string()?,
                 token: r.read_u32()?,
                 place: r.read_u32()?,
             },
-            62 => Self::RoomAdded { room: r.read_string()? },
-            63 => Self::RoomRemoved { room: r.read_string()? },
+            62 => Self::RoomAdded {
+                room: r.read_string()?,
+            },
+            63 => Self::RoomRemoved {
+                room: r.read_string()?,
+            },
             64 => Self::RoomList {
                 rooms: read_rooms_with_counts(r)?,
                 rooms_owner: read_rooms_with_counts(r)?,
@@ -339,8 +622,12 @@ impl ServerResponse {
                 size: r.read_u64()?,
                 checksum: r.read_u32()?,
             },
-            66 => Self::AdminMessage { msg: r.read_string()? },
-            67 => Self::GlobalUserList { users: read_users(r)? },
+            66 => Self::AdminMessage {
+                msg: r.read_string()?,
+            },
+            67 => Self::GlobalUserList {
+                users: read_users(r)?,
+            },
             68 => Self::TunneledMessage {
                 user: r.read_string()?,
                 code: r.read_u32()?,
@@ -349,15 +636,31 @@ impl ServerResponse {
                 port: r.read_u32()?,
                 msg: r.read_string()?,
             },
-            69 => Self::PrivilegedUsers { users: read_string_list(r)? },
-            83 => Self::ParentMinSpeed { speed: r.read_u32()? },
-            84 => Self::ParentSpeedRatio { ratio: r.read_u32()? },
-            86 => Self::ParentInactivityTimeout { seconds: r.read_u32()? },
-            87 => Self::SearchInactivityTimeout { seconds: r.read_u32()? },
+            69 => Self::PrivilegedUsers {
+                users: read_string_list(r)?,
+            },
+            83 => Self::ParentMinSpeed {
+                speed: r.read_u32()?,
+            },
+            84 => Self::ParentSpeedRatio {
+                ratio: r.read_u32()?,
+            },
+            86 => Self::ParentInactivityTimeout {
+                seconds: r.read_u32()?,
+            },
+            87 => Self::SearchInactivityTimeout {
+                seconds: r.read_u32()?,
+            },
             88 => Self::MinParentsInCache { num: r.read_u32()? },
-            90 => Self::DistribPingInterval { seconds: r.read_u32()? },
-            91 => Self::AddToPrivileged { user: r.read_string()? },
-            92 => Self::CheckPrivileges { seconds: r.read_u32()? },
+            90 => Self::DistribPingInterval {
+                seconds: r.read_u32()?,
+            },
+            91 => Self::AddToPrivileged {
+                user: r.read_string()?,
+            },
+            92 => Self::CheckPrivileges {
+                seconds: r.read_u32()?,
+            },
             93 => Self::EmbeddedMessage {
                 distrib_code: r.read_u8()?,
                 distrib_message: r.rest().to_vec(),
@@ -374,7 +677,9 @@ impl ServerResponse {
                 }
                 Self::PossibleParents { parents }
             }
-            104 => Self::WishlistInterval { seconds: r.read_u32()? },
+            104 => Self::WishlistInterval {
+                seconds: r.read_u32()?,
+            },
             110 => {
                 let num = r.read_u32()?;
                 let mut users = Vec::new();
@@ -384,13 +689,17 @@ impl ServerResponse {
                         rating: r.read_u32()?,
                     });
                 }
-                users.sort_by(|a, b| b.rating.cmp(&a.rating));
+                users.sort_by_key(|user| std::cmp::Reverse(user.rating));
                 Self::SimilarUsers { users }
             }
             111 => {
                 let thing = r.read_string()?;
                 let (recommendations, unrecommendations) = read_recommendations(r)?;
-                Self::ItemRecommendations { thing, recommendations, unrecommendations }
+                Self::ItemRecommendations {
+                    thing,
+                    recommendations,
+                    unrecommendations,
+                }
             }
             112 => Self::ItemSimilarUsers {
                 thing: r.read_string()?,
@@ -410,24 +719,67 @@ impl ServerResponse {
                 user: r.read_string()?,
                 msg: r.read_string()?,
             },
-            115 => Self::RoomTickerRemoved { room: r.read_string()?, user: r.read_string()? },
-            122 => Self::UserPrivileged { user: r.read_string()?, privileged: r.read_bool()? },
-            124 => Self::NotifyPrivileges { token: r.read_u32()?, user: r.read_string()? },
-            125 => Self::AckNotifyPrivileges { token: r.read_u32()? },
+            115 => Self::RoomTickerRemoved {
+                room: r.read_string()?,
+                user: r.read_string()?,
+            },
+            122 => Self::UserPrivileged {
+                user: r.read_string()?,
+                privileged: r.read_bool()?,
+            },
+            124 => Self::NotifyPrivileges {
+                token: r.read_u32()?,
+                user: r.read_string()?,
+            },
+            125 => Self::AckNotifyPrivileges {
+                token: r.read_u32()?,
+            },
             130 => Self::ResetDistributed,
-            133 => Self::RoomMembers { room: r.read_string()?, members: read_string_list(r)? },
-            134 => Self::AddRoomMember { room: r.read_string()?, user: r.read_string()? },
-            135 => Self::RemoveRoomMember { room: r.read_string()?, user: r.read_string()? },
-            138 => Self::RoomSomething { room: r.read_string()? },
-            139 => Self::RoomMembershipGranted { room: r.read_string()? },
-            140 => Self::RoomMembershipRevoked { room: r.read_string()? },
-            141 => Self::EnableRoomInvitations { enabled: r.read_bool()? },
-            142 => Self::ChangePassword { password: r.read_string()? },
-            143 => Self::AddRoomOperator { room: r.read_string()?, user: r.read_string()? },
-            144 => Self::RemoveRoomOperator { room: r.read_string()?, user: r.read_string()? },
-            145 => Self::RoomOperatorshipGranted { room: r.read_string()? },
-            146 => Self::RoomOperatorshipRevoked { room: r.read_string()? },
-            148 => Self::RoomOperators { room: r.read_string()?, operators: read_string_list(r)? },
+            133 => Self::RoomMembers {
+                room: r.read_string()?,
+                members: read_string_list(r)?,
+            },
+            134 => Self::AddRoomMember {
+                room: r.read_string()?,
+                user: r.read_string()?,
+            },
+            135 => Self::RemoveRoomMember {
+                room: r.read_string()?,
+                user: r.read_string()?,
+            },
+            138 => Self::RoomSomething {
+                room: r.read_string()?,
+            },
+            139 => Self::RoomMembershipGranted {
+                room: r.read_string()?,
+            },
+            140 => Self::RoomMembershipRevoked {
+                room: r.read_string()?,
+            },
+            141 => Self::EnableRoomInvitations {
+                enabled: r.read_bool()?,
+            },
+            142 => Self::ChangePassword {
+                password: r.read_string()?,
+            },
+            143 => Self::AddRoomOperator {
+                room: r.read_string()?,
+                user: r.read_string()?,
+            },
+            144 => Self::RemoveRoomOperator {
+                room: r.read_string()?,
+                user: r.read_string()?,
+            },
+            145 => Self::RoomOperatorshipGranted {
+                room: r.read_string()?,
+            },
+            146 => Self::RoomOperatorshipRevoked {
+                room: r.read_string()?,
+            },
+            148 => Self::RoomOperators {
+                room: r.read_string()?,
+                operators: read_string_list(r)?,
+            },
             152 => Self::GlobalRoomMessage {
                 room: r.read_string()?,
                 user: r.read_string()?,
@@ -442,10 +794,21 @@ impl ServerResponse {
                 }
                 Self::RelatedSearch { query, terms }
             }
-            160 => Self::ExcludedSearchPhrases { phrases: read_string_list(r)? },
-            1001 => Self::CantConnectToPeer { token: r.read_u32()? },
-            1003 => Self::CantCreateRoom { room: r.read_string()? },
-            _ => return Err(ProtocolError::UnknownMessageCode { family: "server", code }),
+            160 => Self::ExcludedSearchPhrases {
+                phrases: read_string_list(r)?,
+            },
+            1001 => Self::CantConnectToPeer {
+                token: r.read_u32()?,
+            },
+            1003 => Self::CantCreateRoom {
+                room: r.read_string()?,
+            },
+            _ => {
+                return Err(ProtocolError::UnknownMessageCode {
+                    family: "server",
+                    code,
+                });
+            }
         })
     }
 }

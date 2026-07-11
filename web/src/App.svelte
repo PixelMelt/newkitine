@@ -16,6 +16,7 @@
   import ChatRooms from './tabs/ChatRooms.svelte';
   import Interests from './tabs/Interests.svelte';
   import Buddies from './tabs/Buddies.svelte';
+  import Statistics from './tabs/Statistics.svelte';
   import Settings from './tabs/Settings.svelte';
 
   const tabs = [
@@ -28,6 +29,7 @@
     ['rooms', 'Chat Rooms', ChatRooms],
     ['interests', 'Interests', Interests],
     ['buddies', 'Buddies', Buddies],
+    ['statistics', 'Statistics', Statistics],
     ['settings', 'Preferences', Settings],
   ];
 
@@ -69,6 +71,7 @@
     </span>
     <span>Port: {$status.listen_port}</span>
     <span>Shares: {$status.shared_files ?? 0} files / {$status.shared_folders ?? 0} folders</span>
+    <span>Connections: {$status.peer_connections ?? 0}</span>
     <span>↓ {formatSize($speedTotals.down)}/s</span>
     <span>↑ {formatSize($speedTotals.up)}/s</span>
     {#if $notices.length}

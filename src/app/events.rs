@@ -6,12 +6,13 @@ use tokio::sync::mpsc;
 
 use newkitine::client::{ClientEvent, DownloadUpdate, UploadUpdate};
 use newkitine::protocol::ServerResponse;
-use newkitine::types::{FileAttributes, UserStatus};
+use newkitine::types::{FileAttributes, Observation, UserStatus};
 
+use super::behavior;
 use super::db;
 use super::state::{
-    App, BuddyView, BrowseView, ChatMessage, RoomEntry, RoomView, SearchResponseView,
-    SearchFileView, SearchView, TransferView, UserInfoView, now,
+    App, BrowseView, BuddyView, ChatMessage, RoomEntry, RoomView, SearchFileView,
+    SearchResponseView, SearchView, TransferView, UserInfoView, now,
 };
 
 const MAX_SEARCH_RESPONSES: usize = 500;
@@ -39,24 +40,28 @@ fn transfer_event(direction: &str, view: &TransferView) -> serde_json::Value {
 async fn upsert_download(app: &App, view: TransferView) {
     db::upsert_transfer(&app.db, "download", &view).await;
     app.broadcast(transfer_event("download", &view));
-    app.data.write().unwrap().downloads.insert(
-        (view.username.clone(), view.virtual_path.clone()),
-        view,
-    );
+    app.data
+        .write()
+        .unwrap()
+        .downloads
+        .insert((view.username.clone(), view.virtual_path.clone()), view);
 }
 
 async fn upsert_upload(app: &App, view: TransferView) {
     db::upsert_transfer(&app.db, "upload", &view).await;
     app.broadcast(transfer_event("upload", &view));
-    app.data.write().unwrap().uploads.insert(
-        (view.username.clone(), view.virtual_path.clone()),
-        view,
-    );
+    app.data
+        .write()
+        .unwrap()
+        .uploads
+        .insert((view.username.clone(), view.virtual_path.clone()), view);
 }
 
 fn take_download(app: &App, username: &str, virtual_path: &str) -> Option<TransferView> {
     let data = app.data.read().unwrap();
-    let view = data.downloads.get(&(username.to_owned(), virtual_path.to_owned()))?;
+    let view = data
+        .downloads
+        .get(&(username.to_owned(), virtual_path.to_owned()))?;
     if view.status == "aborted" {
         return None;
     }
@@ -112,6 +117,10 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             data.rooms.joined.clear();
             app.broadcast(json!({ "type": "status", "status": &data.status }));
         }
+        ClientEvent::ConnectionCount(count) => {
+            app.data.write().unwrap().status.peer_connections = count;
+            app.broadcast(json!({ "type": "conn_count", "count": count }));
+        }
         ClientEvent::SharesScanned { folders, files } => {
             let mut data = app.data.write().unwrap();
             data.status.shared_folders = folders;
@@ -142,10 +151,18 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
                     .collect(),
             };
             let mut data = app.data.write().unwrap();
-            let index = match data.searches.iter().position(|search| search.token == token) {
+            let index = match data
+                .searches
+                .iter()
+                .position(|search| search.token == token)
+            {
                 Some(index) => index,
                 None => {
-                    data.searches.push(SearchView { token, query, results: Vec::new() });
+                    data.searches.push(SearchView {
+                        token,
+                        query,
+                        results: Vec::new(),
+                    });
                     app.broadcast(json!({
                         "type": "search_added",
                         "search": data.searches.last().unwrap(),
@@ -163,7 +180,11 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
                 }));
             }
         }
-        ClientEvent::UserStatus { username, status, privileged } => {
+        ClientEvent::UserStatus {
+            username,
+            status,
+            privileged,
+        } => {
             let status = status_string(status);
             let mut data = app.data.write().unwrap();
             if let Some(buddy) = data.buddies.get_mut(&username) {
@@ -179,24 +200,43 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         }
         ClientEvent::Download(update) => handle_download(app, update).await,
         ClientEvent::Upload(update) => handle_upload(app, update).await,
-        ClientEvent::PlaceInQueue { username, virtual_path, place } => {
+        ClientEvent::PlaceInQueue {
+            username,
+            virtual_path,
+            place,
+        } => {
             let view = {
                 let mut data = app.data.write().unwrap();
                 let key = (username, virtual_path);
-                let Some(view) = data.downloads.get_mut(&key) else { return };
+                let Some(view) = data.downloads.get_mut(&key) else {
+                    return;
+                };
                 view.queue_place = place;
                 view.clone()
             };
             app.broadcast(transfer_event("download", &view));
         }
-        ClientEvent::SharedFileList { username, shares, private_shares } => {
+        ClientEvent::SharedFileList {
+            username,
+            shares,
+            private_shares,
+        } => {
+            let file_count: usize = shares
+                .iter()
+                .chain(private_shares.iter())
+                .map(|folder| folder.files.len())
+                .sum();
+            behavior::browse_received(app, &username, file_count as u32).await;
             let mut data = app.data.write().unwrap();
-            data.browses.insert(username.clone(), BrowseView {
-                username: username.clone(),
-                folders: shares,
-                private_folders: private_shares,
-                received_at: now(),
-            });
+            data.browses.insert(
+                username.clone(),
+                BrowseView {
+                    username: username.clone(),
+                    folders: shares,
+                    private_folders: private_shares,
+                    received_at: now(),
+                },
+            );
             app.broadcast(json!({ "type": "browse_loaded", "username": username }));
         }
         ClientEvent::UserInfo {
@@ -208,19 +248,28 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             slots_available,
         } => {
             let mut data = app.data.write().unwrap();
-            let info = data.user_infos.entry(username.clone()).or_insert_with(|| {
-                UserInfoView { username, ..Default::default() }
-            });
+            let info = data
+                .user_infos
+                .entry(username.clone())
+                .or_insert_with(|| UserInfoView {
+                    username,
+                    ..Default::default()
+                });
             info.received = true;
             info.description = description;
-            info.picture_base64 = picture
-                .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+            info.picture_base64 =
+                picture.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
             info.upload_slots = total_uploads;
             info.queue_size = queue_size;
             info.slots_available = slots_available;
             app.broadcast(json!({ "type": "user_info", "info": info.clone() }));
         }
-        ClientEvent::PrivateMessage { username, message, timestamp, .. } => {
+        ClientEvent::PrivateMessage {
+            username,
+            message,
+            timestamp,
+            ..
+        } => {
             let message = ChatMessage {
                 sender: username.clone(),
                 message,
@@ -241,8 +290,16 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
                 "message": message,
             }));
         }
-        ClientEvent::RoomMessage { room, username, message } => {
-            let message = ChatMessage { sender: username, message, timestamp: now() };
+        ClientEvent::RoomMessage {
+            room,
+            username,
+            message,
+        } => {
+            let message = ChatMessage {
+                sender: username,
+                message,
+                timestamp: now(),
+            };
             db::insert_chat(&app.db, "room", &room, &message).await;
             {
                 let mut data = app.data.write().unwrap();
@@ -257,20 +314,49 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         }
         ClientEvent::Server(response) => handle_server(app, response).await,
         ClientEvent::Peer { .. } => {}
+        ClientEvent::Observed(observation) => {
+            app.stats.record(&observation, app.geo.as_ref());
+            match &observation {
+                Observation::SearchSeen { username, .. } => {
+                    behavior::search_seen(app, username).await;
+                }
+                Observation::QueueRequest {
+                    username,
+                    accepted: true,
+                    ..
+                } => {
+                    behavior::queue_request(app, username).await;
+                }
+                _ => {}
+            }
+        }
     }
 }
 
 async fn handle_download(app: &Arc<App>, update: DownloadUpdate) {
     match update {
-        DownloadUpdate::Started { username, virtual_path, .. } => {
-            let Some(mut view) = take_download(app, &username, &virtual_path) else { return };
+        DownloadUpdate::Started {
+            username,
+            virtual_path,
+            ..
+        } => {
+            let Some(mut view) = take_download(app, &username, &virtual_path) else {
+                return;
+            };
             view.status = "transferring".into();
             view.queue_place = 0;
             view.updated_at = now();
             upsert_download(app, view).await;
         }
-        DownloadUpdate::Progress { username, virtual_path, bytes_done, size } => {
-            let Some(mut view) = take_download(app, &username, &virtual_path) else { return };
+        DownloadUpdate::Progress {
+            username,
+            virtual_path,
+            bytes_done,
+            size,
+        } => {
+            let Some(mut view) = take_download(app, &username, &virtual_path) else {
+                return;
+            };
             view.status = "transferring".into();
             view.bytes_done = bytes_done;
             view.size = size;
@@ -282,16 +368,38 @@ async fn handle_download(app: &Arc<App>, update: DownloadUpdate) {
                 .downloads
                 .insert((username, virtual_path), view);
         }
-        DownloadUpdate::Finished { username, virtual_path, file_path } => {
-            let Some(mut view) = take_download(app, &username, &virtual_path) else { return };
+        DownloadUpdate::Finished {
+            username,
+            virtual_path,
+            file_path,
+        } => {
+            let Some(mut view) = take_download(app, &username, &virtual_path) else {
+                return;
+            };
             view.status = "finished".into();
             view.bytes_done = view.size;
             view.file_path = Some(file_path.display().to_string());
             view.updated_at = now();
+            db::record_transfer(
+                &app.db,
+                "download",
+                &view.username,
+                &view.virtual_path,
+                view.size,
+                None,
+                view.updated_at,
+            )
+            .await;
             upsert_download(app, view).await;
         }
-        DownloadUpdate::Failed { username, virtual_path, reason } => {
-            let Some(mut view) = take_download(app, &username, &virtual_path) else { return };
+        DownloadUpdate::Failed {
+            username,
+            virtual_path,
+            reason,
+        } => {
+            let Some(mut view) = take_download(app, &username, &virtual_path) else {
+                return;
+            };
             view.status = format!("failed: {reason}");
             view.updated_at = now();
             upsert_download(app, view).await;
@@ -301,21 +409,34 @@ async fn handle_download(app: &Arc<App>, update: DownloadUpdate) {
 
 async fn handle_upload(app: &Arc<App>, update: UploadUpdate) {
     match update {
-        UploadUpdate::Queued { username, virtual_path, attributes } => {
+        UploadUpdate::Queued {
+            username,
+            virtual_path,
+            attributes,
+        } => {
             let mut view = take_upload(app, &username, &virtual_path);
             view.status = "queued".into();
             view.attributes = attributes;
             view.updated_at = now();
             upsert_upload(app, view).await;
         }
-        UploadUpdate::Started { username, virtual_path, real_path } => {
+        UploadUpdate::Started {
+            username,
+            virtual_path,
+            real_path,
+        } => {
             let mut view = take_upload(app, &username, &virtual_path);
             view.status = "transferring".into();
             view.file_path = Some(real_path.display().to_string());
             view.updated_at = now();
             upsert_upload(app, view).await;
         }
-        UploadUpdate::Progress { username, virtual_path, bytes_done, size } => {
+        UploadUpdate::Progress {
+            username,
+            virtual_path,
+            bytes_done,
+            size,
+        } => {
             let mut view = take_upload(app, &username, &virtual_path);
             view.status = "transferring".into();
             view.bytes_done = bytes_done;
@@ -328,14 +449,34 @@ async fn handle_upload(app: &Arc<App>, update: UploadUpdate) {
                 .uploads
                 .insert((username, virtual_path), view);
         }
-        UploadUpdate::Finished { username, virtual_path } => {
+        UploadUpdate::Finished {
+            username,
+            virtual_path,
+            size,
+            speed_bps,
+        } => {
             let mut view = take_upload(app, &username, &virtual_path);
             view.status = "finished".into();
-            view.bytes_done = view.size;
+            view.size = size;
+            view.bytes_done = size;
             view.updated_at = now();
+            db::record_transfer(
+                &app.db,
+                "upload",
+                &username,
+                &virtual_path,
+                size,
+                speed_bps,
+                view.updated_at,
+            )
+            .await;
             upsert_upload(app, view).await;
         }
-        UploadUpdate::Failed { username, virtual_path, reason } => {
+        UploadUpdate::Failed {
+            username,
+            virtual_path,
+            reason,
+        } => {
             let mut view = take_upload(app, &username, &virtual_path);
             view.status = format!("failed: {reason}");
             view.updated_at = now();
@@ -352,16 +493,20 @@ async fn handle_server(app: &Arc<App>, response: ServerResponse) {
                 .into_iter()
                 .map(|(name, users)| RoomEntry { name, users })
                 .collect();
-            data.rooms.available.sort_by(|a, b| b.users.cmp(&a.users));
+            data.rooms
+                .available
+                .sort_by_key(|room| std::cmp::Reverse(room.users));
             app.broadcast(json!({ "type": "room_list", "rooms": &data.rooms.available }));
         }
         ServerResponse::JoinRoom { room, users, .. } => {
             db::add_to_list(&app.db, "room", &room).await;
             let mut data = app.data.write().unwrap();
-            let mut usernames: Vec<String> =
-                users.into_iter().map(|user| user.username).collect();
+            let mut usernames: Vec<String> = users.into_iter().map(|user| user.username).collect();
             usernames.sort();
-            let view = RoomView { users: usernames, messages: Vec::new() };
+            let view = RoomView {
+                users: usernames,
+                messages: Vec::new(),
+            };
             app.broadcast(json!({ "type": "room_joined", "room": room, "users": view.users }));
             data.rooms.joined.insert(room, view);
         }
@@ -396,7 +541,17 @@ async fn handle_server(app: &Arc<App>, response: ServerResponse) {
                 }));
             }
         }
-        ServerResponse::WatchUser { user, user_exists, status, stats, .. } => {
+        ServerResponse::WatchUser {
+            user,
+            user_exists,
+            status,
+            stats,
+            ..
+        } => {
+            if let Some(stats) = &stats {
+                db::record_user_shares(&app.db, &user, stats.files, stats.dirs, now()).await;
+                behavior::stats_received(app, &user, stats.files, stats.dirs).await;
+            }
             let mut data = app.data.write().unwrap();
             if let Some(buddy) = data.buddies.get_mut(&user) {
                 if user_exists {
@@ -409,6 +564,8 @@ async fn handle_server(app: &Arc<App>, response: ServerResponse) {
             }
         }
         ServerResponse::GetUserStats { user, stats } => {
+            db::record_user_shares(&app.db, &user, stats.files, stats.dirs, now()).await;
+            behavior::stats_received(app, &user, stats.files, stats.dirs).await;
             let mut data = app.data.write().unwrap();
             if let Some(buddy) = data.buddies.get_mut(&user) {
                 buddy.stats = stats.clone();
@@ -428,11 +585,13 @@ async fn handle_server(app: &Arc<App>, response: ServerResponse) {
                 app.broadcast(json!({ "type": "user_info", "info": info.clone() }));
             }
         }
-        ServerResponse::Recommendations { recommendations, unrecommendations } => {
+        ServerResponse::Recommendations {
+            recommendations,
+            unrecommendations,
+        } => {
             if recommendations.is_empty() && unrecommendations.is_empty() {
-                app.client.server_request(
-                    newkitine::protocol::ServerRequest::GlobalRecommendations,
-                );
+                app.client
+                    .server_request(newkitine::protocol::ServerRequest::GlobalRecommendations);
                 return;
             }
             let mut data = app.data.write().unwrap();
@@ -442,7 +601,10 @@ async fn handle_server(app: &Arc<App>, response: ServerResponse) {
             data.interests.recommendations_global = false;
             app.broadcast(json!({ "type": "interests", "interests": &data.interests }));
         }
-        ServerResponse::GlobalRecommendations { recommendations, unrecommendations } => {
+        ServerResponse::GlobalRecommendations {
+            recommendations,
+            unrecommendations,
+        } => {
             let mut data = app.data.write().unwrap();
             data.interests.recommendations = recommendations;
             data.interests.unrecommendations = unrecommendations;
@@ -450,7 +612,11 @@ async fn handle_server(app: &Arc<App>, response: ServerResponse) {
             data.interests.recommendations_global = true;
             app.broadcast(json!({ "type": "interests", "interests": &data.interests }));
         }
-        ServerResponse::ItemRecommendations { thing, recommendations, unrecommendations } => {
+        ServerResponse::ItemRecommendations {
+            thing,
+            recommendations,
+            unrecommendations,
+        } => {
             let mut data = app.data.write().unwrap();
             data.interests.recommendations = recommendations;
             data.interests.unrecommendations = unrecommendations;
@@ -468,7 +634,10 @@ async fn handle_server(app: &Arc<App>, response: ServerResponse) {
             let mut data = app.data.write().unwrap();
             data.interests.similar_users = usernames
                 .into_iter()
-                .map(|username| newkitine::types::SimilarUser { username, rating: 0 })
+                .map(|username| newkitine::types::SimilarUser {
+                    username,
+                    rating: 0,
+                })
                 .collect();
             data.interests.similar_users_for = Some(thing);
             app.broadcast(json!({ "type": "interests", "interests": &data.interests }));

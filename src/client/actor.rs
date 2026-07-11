@@ -14,7 +14,7 @@ use super::users::Users;
 use super::{ClientCommand, ClientConfig, ClientEvent};
 use crate::network::{NetworkCommand, NetworkEvent, NetworkHandle, spawn as spawn_network};
 use crate::protocol::{PeerMessage, ServerRequest, ServerResponse};
-use crate::types::{SearchScope, TransferDirection, UserStatus};
+use crate::types::{Observation, Restriction, SearchScope, TransferDirection, UserStatus};
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(15);
@@ -68,6 +68,7 @@ pub(crate) async fn run(
             config.buddies.iter().cloned().collect(),
             config.banned.iter().cloned().collect(),
             config.ignored.iter().cloned().collect(),
+            config.ip_bans.clone(),
         ),
         shares: None,
         scan_results: scan_tx,
@@ -84,7 +85,10 @@ pub(crate) async fn run(
         config,
     };
 
-    actor.set_transfer_limits(actor.config.upload_limit_kbps, actor.config.download_limit_kbps);
+    actor.set_transfer_limits(
+        actor.config.upload_limit_kbps,
+        actor.config.download_limit_kbps,
+    );
     if actor.config.username.is_empty() {
         info!("no login configured, waiting for credentials");
     } else {
@@ -181,7 +185,8 @@ impl ClientActor {
         let (folders, files) = index.counts();
         self.shares = Some(index);
         if self.logged_in {
-            self.net.server(ServerRequest::SharedFoldersFiles { folders, files });
+            self.net
+                .server(ServerRequest::SharedFoldersFiles { folders, files });
         }
         self.emit(ClientEvent::SharesScanned { folders, files });
     }
@@ -222,16 +227,25 @@ impl ClientActor {
 
     fn handle_command(&mut self, command: ClientCommand) {
         match command {
-            ClientCommand::Search { token, query, scope } => {
+            ClientCommand::Search {
+                token,
+                query,
+                scope,
+            } => {
                 self.searches.add(token, query.clone());
                 self.net.send(NetworkCommand::AllowSearchToken(token));
                 let search_term = sanitize_search_term(&query);
                 match scope {
                     SearchScope::Global => {
-                        self.net.server(ServerRequest::FileSearch { token, search_term });
+                        self.net
+                            .server(ServerRequest::FileSearch { token, search_term });
                     }
                     SearchScope::Room(room) => {
-                        self.net.server(ServerRequest::RoomSearch { room, token, search_term });
+                        self.net.server(ServerRequest::RoomSearch {
+                            room,
+                            token,
+                            search_term,
+                        });
                     }
                     SearchScope::Buddies => {
                         for buddy in &self.users.buddies {
@@ -255,21 +269,35 @@ impl ClientActor {
                 self.searches.remove(token);
                 self.net.send(NetworkCommand::DisallowSearchToken(token));
             }
-            ClientCommand::Download { username, virtual_path, size, attributes } => {
-                self.downloads.enqueue(username, virtual_path, size, attributes);
+            ClientCommand::Download {
+                username,
+                virtual_path,
+                size,
+                attributes,
+            } => {
+                self.downloads
+                    .enqueue(username, virtual_path, size, attributes);
             }
-            ClientCommand::AbortDownload { username, virtual_path } => {
+            ClientCommand::AbortDownload {
+                username,
+                virtual_path,
+            } => {
                 self.downloads.abort(&username, &virtual_path);
             }
-            ClientCommand::AbortUpload { username, virtual_path } => {
+            ClientCommand::AbortUpload {
+                username,
+                virtual_path,
+            } => {
                 self.uploads.abort(&username, &virtual_path, &self.users);
             }
             ClientCommand::BrowseUser { username } => {
-                self.net.send(NetworkCommand::AllowSharedListUser(username.clone()));
+                self.net
+                    .send(NetworkCommand::AllowSharedListUser(username.clone()));
                 self.net.peer(username, PeerMessage::SharedFileListRequest);
             }
             ClientCommand::RequestUserInfo { username } => {
-                self.net.send(NetworkCommand::AllowUserInfoUser(username.clone()));
+                self.net
+                    .send(NetworkCommand::AllowUserInfoUser(username.clone()));
                 self.net.peer(username, PeerMessage::UserInfoRequest);
             }
             ClientCommand::AddBuddy { username } => {
@@ -290,6 +318,22 @@ impl ClientActor {
             ClientCommand::UnignoreUser { username } => {
                 self.users.ignored.remove(&username);
             }
+            ClientCommand::SetIpBans { patterns } => {
+                self.users.set_ip_bans(patterns);
+            }
+            ClientCommand::SetUserRestriction {
+                username,
+                restriction,
+            } => {
+                if let Restriction::Denied { reason } = &restriction {
+                    let updates = self.uploads.deny_all(&username, reason, &self.users);
+                    for update in updates {
+                        self.emit(ClientEvent::Upload(update));
+                    }
+                }
+                self.users.set_restriction(username, restriction);
+                self.uploads.check_queue(&self.users);
+            }
             ClientCommand::AddWish { term } => {
                 if !self.wishlist.contains(&term) {
                     self.wishlist.push(term);
@@ -305,7 +349,10 @@ impl ClientActor {
                 }
             }
             ClientCommand::RescanShares => self.start_scan(),
-            ClientCommand::SetTransferLimits { upload_kbps, download_kbps } => {
+            ClientCommand::SetTransferLimits {
+                upload_kbps,
+                download_kbps,
+            } => {
                 self.set_transfer_limits(upload_kbps, download_kbps);
             }
             ClientCommand::SetListenPort { port } => {
@@ -315,7 +362,11 @@ impl ClientActor {
                     self.reconnect();
                 }
             }
-            ClientCommand::SetLogin { server, username, password } => {
+            ClientCommand::SetLogin {
+                server,
+                username,
+                password,
+            } => {
                 self.config.server = server;
                 self.config.username = username;
                 self.config.password = password;
@@ -333,17 +384,29 @@ impl ClientActor {
                 if self.config.shared_folders.is_empty() {
                     self.shares = None;
                     if self.logged_in {
-                        self.net.server(ServerRequest::SharedFoldersFiles { folders: 0, files: 0 });
+                        self.net.server(ServerRequest::SharedFoldersFiles {
+                            folders: 0,
+                            files: 0,
+                        });
                     }
-                    self.emit(ClientEvent::SharesScanned { folders: 0, files: 0 });
+                    self.emit(ClientEvent::SharesScanned {
+                        folders: 0,
+                        files: 0,
+                    });
                 } else {
                     self.start_scan();
                 }
             }
-            ClientCommand::SetUploadSlots { upload_slots, queue_file_limit } => {
+            ClientCommand::SetUploadSlots {
+                upload_slots,
+                queue_file_limit,
+            } => {
                 self.uploads.set_limits(upload_slots, queue_file_limit);
             }
-            ClientCommand::SetDownloadDirs { download_dir, incomplete_dir } => {
+            ClientCommand::SetDownloadDirs {
+                download_dir,
+                incomplete_dir,
+            } => {
                 self.downloads.set_dirs(download_dir, incomplete_dir);
             }
             ClientCommand::SetAutoReconnect { enabled } => {
@@ -366,20 +429,27 @@ impl ClientActor {
     fn handle_network_event(&mut self, event: NetworkEvent) {
         match event {
             NetworkEvent::ServerConnected => {}
-            NetworkEvent::LoggedIn { username, banner, .. } => {
+            NetworkEvent::LoggedIn {
+                username, banner, ..
+            } => {
                 self.logged_in = true;
                 self.reconnect_delay = RECONNECT_INITIAL_DELAY;
                 self.reconnect_at = None;
                 self.users.watch_buddies(&self.net);
                 if let Some(shares) = &self.shares {
                     let (folders, files) = shares.counts();
-                    self.net.server(ServerRequest::SharedFoldersFiles { folders, files });
+                    self.net
+                        .server(ServerRequest::SharedFoldersFiles { folders, files });
                 }
                 for thing in &self.config.liked_interests {
-                    self.net.server(ServerRequest::AddThingILike { thing: thing.clone() });
+                    self.net.server(ServerRequest::AddThingILike {
+                        thing: thing.clone(),
+                    });
                 }
                 for thing in &self.config.hated_interests {
-                    self.net.server(ServerRequest::AddThingIHate { thing: thing.clone() });
+                    self.net.server(ServerRequest::AddThingIHate {
+                        thing: thing.clone(),
+                    });
                 }
                 self.net.server(ServerRequest::CheckPrivileges);
                 self.schedule_wishlist();
@@ -407,13 +477,44 @@ impl ClientActor {
                 self.emit(ClientEvent::Disconnected { manual });
             }
             NetworkEvent::ServerMessage(message) => self.handle_server_message(message),
-            NetworkEvent::PeerMessage { username, conn_id, message } => {
+            NetworkEvent::PeerMessage {
+                username,
+                conn_id,
+                message,
+            } => {
                 self.handle_peer_message(username, conn_id, message);
             }
-            NetworkEvent::PeerConnected { .. } | NetworkEvent::PeerConnectionClosed { .. } => {}
-            NetworkEvent::PeerConnectionError { username, unsent, is_offline, .. } => {
-                for update in
-                    self.downloads.handle_peer_connection_error(&username, &unsent, is_offline)
+            NetworkEvent::PeerConnected {
+                username,
+                conn_type,
+                conn_id,
+                ip,
+            } => {
+                if let Some(ip) = ip
+                    && self.users.is_ip_banned(ip)
+                {
+                    info!(username, %ip, "closing connection from banned IP");
+                    self.net.send(NetworkCommand::CloseConnection(conn_id));
+                }
+                self.emit(ClientEvent::Observed(Observation::PeerConnected {
+                    username,
+                    ip,
+                    conn_type,
+                }));
+            }
+            NetworkEvent::PeerConnectionClosed { .. } => {}
+            NetworkEvent::ConnectionCount(count) => {
+                self.emit(ClientEvent::ConnectionCount(count));
+            }
+            NetworkEvent::PeerConnectionError {
+                username,
+                unsent,
+                is_offline,
+                ..
+            } => {
+                for update in self
+                    .downloads
+                    .handle_peer_connection_error(&username, &unsent, is_offline)
                 {
                     self.emit(ClientEvent::Download(update));
                 }
@@ -426,13 +527,22 @@ impl ClientActor {
                     self.emit(ClientEvent::Upload(update));
                 }
             }
-            NetworkEvent::DistributedSearch { username, token, search_term } => {
+            NetworkEvent::DistributedSearch {
+                username,
+                token,
+                search_term,
+            } => {
                 self.respond_to_search(&username, token, &search_term);
             }
-            NetworkEvent::FileTransferInit { username, token, conn_id } => {
+            NetworkEvent::FileTransferInit {
+                username,
+                token,
+                conn_id,
+            } => {
                 if self.downloads.owns_token(&username, token) {
-                    for update in
-                        self.downloads.handle_file_transfer_init(&username, token, conn_id)
+                    for update in self
+                        .downloads
+                        .handle_file_transfer_init(&username, token, conn_id)
                     {
                         self.emit(ClientEvent::Download(update));
                     }
@@ -449,30 +559,53 @@ impl ClientActor {
                     self.net.send(NetworkCommand::CloseConnection(conn_id));
                 }
             }
-            NetworkEvent::FileDownloadProgress { username, token, bytes_left, .. } => {
-                for update in
-                    self.downloads.handle_download_progress(&username, token, bytes_left)
+            NetworkEvent::FileDownloadProgress {
+                username,
+                token,
+                bytes_left,
+                ..
+            } => {
+                for update in self
+                    .downloads
+                    .handle_download_progress(&username, token, bytes_left)
                 {
                     self.emit(ClientEvent::Download(update));
                 }
             }
-            NetworkEvent::FileUploadProgress { username, token, offset, bytes_sent, .. } => {
-                for update in
-                    self.uploads.handle_upload_progress(&username, token, offset, bytes_sent)
+            NetworkEvent::FileUploadProgress {
+                username,
+                token,
+                offset,
+                bytes_sent,
+                ..
+            } => {
+                for update in self
+                    .uploads
+                    .handle_upload_progress(&username, token, offset, bytes_sent)
                 {
                     self.emit(ClientEvent::Upload(update));
                 }
             }
-            NetworkEvent::FileTransferError { username, token, error } => {
+            NetworkEvent::FileTransferError {
+                username,
+                token,
+                error,
+            } => {
                 for update in
-                    self.uploads.handle_transfer_error(&username, token, &error, &self.users)
+                    self.uploads
+                        .handle_transfer_error(&username, token, &error, &self.users)
                 {
                     self.emit(ClientEvent::Upload(update));
                 }
             }
-            NetworkEvent::FileConnectionClosed { username, token, conn_id } => {
-                for update in
-                    self.downloads.handle_file_connection_closed(&username, token, conn_id)
+            NetworkEvent::FileConnectionClosed {
+                username,
+                token,
+                conn_id,
+            } => {
+                for update in self
+                    .downloads
+                    .handle_file_connection_closed(&username, token, conn_id)
                 {
                     self.emit(ClientEvent::Download(update));
                 }
@@ -492,30 +625,49 @@ impl ClientActor {
         if username == self.config.username {
             return;
         }
-        let Some(shares) = &self.shares else { return };
-        if self.users.is_banned(username) {
-            return;
-        }
-        let results =
-            shares.search(search_term, self.users.is_buddy(username), &self.excluded_phrases);
+        let blocked = self.users.is_banned(username)
+            || matches!(
+                self.users.restriction(username),
+                Some(Restriction::Denied { .. })
+            );
+        let results = match (&self.shares, blocked) {
+            (Some(shares), false) => shares.search(
+                search_term,
+                self.users.is_buddy(username),
+                &self.excluded_phrases,
+            ),
+            _ => Vec::new(),
+        };
+        self.emit(ClientEvent::Observed(Observation::SearchSeen {
+            username: username.to_owned(),
+            query: search_term.to_owned(),
+            matched: !results.is_empty(),
+        }));
         if results.is_empty() {
             return;
         }
-        self.net.peer(username.to_owned(), PeerMessage::FileSearchResponse {
-            username: self.config.username.clone(),
-            token,
-            results,
-            free_upload_slots: self.uploads.is_new_upload_accepted(),
-            upload_speed: self.uploads.upload_speed,
-            queue_size: self.uploads.queue_size(),
-            unknown: 0,
-            private_results: Vec::new(),
-        });
+        self.net.peer(
+            username.to_owned(),
+            PeerMessage::FileSearchResponse {
+                username: self.config.username.clone(),
+                token,
+                results,
+                free_upload_slots: self.uploads.is_new_upload_accepted(),
+                upload_speed: self.uploads.upload_speed,
+                queue_size: self.uploads.queue_size(),
+                unknown: 0,
+                private_results: Vec::new(),
+            },
+        );
     }
 
     fn handle_server_message(&mut self, message: ServerResponse) {
         match message {
-            ServerResponse::GetUserStatus { user, status, privileged } => {
+            ServerResponse::GetUserStatus {
+                user,
+                status,
+                privileged,
+            } => {
                 self.users.handle_user_status(&user, status, privileged);
                 if status == UserStatus::Online.as_u32() {
                     self.downloads.retry_offline(&user);
@@ -526,23 +678,39 @@ impl ClientActor {
                     privileged,
                 });
             }
-            ServerResponse::WatchUser { ref user, user_exists, status, ref stats, .. } => {
-                self.users.handle_watch_user(user, user_exists, status, stats.clone());
+            ServerResponse::WatchUser {
+                ref user,
+                user_exists,
+                status,
+                ref stats,
+                ..
+            } => {
+                self.users
+                    .handle_watch_user(user, user_exists, status, stats.clone());
                 self.emit(ClientEvent::Server(message));
             }
-            ServerResponse::GetUserStats { ref user, ref stats } => {
+            ServerResponse::GetUserStats {
+                ref user,
+                ref stats,
+            } => {
                 self.users.handle_user_stats(user, stats.clone());
                 self.emit(ClientEvent::Server(message));
             }
             ServerResponse::PrivilegedUsers { users } => {
                 self.users.handle_privileged_users(users);
             }
-            ServerResponse::FileSearch { search_username, token, search_term } => {
+            ServerResponse::FileSearch {
+                search_username,
+                token,
+                search_term,
+            } => {
                 self.respond_to_search(&search_username, token, &search_term);
             }
             ServerResponse::ExcludedSearchPhrases { phrases } => {
-                self.excluded_phrases =
-                    phrases.into_iter().map(|phrase| phrase.to_lowercase()).collect();
+                self.excluded_phrases = phrases
+                    .into_iter()
+                    .map(|phrase| phrase.to_lowercase())
+                    .collect();
             }
             ServerResponse::WishlistInterval { seconds } => {
                 self.wishlist_interval = Duration::from_secs(seconds.max(1) as u64);
@@ -565,9 +733,17 @@ impl ClientActor {
                     });
                 }
             }
-            ServerResponse::SayChatroom { room, user, message } => {
+            ServerResponse::SayChatroom {
+                room,
+                user,
+                message,
+            } => {
                 if !self.users.is_ignored(&user) {
-                    self.emit(ClientEvent::RoomMessage { room, username: user, message });
+                    self.emit(ClientEvent::RoomMessage {
+                        room,
+                        username: user,
+                        message,
+                    });
                 }
             }
             other => self.emit(ClientEvent::Server(other)),
@@ -598,26 +774,40 @@ impl ClientActor {
                     });
                 }
             }
-            PeerMessage::TransferRequest { direction, token, file, filesize } => {
-                match direction {
-                    TransferDirection::Upload => {
-                        self.downloads.handle_transfer_request(&username, token, &file, filesize);
-                    }
-                    TransferDirection::Download => {
-                        let updates = self.uploads.handle_legacy_transfer_request(
-                            &username,
-                            token,
-                            &file,
-                            self.shares.as_ref(),
-                            &self.users,
-                        );
-                        for update in updates {
-                            self.emit(ClientEvent::Upload(update));
-                        }
+            PeerMessage::TransferRequest {
+                direction,
+                token,
+                file,
+                filesize,
+            } => match direction {
+                TransferDirection::Upload => {
+                    self.downloads
+                        .handle_transfer_request(&username, token, &file, filesize);
+                }
+                TransferDirection::Download => {
+                    let (updates, accepted) = self.uploads.handle_legacy_transfer_request(
+                        &username,
+                        token,
+                        &file,
+                        self.shares.as_ref(),
+                        &self.users,
+                    );
+                    self.emit(ClientEvent::Observed(Observation::QueueRequest {
+                        username: username.clone(),
+                        virtual_path: file,
+                        accepted,
+                    }));
+                    for update in updates {
+                        self.emit(ClientEvent::Upload(update));
                     }
                 }
-            }
-            PeerMessage::TransferResponse { token, allowed, reason, .. } => {
+            },
+            PeerMessage::TransferResponse {
+                token,
+                allowed,
+                reason,
+                ..
+            } => {
                 let updates = self.uploads.handle_transfer_response(
                     &username,
                     token,
@@ -630,7 +820,10 @@ impl ClientActor {
                 }
             }
             PeerMessage::UploadDenied { file, reason } => {
-                for update in self.downloads.handle_upload_denied(&username, &file, &reason) {
+                for update in self
+                    .downloads
+                    .handle_upload_denied(&username, &file, &reason)
+                {
                     self.emit(ClientEvent::Download(update));
                 }
             }
@@ -649,9 +842,18 @@ impl ClientActor {
             PeerMessage::PlaceInQueueRequest { file, .. } => {
                 self.uploads.handle_place_in_queue_request(&username, &file);
             }
-            PeerMessage::SharedFileListResponse { shares, private_shares, .. } => {
-                self.net.send(NetworkCommand::DisallowSharedListUser(username.clone()));
-                self.emit(ClientEvent::SharedFileList { username, shares, private_shares });
+            PeerMessage::SharedFileListResponse {
+                shares,
+                private_shares,
+                ..
+            } => {
+                self.net
+                    .send(NetworkCommand::DisallowSharedListUser(username.clone()));
+                self.emit(ClientEvent::SharedFileList {
+                    username,
+                    shares,
+                    private_shares,
+                });
             }
             PeerMessage::UserInfoResponse {
                 description,
@@ -661,7 +863,8 @@ impl ClientActor {
                 slots_available,
                 ..
             } => {
-                self.net.send(NetworkCommand::DisallowUserInfoUser(username.clone()));
+                self.net
+                    .send(NetworkCommand::DisallowUserInfoUser(username.clone()));
                 self.emit(ClientEvent::UserInfo {
                     username,
                     description,
@@ -672,51 +875,80 @@ impl ClientActor {
                 });
             }
             PeerMessage::SharedFileListRequest => {
+                self.emit(ClientEvent::Observed(Observation::BrowseRequest {
+                    username: username.clone(),
+                }));
                 let shares = match (&self.shares, self.users.is_banned(&username)) {
                     (Some(index), false) => index.browse(self.users.is_buddy(&username)),
                     _ => Vec::new(),
                 };
-                self.net.peer(username, PeerMessage::SharedFileListResponse {
-                    shares,
-                    unknown: 0,
-                    private_shares: Vec::new(),
-                });
+                self.net.peer(
+                    username,
+                    PeerMessage::SharedFileListResponse {
+                        shares,
+                        unknown: 0,
+                        private_shares: Vec::new(),
+                    },
+                );
             }
             PeerMessage::UserInfoRequest => {
-                self.net.peer(username, PeerMessage::UserInfoResponse {
-                    description: self.config.description.clone(),
-                    picture: None,
-                    total_uploads: self.uploads.total_slots(),
-                    queue_size: self.uploads.queue_size(),
-                    slots_available: self.uploads.is_new_upload_accepted(),
-                    upload_allowed: Some(0),
-                });
+                self.emit(ClientEvent::Observed(Observation::UserInfoRequest {
+                    username: username.clone(),
+                }));
+                self.net.peer(
+                    username,
+                    PeerMessage::UserInfoResponse {
+                        description: self.config.description.clone(),
+                        picture: None,
+                        total_uploads: self.uploads.total_slots(),
+                        queue_size: self.uploads.queue_size(),
+                        slots_available: self.uploads.is_new_upload_accepted(),
+                        upload_allowed: Some(0),
+                    },
+                );
             }
             PeerMessage::QueueUpload { file, .. } => {
-                let updates = self.uploads.handle_queue_upload(
+                let (updates, accepted) = self.uploads.handle_queue_upload(
                     &username,
                     &file,
                     self.shares.as_ref(),
                     &self.users,
                 );
+                self.emit(ClientEvent::Observed(Observation::QueueRequest {
+                    username: username.clone(),
+                    virtual_path: file,
+                    accepted,
+                }));
                 for update in updates {
                     self.emit(ClientEvent::Upload(update));
                 }
             }
-            PeerMessage::FolderContentsRequest { token, directory, .. } => {
+            PeerMessage::FolderContentsRequest {
+                token, directory, ..
+            } => {
+                self.emit(ClientEvent::Observed(Observation::FolderContentsRequest {
+                    username: username.clone(),
+                }));
                 let folders = match (&self.shares, self.users.is_banned(&username)) {
                     (Some(index), false) => {
                         index.folder_contents(&directory, self.users.is_buddy(&username))
                     }
                     _ => Vec::new(),
                 };
-                self.net.peer(username, PeerMessage::FolderContentsResponse {
-                    token,
-                    directory,
-                    folders,
-                });
+                self.net.peer(
+                    username,
+                    PeerMessage::FolderContentsResponse {
+                        token,
+                        directory,
+                        folders,
+                    },
+                );
             }
-            other => self.emit(ClientEvent::Peer { username, conn_id, message: other }),
+            other => self.emit(ClientEvent::Peer {
+                username,
+                conn_id,
+                message: other,
+            }),
         }
     }
 }

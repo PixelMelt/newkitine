@@ -1,14 +1,21 @@
 <script>
+  import { onMount } from 'svelte';
   import { settings, applyTheme } from '../lib/stores.js';
-  import { put, post } from '../lib/api.js';
+  import { put, post, get } from '../lib/api.js';
 
   const pages = [
     ['network', 'Network'],
     ['shares', 'Shares'],
     ['downloads', 'Downloads'],
     ['uploads', 'Uploads'],
+    ['filtering', 'Filtering'],
     ['profile', 'User Profile'],
     ['ui', 'User Interface'],
+  ];
+  const filterLevels = [
+    ['open', 'Open', 'Observe and record peer behavior, never restrict anyone.'],
+    ['guarded', 'Guarded', 'Deny peers with hard evidence of faked shares; deprioritize suspicious ones. Real users are never blocked.'],
+    ['strict', 'Strict', "Hold a stranger's first download until their shares are checked. Peers sharing nothing or faking their share counts are denied."],
   ];
   const themes = [
     ['dark', 'Dark'],
@@ -21,6 +28,31 @@
   let newShare = { virtual_name: '', path: '', buddy_only: false };
   let saveError = '';
   let saved = false;
+  let ipBans = [];
+  let newIpBan = '';
+  let ipBanError = '';
+
+  onMount(async () => {
+    ipBans = (await get('/ip_bans')).patterns;
+  });
+
+  async function addIpBan() {
+    if (!newIpBan.trim()) return;
+    ipBanError = '';
+    try {
+      await post('/ip_bans', { pattern: newIpBan.trim() });
+      newIpBan = '';
+    } catch {
+      ipBanError = 'Invalid pattern: use four dot-separated octets, * as wildcard.';
+      return;
+    }
+    ipBans = (await get('/ip_bans')).patterns;
+  }
+
+  async function removeIpBan(pattern) {
+    await post('/ip_bans/remove', { pattern });
+    ipBans = (await get('/ip_bans')).patterns;
+  }
 
   $: if (!draft && $settings.settings) draft = structuredClone($settings.settings);
   $: locked = new Set($settings.locked);
@@ -169,6 +201,52 @@
             <input id="set-uplimit" type="number" min="0" bind:value={draft.upload_limit_kbps} />
             <span class="hint">0 = unlimited</span>
           </div>
+
+        {:else if page === 'filtering'}
+          <h3>Client Filtering</h3>
+          <p class="hint">
+            Restricts clients that take without participating: faked share stats, search
+            scraping, zero shares. Buddies and users you have downloaded from are never
+            restricted, and adding a restricted user as a buddy clears their verdict.
+          </p>
+          {#each filterLevels as [id, label, description]}
+            <div class="form-row">
+              <label>
+                <input type="radio" name="filter-level" value={id} bind:group={draft.filter_level} />
+                {label}
+              </label>
+              <span class="hint">{description}</span>
+            </div>
+          {/each}
+          <div class="form-row">
+            <label for="set-denied">Denial message</label>
+            <input id="set-denied" style="width: 100%" bind:value={draft.denied_message} />
+            <span class="hint">Sent to denied peers when they try to queue a download.</span>
+          </div>
+
+          <h3>IP Bans</h3>
+          <table>
+            <thead>
+              <tr><th class="grow">Pattern</th><th></th></tr>
+            </thead>
+            <tbody>
+              {#each ipBans as pattern (pattern)}
+                <tr>
+                  <td class="grow">{pattern}</td>
+                  <td><button on:click={() => removeIpBan(pattern)}>Remove</button></td>
+                </tr>
+              {/each}
+              <tr>
+                <td class="grow">
+                  <input placeholder="192.168.1.1 or 10.0.*.*" bind:value={newIpBan}
+                    on:keydown={(e) => e.key === 'Enter' && addIpBan()} />
+                </td>
+                <td><button on:click={addIpBan}>Add</button></td>
+              </tr>
+            </tbody>
+          </table>
+          {#if ipBanError}<p class="notice">{ipBanError}</p>{/if}
+          <p class="hint">Connections from banned addresses are dropped immediately.</p>
 
         {:else if page === 'profile'}
           <h3>User Profile</h3>

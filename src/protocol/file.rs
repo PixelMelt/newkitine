@@ -14,7 +14,9 @@ impl FileTransferInit {
 
     pub fn parse(payload: &[u8]) -> Result<Self, ProtocolError> {
         let r = &mut MessageReader::new(payload);
-        Ok(Self { token: r.read_u32()? })
+        Ok(Self {
+            token: r.read_u32()?,
+        })
     }
 }
 
@@ -32,6 +34,8 @@ impl FileOffset {
 
     pub fn parse(payload: &[u8]) -> Result<Self, ProtocolError> {
         let r = &mut MessageReader::new(payload);
-        Ok(Self { offset: r.read_u64()? })
+        Ok(Self {
+            offset: r.read_u64()?,
+        })
     }
 }

@@ -1,6 +1,6 @@
 use newkitine::protocol::{
-    DistributedMessage, FileOffset, FileTransferInit, LoginOutcome, MessageWriter,
-    PeerInitMessage, PeerMessage, ServerRequest, ServerResponse,
+    DistributedMessage, FileOffset, FileTransferInit, LoginOutcome, MessageWriter, PeerInitMessage,
+    PeerMessage, ServerRequest, ServerResponse,
 };
 use newkitine::types::{
     ConnectionType, FileAttributes, FileInfo, FolderContents, TransferDirection,
@@ -54,70 +54,110 @@ fn login_make() {
 #[test]
 fn simple_server_requests() {
     assert_eq!(
-        payload(&ServerRequest::ChangePassword { password: "s33cr3t".into() }),
+        payload(&ServerRequest::ChangePassword {
+            password: "s33cr3t".into()
+        }),
         b"\x07\x00\x00\x00s33cr3t"
     );
-    assert_eq!(payload(&ServerRequest::SetWaitPort { port: 1337 }), b"9\x05\x00\x00");
     assert_eq!(
-        payload(&ServerRequest::GetPeerAddress { user: "user1".into() }),
+        payload(&ServerRequest::SetWaitPort { port: 1337 }),
+        b"9\x05\x00\x00"
+    );
+    assert_eq!(
+        payload(&ServerRequest::GetPeerAddress {
+            user: "user1".into()
+        }),
         b"\x05\x00\x00\x00user1"
     );
     assert_eq!(
-        payload(&ServerRequest::WatchUser { user: "user2".into() }),
+        payload(&ServerRequest::WatchUser {
+            user: "user2".into()
+        }),
         b"\x05\x00\x00\x00user2"
     );
     assert_eq!(
-        payload(&ServerRequest::UnwatchUser { user: "user3".into() }),
+        payload(&ServerRequest::UnwatchUser {
+            user: "user3".into()
+        }),
         b"\x05\x00\x00\x00user3"
     );
     assert_eq!(
-        payload(&ServerRequest::GetUserStatus { user: "user4".into() }),
+        payload(&ServerRequest::GetUserStatus {
+            user: "user4".into()
+        }),
         b"\x05\x00\x00\x00user4"
     );
     assert_eq!(
-        payload(&ServerRequest::FileSearch { token: 524700074, search_term: "70 gwen auto".into() }),
+        payload(&ServerRequest::FileSearch {
+            token: 524700074,
+            search_term: "70 gwen auto".into()
+        }),
         b"\xaaIF\x1f\x0c\x00\x00\x0070 gwen auto"
     );
-    assert_eq!(payload(&ServerRequest::SetStatus { status: 1 }), b"\x01\x00\x00\x00");
+    assert_eq!(
+        payload(&ServerRequest::SetStatus { status: 1 }),
+        b"\x01\x00\x00\x00"
+    );
     assert_eq!(payload(&ServerRequest::JoinGlobalRoom), b"");
     assert_eq!(payload(&ServerRequest::LeaveGlobalRoom), b"");
     assert_eq!(
-        payload(&ServerRequest::SayChatroom { room: "room1".into(), message: "Wassup?".into() }),
+        payload(&ServerRequest::SayChatroom {
+            room: "room1".into(),
+            message: "Wassup?".into()
+        }),
         b"\x05\x00\x00\x00room1\x07\x00\x00\x00Wassup?"
     );
     assert_eq!(
-        payload(&ServerRequest::JoinRoom { room: "room2".into(), private: false }),
+        payload(&ServerRequest::JoinRoom {
+            room: "room2".into(),
+            private: false
+        }),
         b"\x05\x00\x00\x00room2\x00\x00\x00\x00"
     );
     assert_eq!(
-        payload(&ServerRequest::JoinRoom { room: "room2".into(), private: true }),
+        payload(&ServerRequest::JoinRoom {
+            room: "room2".into(),
+            private: true
+        }),
         b"\x05\x00\x00\x00room2\x01\x00\x00\x00"
     );
     assert_eq!(
-        payload(&ServerRequest::AddRoomMember { room: "room3".into(), user: "admin".into() }),
+        payload(&ServerRequest::AddRoomMember {
+            room: "room3".into(),
+            user: "admin".into()
+        }),
         b"\x05\x00\x00\x00room3\x05\x00\x00\x00admin"
     );
     assert_eq!(
-        payload(&ServerRequest::CancelRoomMembership { room: "room4".into() }),
+        payload(&ServerRequest::CancelRoomMembership {
+            room: "room4".into()
+        }),
         b"\x05\x00\x00\x00room4"
     );
     assert_eq!(
-        payload(&ServerRequest::CancelRoomOwnership { room: "room5".into() }),
+        payload(&ServerRequest::CancelRoomOwnership {
+            room: "room5".into()
+        }),
         b"\x05\x00\x00\x00room5"
     );
     assert_eq!(
-        payload(&ServerRequest::RemoveRoomMember { room: "room7".into(), user: "admin".into() }),
+        payload(&ServerRequest::RemoveRoomMember {
+            room: "room7".into(),
+            user: "admin".into()
+        }),
         b"\x05\x00\x00\x00room7\x05\x00\x00\x00admin"
     );
 }
 
 #[test]
 fn remove_room_member_parse() {
-    let parsed =
-        ServerResponse::parse(135, b"\x05\x00\x00\x00room7\x05\x00\x00\x00admin").unwrap();
+    let parsed = ServerResponse::parse(135, b"\x05\x00\x00\x00room7\x05\x00\x00\x00admin").unwrap();
     assert_eq!(
         parsed,
-        ServerResponse::RemoveRoomMember { room: "room7".into(), user: "admin".into() }
+        ServerResponse::RemoveRoomMember {
+            room: "room7".into(),
+            user: "admin".into()
+        }
     );
 }
 
@@ -224,8 +264,14 @@ fn file_search_response_round_trip() {
 fn shared_file_list_response_round_trip() {
     let msg = PeerMessage::SharedFileListResponse {
         shares: vec![
-            FolderContents { directory: "Music\\Album".into(), files: sample_files() },
-            FolderContents { directory: "Music\\Extra".into(), files: Vec::new() },
+            FolderContents {
+                directory: "Music\\Album".into(),
+                files: sample_files(),
+            },
+            FolderContents {
+                directory: "Music\\Extra".into(),
+                files: Vec::new(),
+            },
         ],
         unknown: 0,
         private_shares: vec![FolderContents {
@@ -243,7 +289,10 @@ fn folder_contents_response_round_trip() {
     let msg = PeerMessage::FolderContentsResponse {
         token: 55,
         directory: "Music\\Album".into(),
-        folders: vec![FolderContents { directory: "Music\\Album".into(), files: sample_files() }],
+        folders: vec![FolderContents {
+            directory: "Music\\Album".into(),
+            files: sample_files(),
+        }],
     };
     let bytes = msg.make_payload();
     let parsed = PeerMessage::parse(37, &bytes).unwrap();

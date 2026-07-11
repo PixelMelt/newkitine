@@ -5,8 +5,19 @@
   import { emptyFilters, compileFilters } from '../lib/filters.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { sortRows } from '../lib/sort.js';
+  import Th from '../lib/Th.svelte';
 
   const MAX_ROWS = 1000;
+  const RESULT_ACCESSORS = {
+    username: (r) => r.response.username,
+    speed: (r) => r.response.upload_speed,
+    queue: (r) => r.response.queue_size,
+    folder: (r) => folderName(r.file.name),
+    filename: (r) => baseName(r.file.name),
+    size: (r) => r.file.size,
+    quality: (r) => formatAttributes(r.file.attributes),
+  };
 
   let query = '';
   let wishTerm = '';
@@ -18,6 +29,7 @@
   let showFilters = false;
   let filters = emptyFilters();
   let resultsEl = null;
+  let sort = { key: null, dir: 1 };
 
   async function focusResults() {
     for (let i = 0; i < 20 && !resultsEl; i++) {
@@ -36,7 +48,7 @@
     : [];
   $: matches = compileFilters(filters);
   $: filteredRows = rows.filter(matches);
-  $: shownRows = filteredRows.slice(0, MAX_ROWS);
+  $: shownRows = sortRows(filteredRows, sort, RESULT_ACCESSORS).slice(0, MAX_ROWS);
 
   $: if ($searchTarget) {
     query = $searchTarget;
@@ -214,13 +226,13 @@
     <table>
       <thead>
         <tr>
-          <th>User</th>
-          <th>Speed</th>
-          <th>Queue</th>
-          <th class="grow">Folder</th>
-          <th class="grow">Filename</th>
-          <th>Size</th>
-          <th>Quality</th>
+          <Th bind:sort key="username">User</Th>
+          <Th bind:sort key="speed">Speed</Th>
+          <Th bind:sort key="queue">Queue</Th>
+          <Th bind:sort key="folder" grow>Folder</Th>
+          <Th bind:sort key="filename" grow>Filename</Th>
+          <Th bind:sort key="size">Size</Th>
+          <Th bind:sort key="quality">Quality</Th>
         </tr>
       </thead>
       <tbody>

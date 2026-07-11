@@ -1,7 +1,10 @@
 pub mod api;
+pub mod behavior;
 pub mod config;
 pub mod db;
 pub mod events;
+pub mod geo;
 pub mod gluetun;
 pub mod settings;
 pub mod state;
+pub mod stats;

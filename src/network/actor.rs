@@ -52,6 +52,7 @@ struct Conn {
     init_id: Option<InitId>,
     established: bool,
     file_token: Option<u32>,
+    ip: Option<Ipv4Addr>,
 }
 
 struct UserAddress {
@@ -186,7 +187,12 @@ impl Actor {
 
     fn handle_command(&mut self, command: NetworkCommand) {
         match command {
-            NetworkCommand::ServerConnect { address, username, password, listen_port } => {
+            NetworkCommand::ServerConnect {
+                address,
+                username,
+                password,
+                listen_port,
+            } => {
                 self.server_connect(address, username, password, listen_port);
             }
             NetworkCommand::ServerDisconnect => {
@@ -200,10 +206,13 @@ impl Actor {
                     ServerRequest::WatchUser { user } => {
                         self.user_addresses.entry(user.clone()).or_insert(None);
                     }
-                    ServerRequest::UnwatchUser { user } => {
-                        if self.server.as_ref().is_none_or(|server| &server.username != user) {
-                            self.user_addresses.remove(user);
-                        }
+                    ServerRequest::UnwatchUser { user }
+                        if self
+                            .server
+                            .as_ref()
+                            .is_none_or(|server| &server.username != user) =>
+                    {
+                        self.user_addresses.remove(user);
                     }
                     _ => {}
                 }
@@ -215,18 +224,36 @@ impl Actor {
             NetworkCommand::RequestFileConnection { username, token } => {
                 self.send_to_peer(username, QueuedItem::FileInit(token));
             }
-            NetworkCommand::DownloadFile { conn_id, file, offset, bytes_left } => {
+            NetworkCommand::DownloadFile {
+                conn_id,
+                file,
+                offset,
+                bytes_left,
+            } => {
                 if let Some(conn) = self.conns.get(&conn_id) {
-                    let _ = conn.control.send(ConnControl::Download { file, offset, bytes_left });
+                    let _ = conn.control.send(ConnControl::Download {
+                        file,
+                        offset,
+                        bytes_left,
+                    });
                 }
             }
-            NetworkCommand::UploadFile { conn_id, file, size } => {
+            NetworkCommand::UploadFile {
+                conn_id,
+                file,
+                size,
+            } => {
                 if let Some(conn) = self.conns.get(&conn_id) {
                     let _ = conn.control.send(ConnControl::Upload { file, size });
                 }
             }
-            NetworkCommand::SetTransferLimits { upload_bps, download_bps } => {
-                self.limits.upload_bps.store(upload_bps, std::sync::atomic::Ordering::Relaxed);
+            NetworkCommand::SetTransferLimits {
+                upload_bps,
+                download_bps,
+            } => {
+                self.limits
+                    .upload_bps
+                    .store(upload_bps, std::sync::atomic::Ordering::Relaxed);
                 self.limits
                     .download_bps
                     .store(download_bps, std::sync::atomic::Ordering::Relaxed);
@@ -238,22 +265,52 @@ impl Actor {
                 self.allowed.write().unwrap().search_tokens.remove(&token);
             }
             NetworkCommand::AllowSharedListUser(username) => {
-                self.allowed.write().unwrap().shared_list_users.insert(username);
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .shared_list_users
+                    .insert(username);
             }
             NetworkCommand::DisallowSharedListUser(username) => {
-                self.allowed.write().unwrap().shared_list_users.remove(&username);
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .shared_list_users
+                    .remove(&username);
             }
             NetworkCommand::AllowUserInfoUser(username) => {
-                self.allowed.write().unwrap().user_info_users.insert(username);
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .user_info_users
+                    .insert(username);
             }
             NetworkCommand::DisallowUserInfoUser(username) => {
-                self.allowed.write().unwrap().user_info_users.remove(&username);
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .user_info_users
+                    .remove(&username);
             }
-            NetworkCommand::AllowFolderContents { username, directory } => {
-                self.allowed.write().unwrap().folder_contents.insert((username, directory));
+            NetworkCommand::AllowFolderContents {
+                username,
+                directory,
+            } => {
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .folder_contents
+                    .insert((username, directory));
             }
-            NetworkCommand::DisallowFolderContents { username, directory } => {
-                self.allowed.write().unwrap().folder_contents.remove(&(username, directory));
+            NetworkCommand::DisallowFolderContents {
+                username,
+                directory,
+            } => {
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .folder_contents
+                    .remove(&(username, directory));
             }
             NetworkCommand::CloseConnection(conn_id) => {
                 if let Some(conn) = self.conns.get(&conn_id) {
@@ -277,7 +334,11 @@ impl Actor {
         }
         self.listen_port = listen_port;
         let (control_tx, control_rx) = mpsc::unbounded_channel();
-        tokio::spawn(run_server_conn(address, self.conn_events_tx.clone(), control_rx));
+        tokio::spawn(run_server_conn(
+            address,
+            self.conn_events_tx.clone(),
+            control_rx,
+        ));
 
         let login = ServerRequest::Login {
             username: username.clone(),
@@ -287,7 +348,10 @@ impl Actor {
         };
         let _ = control_tx.send(ConnControl::Send(login.to_bytes()));
         let _ = control_tx.send(ConnControl::Send(
-            ServerRequest::SetWaitPort { port: listen_port as u32 }.to_bytes(),
+            ServerRequest::SetWaitPort {
+                port: listen_port as u32,
+            }
+            .to_bytes(),
         ));
 
         self.branch_root = Some(username.clone());
@@ -345,6 +409,10 @@ impl Actor {
         let conn_id = self.next_conn_id;
         self.next_conn_id += 1;
         let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let ip = match addr {
+            SocketAddr::V4(addr) => Some(*addr.ip()),
+            SocketAddr::V6(_) => None,
+        };
         self.conns.insert(
             conn_id,
             Conn {
@@ -354,6 +422,7 @@ impl Actor {
                 init_id: None,
                 established: true,
                 file_token: None,
+                ip,
             },
         );
         let task = PeerTask {
@@ -364,6 +433,7 @@ impl Actor {
             limits: self.limits.clone(),
         };
         tokio::spawn(run_incoming_peer(task, stream, addr));
+        self.emit(NetworkEvent::ConnectionCount(self.conns.len()));
     }
 
     fn spawn_outgoing_peer(
@@ -386,6 +456,7 @@ impl Actor {
                 init_id,
                 established: false,
                 file_token: None,
+                ip: Some(*addr.ip()),
             },
         );
         let task = PeerTask {
@@ -402,6 +473,7 @@ impl Actor {
             first_message,
             conn_type,
         ));
+        self.emit(NetworkEvent::ConnectionCount(self.conns.len()));
         conn_id
     }
 
@@ -453,7 +525,8 @@ impl Actor {
         self.inits.insert(init_id, init);
         self.inits_by_token.insert(indirect_token, init_id);
         if conn_type != ConnectionType::File {
-            self.inits_by_user.insert((username.clone(), conn_type), init_id);
+            self.inits_by_user
+                .insert((username.clone(), conn_type), init_id);
         }
         self.send_to_server(ServerRequest::ConnectToPeer {
             token: indirect_token,
@@ -464,7 +537,10 @@ impl Actor {
         match addr {
             Some(addr) => self.connect_direct(init_id, addr),
             None => {
-                self.inits_pending_address.entry(username.clone()).or_default().push(init_id);
+                self.inits_pending_address
+                    .entry(username.clone())
+                    .or_default()
+                    .push(init_id);
                 self.send_to_server(ServerRequest::GetPeerAddress { user: username });
             }
         }
@@ -476,9 +552,7 @@ impl Actor {
         if addr.port() == 0 {
             return None;
         }
-        if Some(username) != self.server_username()
-            && entry.updated.elapsed() > USER_ADDRESS_TTL
-        {
+        if Some(username) != self.server_username() && entry.updated.elapsed() > USER_ADDRESS_TTL {
             return None;
         }
         Some(addr)
@@ -490,12 +564,18 @@ impl Actor {
         };
         let init = self.inits.get_mut(&init_id).unwrap();
         if addr.port() == 0 {
-            debug!(username = init.username, "skipping direct connection, invalid port");
+            debug!(
+                username = init.username,
+                "skipping direct connection, invalid port"
+            );
             return;
         }
         let username = init.username.clone();
         let conn_type = init.conn_type;
-        let first_message = PeerInitMessage::PeerInit { username: server_username, conn_type };
+        let first_message = PeerInitMessage::PeerInit {
+            username: server_username,
+            conn_type,
+        };
         let conn_id =
             self.spawn_outgoing_peer(addr, username, first_message, conn_type, Some(init_id));
         self.inits.get_mut(&init_id).unwrap().conn_id = Some(conn_id);
@@ -505,8 +585,10 @@ impl Actor {
         let init = self.inits.get_mut(&init_id).unwrap();
         let Some(conn_id) = init.conn_id else { return };
         let username = init.username.clone();
-        let queued: Vec<QueuedItem> = init.queued.drain(..).collect();
-        let Some(conn) = self.conns.get_mut(&conn_id) else { return };
+        let queued = std::mem::take(&mut init.queued);
+        let Some(conn) = self.conns.get_mut(&conn_id) else {
+            return;
+        };
         let mut sent_file_init = None;
         for item in queued {
             let control = match item {
@@ -520,17 +602,24 @@ impl Actor {
             let _ = conn.control.send(control);
         }
         if let Some(token) = sent_file_init {
-            self.emit(NetworkEvent::FileTransferInit { username, token, conn_id });
+            self.emit(NetworkEvent::FileTransferInit {
+                username,
+                token,
+                conn_id,
+            });
         }
     }
 
     fn remove_init(&mut self, init_id: InitId) -> Option<Init> {
         let init = self.inits.remove(&init_id)?;
         self.inits_by_token.remove(&init.indirect_token);
-        if let Some(existing) = self.inits_by_user.get(&(init.username.clone(), init.conn_type))
+        if let Some(existing) = self
+            .inits_by_user
+            .get(&(init.username.clone(), init.conn_type))
             && *existing == init_id
         {
-            self.inits_by_user.remove(&(init.username.clone(), init.conn_type));
+            self.inits_by_user
+                .remove(&(init.username.clone(), init.conn_type));
         }
         if let Some(pending) = self.inits_pending_address.get_mut(&init.username) {
             pending.retain(|&id| id != init_id);
@@ -542,7 +631,9 @@ impl Actor {
     }
 
     fn fail_init(&mut self, init_id: InitId, is_offline: bool) {
-        let Some(init) = self.remove_init(init_id) else { return };
+        let Some(init) = self.remove_init(init_id) else {
+            return;
+        };
         if init.established {
             return;
         }
@@ -586,7 +677,11 @@ impl Actor {
             ConnEvent::ServerMessage(message) => self.handle_server_message(message),
             ConnEvent::ServerClosed { error } => self.handle_server_closed(error),
             ConnEvent::OutgoingEstablished { conn_id } => self.handle_established(conn_id),
-            ConnEvent::IncomingInit { conn_id, init, addr } => {
+            ConnEvent::IncomingInit {
+                conn_id,
+                init,
+                addr,
+            } => {
                 self.handle_incoming_init(conn_id, init, addr);
             }
             ConnEvent::Peer { conn_id, message } => self.handle_peer_message(conn_id, message),
@@ -597,7 +692,11 @@ impl Actor {
                 if let Some(conn) = self.conns.get_mut(&conn_id) {
                     conn.file_token = Some(token);
                     let username = conn.username.clone().unwrap_or_default();
-                    self.emit(NetworkEvent::FileTransferInit { username, token, conn_id });
+                    self.emit(NetworkEvent::FileTransferInit {
+                        username,
+                        token,
+                        conn_id,
+                    });
                 }
             }
             ConnEvent::FileOffsetReceived { conn_id, offset } => {
@@ -611,7 +710,11 @@ impl Actor {
                     });
                 }
             }
-            ConnEvent::DownloadProgress { conn_id, bytes_left, bytes_received } => {
+            ConnEvent::DownloadProgress {
+                conn_id,
+                bytes_left,
+                bytes_received,
+            } => {
                 if let Some(conn) = self.conns.get(&conn_id) {
                     self.emit(NetworkEvent::FileDownloadProgress {
                         username: conn.username.clone().unwrap_or_default(),
@@ -621,7 +724,11 @@ impl Actor {
                     });
                 }
             }
-            ConnEvent::UploadProgress { conn_id, offset, bytes_sent } => {
+            ConnEvent::UploadProgress {
+                conn_id,
+                offset,
+                bytes_sent,
+            } => {
                 if let Some(conn) = self.conns.get(&conn_id) {
                     self.emit(NetworkEvent::FileUploadProgress {
                         username: conn.username.clone().unwrap_or_default(),
@@ -653,7 +760,11 @@ impl Actor {
     fn handle_server_message(&mut self, message: ServerResponse) {
         match &message {
             ServerResponse::Login(outcome) => match outcome {
-                LoginOutcome::Success { banner, ip_address, is_supporter } => {
+                LoginOutcome::Success {
+                    banner,
+                    ip_address,
+                    is_supporter,
+                } => {
                     let username = match &mut self.server {
                         Some(server) => {
                             server.logged_in = true;
@@ -681,32 +792,37 @@ impl Actor {
                 }
             },
             ServerResponse::ConnectToPeer {
-                user, conn_type, ip_address, port, token, ..
-            } => {
-                match ConnectionType::from_str_value(conn_type) {
-                    Ok(conn_type) => {
-                        let addr = SocketAddrV4::new(*ip_address, *port as u16);
-                        let username = user.clone();
-                        let pierce_token = *token;
-                        if conn_type != ConnectionType::File
-                            && self
-                                .inits_by_user
-                                .contains_key(&(username.clone(), conn_type))
-                        {
-                            debug!(username, "existing connection, ignoring indirect request");
-                        } else {
-                            self.spawn_outgoing_peer(
-                                addr,
-                                username,
-                                PeerInitMessage::PierceFireWall { token: pierce_token },
-                                conn_type,
-                                None,
-                            );
-                        }
+                user,
+                conn_type,
+                ip_address,
+                port,
+                token,
+                ..
+            } => match ConnectionType::from_str_value(conn_type) {
+                Ok(conn_type) => {
+                    let addr = SocketAddrV4::new(*ip_address, *port as u16);
+                    let username = user.clone();
+                    let pierce_token = *token;
+                    if conn_type != ConnectionType::File
+                        && self
+                            .inits_by_user
+                            .contains_key(&(username.clone(), conn_type))
+                    {
+                        debug!(username, "existing connection, ignoring indirect request");
+                    } else {
+                        self.spawn_outgoing_peer(
+                            addr,
+                            username,
+                            PeerInitMessage::PierceFireWall {
+                                token: pierce_token,
+                            },
+                            conn_type,
+                            None,
+                        );
                     }
-                    Err(_) => debug!(conn_type, "unknown connection type"),
                 }
-            }
+                Err(_) => debug!(conn_type, "unknown connection type"),
+            },
             ServerResponse::CantConnectToPeer { token } => {
                 if let Some(&init_id) = self.inits_by_token.get(token) {
                     self.fail_init(init_id, false);
@@ -719,7 +835,12 @@ impl Actor {
                     *entry = None;
                 }
             }
-            ServerResponse::GetPeerAddress { user, ip_address, port, .. } => {
+            ServerResponse::GetPeerAddress {
+                user,
+                ip_address,
+                port,
+                ..
+            } => {
                 let user_offline = *ip_address == Ipv4Addr::UNSPECIFIED;
                 let addr = SocketAddrV4::new(*ip_address, *port as u16);
                 let pending = self.inits_pending_address.remove(user).unwrap_or_default();
@@ -736,11 +857,19 @@ impl Actor {
                     *entry = if user_offline || *port == 0 {
                         None
                     } else {
-                        Some(UserAddress { addr: Some(addr), updated: Instant::now() })
+                        Some(UserAddress {
+                            addr: Some(addr),
+                            updated: Instant::now(),
+                        })
                     };
                 }
             }
-            ServerResponse::WatchUser { user, user_exists, stats, .. } => {
+            ServerResponse::WatchUser {
+                user,
+                user_exists,
+                stats,
+                ..
+            } => {
                 if Some(user.as_str()) == self.server_username() {
                     if let Some(stats) = stats {
                         self.upload_speed = stats.avgspeed;
@@ -766,8 +895,7 @@ impl Actor {
                     self.close_parent_candidate_connections();
                     self.potential_parents.clear();
                     for parent in parents {
-                        let addr =
-                            SocketAddrV4::new(parent.ip_address, parent.port as u16);
+                        let addr = SocketAddrV4::new(parent.ip_address, parent.port as u16);
                         self.potential_parents.insert(
                             parent.username.clone(),
                             PotentialParent {
@@ -795,8 +923,9 @@ impl Actor {
             }
             ServerResponse::ResetDistributed => {
                 if let Some(parent) = self.parent.take()
-                    && let Some(&init_id) =
-                        self.inits_by_user.get(&(parent, ConnectionType::Distributed))
+                    && let Some(&init_id) = self
+                        .inits_by_user
+                        .get(&(parent, ConnectionType::Distributed))
                     && let Some(conn_id) = self.inits.get(&init_id).and_then(|init| init.conn_id)
                     && let Some(conn) = self.conns.get(&conn_id)
                 {
@@ -809,7 +938,10 @@ impl Actor {
                 }
                 self.send_have_no_parent();
             }
-            ServerResponse::EmbeddedMessage { distrib_code, distrib_message } => {
+            ServerResponse::EmbeddedMessage {
+                distrib_code,
+                distrib_message,
+            } => {
                 if self.parent.is_none() {
                     if let Ok(DistributedMessage::Search {
                         identifier,
@@ -852,7 +984,9 @@ impl Actor {
     }
 
     fn handle_server_closed(&mut self, error: Option<String>) {
-        let Some(server) = self.server.take() else { return };
+        let Some(server) = self.server.take() else {
+            return;
+        };
         if let Some(error) = error {
             warn!(%error, "server connection closed");
         }
@@ -883,18 +1017,24 @@ impl Actor {
             allowed.user_info_users.clear();
             allowed.folder_contents.clear();
         }
-        self.emit(NetworkEvent::ServerDisconnected { manual: server.manual_disconnect });
+        self.emit(NetworkEvent::ServerDisconnected {
+            manual: server.manual_disconnect,
+        });
     }
 
     fn handle_established(&mut self, conn_id: ConnId) {
-        let Some(conn) = self.conns.get_mut(&conn_id) else { return };
+        let Some(conn) = self.conns.get_mut(&conn_id) else {
+            return;
+        };
         conn.established = true;
         let conn_type = conn.conn_type.unwrap();
         let username = conn.username.clone().unwrap();
+        let ip = conn.ip;
         self.emit(NetworkEvent::PeerConnected {
             username: username.clone(),
             conn_type,
             conn_id,
+            ip,
         });
         if let Some(init_id) = self.conns.get(&conn_id).and_then(|conn| conn.init_id) {
             if let Some(init) = self.inits.get_mut(&init_id) {
@@ -907,15 +1047,15 @@ impl Actor {
         }
     }
 
-    fn handle_incoming_init(
-        &mut self,
-        conn_id: ConnId,
-        init: PeerInitMessage,
-        addr: SocketAddr,
-    ) {
+    fn handle_incoming_init(&mut self, conn_id: ConnId, init: PeerInitMessage, addr: SocketAddr) {
         match init {
-            PeerInitMessage::PeerInit { username, conn_type } => {
-                let Some(conn) = self.conns.get_mut(&conn_id) else { return };
+            PeerInitMessage::PeerInit {
+                username,
+                conn_type,
+            } => {
+                let Some(conn) = self.conns.get_mut(&conn_id) else {
+                    return;
+                };
                 conn.username = Some(username.clone());
                 conn.conn_type = Some(conn_type);
                 debug!(username, ?conn_type, %addr, "incoming direct connection");
@@ -926,7 +1066,7 @@ impl Actor {
                     if let Some(&prev_id) = self.inits_by_user.get(&key)
                         && let Some(prev) = self.inits.get_mut(&prev_id)
                     {
-                        inherited = prev.queued.drain(..).collect();
+                        inherited = std::mem::take(&mut prev.queued);
                         self.remove_init(prev_id);
                     }
                     let init_id = self.next_init_id;
@@ -951,6 +1091,7 @@ impl Actor {
                     username: username.clone(),
                     conn_type,
                     conn_id,
+                    ip: self.conns.get(&conn_id).and_then(|conn| conn.ip),
                 });
                 if conn_type == ConnectionType::Distributed {
                     self.accept_child_peer(conn_id, &username);
@@ -971,9 +1112,15 @@ impl Actor {
                 debug!(username, token, "indirect connection established");
 
                 if let Some(previous) = init.conn_id
-                    && self.conns.get(&previous).is_some_and(|conn| conn.established)
+                    && self
+                        .conns
+                        .get(&previous)
+                        .is_some_and(|conn| conn.established)
                 {
-                    debug!(username, "direct connection already established, keeping it");
+                    debug!(
+                        username,
+                        "direct connection already established, keeping it"
+                    );
                     if let Some(conn) = self.conns.get_mut(&conn_id) {
                         conn.username = Some(username.clone());
                         conn.conn_type = Some(conn_type);
@@ -997,30 +1144,49 @@ impl Actor {
                 conn.username = Some(username.clone());
                 conn.conn_type = Some(conn_type);
                 conn.init_id = Some(init_id);
-                let _ = conn
-                    .control
-                    .send(ConnControl::AssumeIdentity { username: username.clone(), conn_type });
-                self.emit(NetworkEvent::PeerConnected { username, conn_type, conn_id });
+                let _ = conn.control.send(ConnControl::AssumeIdentity {
+                    username: username.clone(),
+                    conn_type,
+                });
+                self.emit(NetworkEvent::PeerConnected {
+                    username,
+                    conn_type,
+                    conn_id,
+                    ip: self.conns.get(&conn_id).and_then(|conn| conn.ip),
+                });
                 self.flush_init_queue(init_id);
             }
         }
     }
 
     fn handle_peer_message(&mut self, conn_id: ConnId, message: PeerMessage) {
-        let Some(conn) = self.conns.get(&conn_id) else { return };
+        let Some(conn) = self.conns.get(&conn_id) else {
+            return;
+        };
         let username = conn.username.clone().unwrap_or_default();
         let close_after = matches!(message, PeerMessage::FileSearchResponse { .. });
-        self.emit(NetworkEvent::PeerMessage { username, conn_id, message });
+        self.emit(NetworkEvent::PeerMessage {
+            username,
+            conn_id,
+            message,
+        });
         if close_after && let Some(conn) = self.conns.get(&conn_id) {
             let _ = conn.control.send(ConnControl::Close);
         }
     }
 
     fn handle_distrib_message(&mut self, conn_id: ConnId, message: DistributedMessage) {
-        let Some(conn) = self.conns.get(&conn_id) else { return };
+        let Some(conn) = self.conns.get(&conn_id) else {
+            return;
+        };
         let username = conn.username.clone().unwrap_or_default();
         match message {
-            DistributedMessage::Search { identifier, search_username, token, search_term } => {
+            DistributedMessage::Search {
+                identifier,
+                search_username,
+                token,
+                search_term,
+            } => {
                 if identifier != 49 {
                     return;
                 }
@@ -1046,7 +1212,10 @@ impl Actor {
                     search_term,
                 });
             }
-            DistributedMessage::EmbeddedMessage { distrib_code, distrib_message } => {
+            DistributedMessage::EmbeddedMessage {
+                distrib_code,
+                distrib_message,
+            } => {
                 if let Ok(unpacked) = DistributedMessage::parse(distrib_code, &distrib_message) {
                     self.handle_distrib_message(conn_id, unpacked);
                 }
@@ -1058,9 +1227,12 @@ impl Actor {
                 }
                 if self.is_parent_conn(conn_id) {
                     self.branch_level = level as u32 + 1;
-                    self.send_to_server(ServerRequest::BranchLevel { value: self.branch_level });
-                    let forwarded =
-                        DistributedMessage::BranchLevel { level: self.branch_level as i32 };
+                    self.send_to_server(ServerRequest::BranchLevel {
+                        value: self.branch_level,
+                    });
+                    let forwarded = DistributedMessage::BranchLevel {
+                        level: self.branch_level as i32,
+                    };
                     self.send_to_child_peers(&forwarded);
                 } else if self.parent.is_none()
                     && let Some(candidate) = self.potential_parents.get_mut(&username)
@@ -1081,7 +1253,9 @@ impl Actor {
                 }
                 if self.is_parent_conn(conn_id) {
                     self.branch_root = Some(root_username.clone());
-                    self.send_to_server(ServerRequest::BranchRoot { user: root_username.clone() });
+                    self.send_to_server(ServerRequest::BranchRoot {
+                        user: root_username.clone(),
+                    });
                     let forwarded = DistributedMessage::BranchRoot { root_username };
                     self.send_to_child_peers(&forwarded);
                 } else if self.parent.is_none()
@@ -1098,7 +1272,9 @@ impl Actor {
     }
 
     fn is_parent_conn(&self, conn_id: ConnId) -> bool {
-        let Some(parent) = &self.parent else { return false };
+        let Some(parent) = &self.parent else {
+            return false;
+        };
         self.conns
             .get(&conn_id)
             .and_then(|conn| conn.username.as_ref())
@@ -1106,7 +1282,9 @@ impl Actor {
     }
 
     fn adopt_parent(&mut self, username: &str) {
-        let Some(candidate) = self.potential_parents.get_mut(username) else { return };
+        let Some(candidate) = self.potential_parents.get_mut(username) else {
+            return;
+        };
         if candidate.conn_id.is_none() {
             return;
         }
@@ -1115,7 +1293,10 @@ impl Actor {
         else {
             return;
         };
-        info!(username, branch_level, branch_root, "adopting distributed parent");
+        info!(
+            username,
+            branch_level, branch_root, "adopting distributed parent"
+        );
         self.parent = Some(username.to_owned());
         self.branch_level = branch_level as u32 + 1;
         self.branch_root = Some(branch_root.clone());
@@ -1124,13 +1305,21 @@ impl Actor {
         self.close_parent_candidate_connections();
 
         self.send_to_server(ServerRequest::HaveNoParent { no_parent: false });
-        self.send_to_server(ServerRequest::BranchRoot { user: branch_root.clone() });
-        self.send_to_server(ServerRequest::BranchLevel { value: self.branch_level });
+        self.send_to_server(ServerRequest::BranchRoot {
+            user: branch_root.clone(),
+        });
+        self.send_to_server(ServerRequest::BranchLevel {
+            value: self.branch_level,
+        });
         if (self.child_peers.len() as u32) < self.max_distrib_children {
             self.send_to_server(ServerRequest::AcceptChildren { enabled: true });
         }
-        let level = DistributedMessage::BranchLevel { level: self.branch_level as i32 };
-        let root = DistributedMessage::BranchRoot { root_username: branch_root };
+        let level = DistributedMessage::BranchLevel {
+            level: self.branch_level as i32,
+        };
+        let root = DistributedMessage::BranchRoot {
+            root_username: branch_root,
+        };
         self.send_to_child_peers(&level);
         self.send_to_child_peers(&root);
         self.child_peers.remove(username);
@@ -1187,7 +1376,9 @@ impl Actor {
             return;
         }
         self.child_peers.insert(username.to_owned(), conn_id);
-        let level = DistributedMessage::BranchLevel { level: self.branch_level as i32 };
+        let level = DistributedMessage::BranchLevel {
+            level: self.branch_level as i32,
+        };
         let root = DistributedMessage::BranchRoot {
             root_username: self.branch_root.clone().unwrap_or_default(),
         };
@@ -1203,12 +1394,9 @@ impl Actor {
     fn update_max_distrib_children(&mut self) {
         let previous = self.max_distrib_children;
         let num_children = self.child_peers.len() as u32;
-        if self.upload_speed >= self.distrib_parent_min_speed
-            && self.distrib_parent_speed_ratio > 0
+        if self.upload_speed >= self.distrib_parent_min_speed && self.distrib_parent_speed_ratio > 0
         {
-            self.max_distrib_children = (self.upload_speed
-                / self.distrib_parent_speed_ratio
-                / 100)
+            self.max_distrib_children = (self.upload_speed / self.distrib_parent_speed_ratio / 100)
                 .min(MAX_DISTRIB_CHILDREN_LIMIT);
         } else {
             self.max_distrib_children = 0;
@@ -1225,7 +1413,10 @@ impl Actor {
     }
 
     fn handle_conn_closed(&mut self, conn_id: ConnId, error: Option<String>) {
-        let Some(conn) = self.conns.remove(&conn_id) else { return };
+        let Some(conn) = self.conns.remove(&conn_id) else {
+            return;
+        };
+        self.emit(NetworkEvent::ConnectionCount(self.conns.len()));
         let username = conn.username.clone().unwrap_or_default();
 
         if let Some(init_id) = conn.init_id

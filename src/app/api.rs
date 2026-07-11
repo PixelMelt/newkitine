@@ -1,26 +1,27 @@
 use std::sync::Arc;
 
+use axum::Json;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 use tower_http::services::{ServeDir, ServeFile};
 
 use newkitine::types::{FileAttributes, SearchScope};
 
+use super::behavior;
 use super::db;
 use super::events::buddy_view;
-use super::settings::Settings;
+use super::settings::{PublicSettings, Settings};
 use super::state::{App, ChatMessage, SearchView, TransferView, UserInfoView, now};
 
 pub fn router(app: Arc<App>, web_root: &str) -> Router {
-    let static_files = ServeDir::new(web_root)
-        .fallback(ServeFile::new(format!("{web_root}/index.html")));
+    let static_files =
+        ServeDir::new(web_root).fallback(ServeFile::new(format!("{web_root}/index.html")));
     Router::new()
         .route("/api/status", get(status))
         .route("/api/connect", post(connect))
@@ -28,7 +29,10 @@ pub fn router(app: Arc<App>, web_root: &str) -> Router {
         .route("/api/reconnect", post(reconnect))
         .route("/api/port", post(set_port))
         .route("/api/searches", get(list_searches).post(start_search))
-        .route("/api/searches/{token}", get(search_results).delete(remove_search))
+        .route(
+            "/api/searches/{token}",
+            get(search_results).delete(remove_search),
+        )
         .route("/api/downloads", get(list_downloads).post(enqueue_download))
         .route("/api/downloads/folder", post(enqueue_folder_download))
         .route("/api/downloads/abort", post(abort_download))
@@ -43,7 +47,10 @@ pub fn router(app: Arc<App>, web_root: &str) -> Router {
         .route("/api/users/{username}/folders", get(user_folders))
         .route("/api/users/{username}/tree", get(user_tree))
         .route("/api/users/{username}/files", get(user_files))
-        .route("/api/users/{username}/info", get(get_user_info).post(request_user_info))
+        .route(
+            "/api/users/{username}/info",
+            get(get_user_info).post(request_user_info),
+        )
         .route("/api/buddies", get(list_buddies).post(add_buddy))
         .route("/api/buddies/{username}", delete(remove_buddy))
         .route("/api/buddies/{username}/note", post(set_buddy_note))
@@ -56,19 +63,30 @@ pub fn router(app: Arc<App>, web_root: &str) -> Router {
         .route("/api/chats", get(list_chats))
         .route(
             "/api/chats/{username}",
-            get(chat_history).post(send_private_message).delete(close_chat),
+            get(chat_history)
+                .post(send_private_message)
+                .delete(close_chat),
         )
         .route("/api/chats/{username}/open", post(open_chat))
         .route("/api/rooms", get(rooms))
         .route("/api/rooms/join", post(join_room))
         .route("/api/rooms/leave", post(leave_room))
-        .route("/api/rooms/{room}/messages", get(room_history).post(say_room))
+        .route(
+            "/api/rooms/{room}/messages",
+            get(room_history).post(say_room),
+        )
         .route("/api/interests", get(interests))
         .route("/api/interests/add", post(add_interest))
         .route("/api/interests/remove", post(remove_interest))
         .route("/api/interests/refresh", post(refresh_interests))
         .route("/api/interests/item", post(item_recommendations))
         .route("/api/shares/rescan", post(rescan_shares))
+        .route("/api/stats/transfers", get(stats_transfers))
+        .route("/api/stats/peers", get(stats_peers))
+        .route("/api/stats/verdicts", get(stats_verdicts))
+        .route("/api/users/{username}/ban_ip", post(ban_user_ip))
+        .route("/api/ip_bans", get(list_ip_bans).post(add_ip_ban))
+        .route("/api/ip_bans/remove", post(remove_ip_ban))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/ws", get(ws_upgrade))
         .fallback_service(static_files)
@@ -190,15 +208,16 @@ async fn start_search(
     };
     let token = app.client.search(&body.query, scope);
     let mut data = app.data.write().unwrap();
-    data.searches.push(SearchView { token, query: body.query, results: Vec::new() });
+    data.searches.push(SearchView {
+        token,
+        query: body.query,
+        results: Vec::new(),
+    });
     app.broadcast(json!({ "type": "search_added", "search": data.searches.last().unwrap() }));
     Json(json!({ "token": token })).into_response()
 }
 
-async fn search_results(
-    State(app): State<Arc<App>>,
-    Path(token): Path<u32>,
-) -> impl IntoResponse {
+async fn search_results(State(app): State<Arc<App>>, Path(token): Path<u32>) -> impl IntoResponse {
     let data = app.data.read().unwrap();
     match data.searches.iter().find(|search| search.token == token) {
         Some(search) => Json(serde_json::to_value(search).unwrap()).into_response(),
@@ -214,7 +233,9 @@ async fn remove_search(State(app): State<Arc<App>>, Path(token): Path<u32>) -> S
     StatusCode::NO_CONTENT
 }
 
-fn transfer_list(views: &std::collections::HashMap<(String, String), TransferView>) -> Vec<&TransferView> {
+fn transfer_list(
+    views: &std::collections::HashMap<(String, String), TransferView>,
+) -> Vec<&TransferView> {
     let mut list: Vec<&TransferView> = views.values().collect();
     list.sort_by_key(|view| std::cmp::Reverse(view.updated_at));
     list
@@ -261,16 +282,25 @@ async fn start_download(
     {
         let mut data = app.data.write().unwrap();
         app.broadcast(json!({ "type": "transfer", "direction": "download", "transfer": &view }));
-        data.downloads.insert((view.username.clone(), view.virtual_path.clone()), view);
+        data.downloads
+            .insert((view.username.clone(), view.virtual_path.clone()), view);
     }
-    app.client.download(username, virtual_path, size, attributes);
+    app.client
+        .download(username, virtual_path, size, attributes);
 }
 
 async fn enqueue_download(
     State(app): State<Arc<App>>,
     Json(body): Json<DownloadBody>,
 ) -> StatusCode {
-    start_download(&app, &body.username, &body.virtual_path, body.size, body.attributes).await;
+    start_download(
+        &app,
+        &body.username,
+        &body.virtual_path,
+        body.size,
+        body.attributes,
+    )
+    .await;
     StatusCode::ACCEPTED
 }
 
@@ -324,15 +354,15 @@ struct TransferRef {
     virtual_path: String,
 }
 
-async fn abort_download(
-    State(app): State<Arc<App>>,
-    Json(body): Json<TransferRef>,
-) -> StatusCode {
-    app.client.abort_download(&body.username, &body.virtual_path);
+async fn abort_download(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
+    app.client
+        .abort_download(&body.username, &body.virtual_path);
     let view = {
         let mut data = app.data.write().unwrap();
         let key = (body.username, body.virtual_path);
-        let Some(view) = data.downloads.get_mut(&key) else { return StatusCode::NOT_FOUND };
+        let Some(view) = data.downloads.get_mut(&key) else {
+            return StatusCode::NOT_FOUND;
+        };
         view.status = "aborted".into();
         view.updated_at = now();
         view.clone()
@@ -342,21 +372,25 @@ async fn abort_download(
     StatusCode::ACCEPTED
 }
 
-async fn retry_download(
-    State(app): State<Arc<App>>,
-    Json(body): Json<TransferRef>,
-) -> StatusCode {
+async fn retry_download(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
     let view = {
         let mut data = app.data.write().unwrap();
         let key = (body.username.clone(), body.virtual_path.clone());
-        let Some(view) = data.downloads.get_mut(&key) else { return StatusCode::NOT_FOUND };
+        let Some(view) = data.downloads.get_mut(&key) else {
+            return StatusCode::NOT_FOUND;
+        };
         view.status = "queued".into();
         view.updated_at = now();
         view.clone()
     };
     db::upsert_transfer(&app.db, "download", &view).await;
     app.broadcast(json!({ "type": "transfer", "direction": "download", "transfer": &view }));
-    app.client.download(&body.username, &body.virtual_path, view.size, view.attributes);
+    app.client.download(
+        &body.username,
+        &body.virtual_path,
+        view.size,
+        view.attributes,
+    );
     StatusCode::ACCEPTED
 }
 
@@ -373,7 +407,10 @@ struct ClearBody {
 
 fn clear_statuses(body: ClearBody) -> Option<Vec<String>> {
     if body.statuses.is_empty()
-        || body.statuses.iter().any(|status| !CLEARED_STATUSES.contains(&status.as_str()))
+        || body
+            .statuses
+            .iter()
+            .any(|status| !CLEARED_STATUSES.contains(&status.as_str()))
     {
         return None;
     }
@@ -387,15 +424,15 @@ fn status_matches(status: &str, statuses: &[String]) -> bool {
     })
 }
 
-async fn clear_downloads(
-    State(app): State<Arc<App>>,
-    Json(body): Json<ClearBody>,
-) -> StatusCode {
-    let Some(statuses) = clear_statuses(body) else { return StatusCode::BAD_REQUEST };
+async fn clear_downloads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {
+    let Some(statuses) = clear_statuses(body) else {
+        return StatusCode::BAD_REQUEST;
+    };
     let refs: Vec<&str> = statuses.iter().map(String::as_str).collect();
     db::clear_transfers(&app.db, "download", &refs).await;
     let mut data = app.data.write().unwrap();
-    data.downloads.retain(|_, view| !status_matches(&view.status, &statuses));
+    data.downloads
+        .retain(|_, view| !status_matches(&view.status, &statuses));
     app.broadcast(json!({
         "type": "transfers_cleared",
         "direction": "download",
@@ -404,15 +441,14 @@ async fn clear_downloads(
     StatusCode::ACCEPTED
 }
 
-async fn abort_upload(
-    State(app): State<Arc<App>>,
-    Json(body): Json<TransferRef>,
-) -> StatusCode {
+async fn abort_upload(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
     app.client.abort_upload(&body.username, &body.virtual_path);
     let view = {
         let mut data = app.data.write().unwrap();
         let key = (body.username, body.virtual_path);
-        let Some(view) = data.uploads.get_mut(&key) else { return StatusCode::NOT_FOUND };
+        let Some(view) = data.uploads.get_mut(&key) else {
+            return StatusCode::NOT_FOUND;
+        };
         view.status = "aborted".into();
         view.updated_at = now();
         view.clone()
@@ -422,15 +458,15 @@ async fn abort_upload(
     StatusCode::ACCEPTED
 }
 
-async fn clear_uploads(
-    State(app): State<Arc<App>>,
-    Json(body): Json<ClearBody>,
-) -> StatusCode {
-    let Some(statuses) = clear_statuses(body) else { return StatusCode::BAD_REQUEST };
+async fn clear_uploads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {
+    let Some(statuses) = clear_statuses(body) else {
+        return StatusCode::BAD_REQUEST;
+    };
     let refs: Vec<&str> = statuses.iter().map(String::as_str).collect();
     db::clear_transfers(&app.db, "upload", &refs).await;
     let mut data = app.data.write().unwrap();
-    data.uploads.retain(|_, view| !status_matches(&view.status, &statuses));
+    data.uploads
+        .retain(|_, view| !status_matches(&view.status, &statuses));
     app.broadcast(json!({
         "type": "transfers_cleared",
         "direction": "upload",
@@ -444,7 +480,8 @@ async fn clear_all_downloads(State(app): State<Arc<App>>) -> StatusCode {
     let mut data = app.data.write().unwrap();
     for view in data.downloads.values() {
         if !is_cleared(&view.status) {
-            app.client.abort_download(&view.username, &view.virtual_path);
+            app.client
+                .abort_download(&view.username, &view.virtual_path);
         }
     }
     data.downloads.clear();
@@ -500,9 +537,7 @@ async fn user_folders(
     let total = matching.clone().count();
     let folders: Vec<serde_json::Value> = matching
         .take(query.limit)
-        .map(|folder| {
-            json!({ "directory": folder.directory, "file_count": folder.files.len() })
-        })
+        .map(|folder| json!({ "directory": folder.directory, "file_count": folder.files.len() }))
         .collect();
     Json(json!({
         "username": username,
@@ -541,7 +576,9 @@ async fn user_tree(
         .map(|folder| (folder, false))
         .chain(browse.private_folders.iter().map(|folder| (folder, true)))
     {
-        let Some(rest) = folder.directory.strip_prefix(&prefix) else { continue };
+        let Some(rest) = folder.directory.strip_prefix(&prefix) else {
+            continue;
+        };
         if rest.is_empty() {
             continue;
         }
@@ -606,8 +643,9 @@ async fn user_files(
         .chain(browse.private_folders.iter())
         .find(|folder| folder.directory == query.dir)
     {
-        Some(folder) => Json(json!({ "directory": folder.directory, "files": folder.files }))
-            .into_response(),
+        Some(folder) => {
+            Json(json!({ "directory": folder.directory, "files": folder.files })).into_response()
+        }
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -617,17 +655,22 @@ async fn request_user_info(
     Path(username): Path<String>,
 ) -> StatusCode {
     app.client.request_user_info(&username);
-    app.client.server_request(newkitine::protocol::ServerRequest::GetUserStats {
-        user: username.clone(),
-    });
-    app.client.server_request(newkitine::protocol::ServerRequest::UserInterests {
-        user: username.clone(),
-    });
+    app.client
+        .server_request(newkitine::protocol::ServerRequest::GetUserStats {
+            user: username.clone(),
+        });
+    app.client
+        .server_request(newkitine::protocol::ServerRequest::UserInterests {
+            user: username.clone(),
+        });
     let mut data = app.data.write().unwrap();
     let info = data
         .user_infos
         .entry(username.clone())
-        .or_insert_with(|| UserInfoView { username, ..Default::default() });
+        .or_insert_with(|| UserInfoView {
+            username,
+            ..Default::default()
+        });
     app.broadcast(json!({ "type": "user_info", "info": info.clone() }));
     StatusCode::ACCEPTED
 }
@@ -658,12 +701,15 @@ async fn list_buddies(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 async fn add_buddy(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
     app.client.add_buddy(&body.username);
     db::add_to_list(&app.db, "buddy", &body.username).await;
-    let mut data = app.data.write().unwrap();
-    let buddy = data
-        .buddies
-        .entry(body.username.clone())
-        .or_insert_with(|| buddy_view(&body.username));
-    app.broadcast(json!({ "type": "buddy", "buddy": buddy.clone() }));
+    {
+        let mut data = app.data.write().unwrap();
+        let buddy = data
+            .buddies
+            .entry(body.username.clone())
+            .or_insert_with(|| buddy_view(&body.username));
+        app.broadcast(json!({ "type": "buddy", "buddy": buddy.clone() }));
+    }
+    behavior::buddy_added(&app, &body.username).await;
     StatusCode::ACCEPTED
 }
 
@@ -679,16 +725,15 @@ async fn set_buddy_note(
 ) -> StatusCode {
     db::set_note(&app.db, &username, &body.note).await;
     let mut data = app.data.write().unwrap();
-    let Some(buddy) = data.buddies.get_mut(&username) else { return StatusCode::NOT_FOUND };
+    let Some(buddy) = data.buddies.get_mut(&username) else {
+        return StatusCode::NOT_FOUND;
+    };
     buddy.note = body.note;
     app.broadcast(json!({ "type": "buddy", "buddy": buddy.clone() }));
     StatusCode::ACCEPTED
 }
 
-async fn remove_buddy(
-    State(app): State<Arc<App>>,
-    Path(username): Path<String>,
-) -> StatusCode {
+async fn remove_buddy(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
     app.client.remove_buddy(&username);
     db::remove_from_list(&app.db, "buddy", &username).await;
     app.data.write().unwrap().buddies.remove(&username);
@@ -827,7 +872,11 @@ async fn send_private_message(
 ) -> StatusCode {
     app.client.send_private_message(&username, &body.message);
     let sender = app.data.read().unwrap().status.username.clone();
-    let message = ChatMessage { sender, message: body.message, timestamp: now() };
+    let message = ChatMessage {
+        sender,
+        message: body.message,
+        timestamp: now(),
+    };
     db::insert_chat(&app.db, "private", &username, &message).await;
     db::add_to_list(&app.db, "chat", &username).await;
     app.data
@@ -873,7 +922,11 @@ async fn room_history(
     let messages = db::load_chat(&app.db, "room", &room, query.limit).await;
     let users = {
         let data = app.data.read().unwrap();
-        data.rooms.joined.get(&room).map(|view| view.users.clone()).unwrap_or_default()
+        data.rooms
+            .joined
+            .get(&room)
+            .map(|view| view.users.clone())
+            .unwrap_or_default()
     };
     Json(json!({ "room": room, "messages": messages, "users": users }))
 }
@@ -898,10 +951,7 @@ struct InterestBody {
     thing: String,
 }
 
-async fn add_interest(
-    State(app): State<Arc<App>>,
-    Json(body): Json<InterestBody>,
-) -> StatusCode {
+async fn add_interest(State(app): State<Arc<App>>, Json(body): Json<InterestBody>) -> StatusCode {
     match body.kind.as_str() {
         "liked" => app.client.add_liked_interest(&body.thing),
         "hated" => app.client.add_hated_interest(&body.thing),
@@ -954,7 +1004,8 @@ async fn refresh_interests(State(app): State<Arc<App>>) -> StatusCode {
     } else {
         app.client.request_recommendations();
     }
-    app.client.server_request(newkitine::protocol::ServerRequest::SimilarUsers);
+    app.client
+        .server_request(newkitine::protocol::ServerRequest::SimilarUsers);
     StatusCode::ACCEPTED
 }
 
@@ -967,9 +1018,10 @@ async fn item_recommendations(
     State(app): State<Arc<App>>,
     Json(body): Json<ItemBody>,
 ) -> StatusCode {
-    app.client.server_request(newkitine::protocol::ServerRequest::ItemRecommendations {
-        thing: body.thing.clone(),
-    });
+    app.client
+        .server_request(newkitine::protocol::ServerRequest::ItemRecommendations {
+            thing: body.thing.clone(),
+        });
     app.client
         .server_request(newkitine::protocol::ServerRequest::ItemSimilarUsers { thing: body.thing });
     StatusCode::ACCEPTED
@@ -977,6 +1029,86 @@ async fn item_recommendations(
 
 async fn rescan_shares(State(app): State<Arc<App>>) -> StatusCode {
     app.client.rescan_shares();
+    StatusCode::ACCEPTED
+}
+
+async fn stats_transfers(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(db::transfer_stats(&app.db).await)
+}
+
+#[derive(Deserialize)]
+struct PeersQuery {
+    #[serde(default = "default_peers_limit")]
+    limit: u32,
+}
+
+fn default_peers_limit() -> u32 {
+    100
+}
+
+async fn stats_peers(
+    State(app): State<Arc<App>>,
+    Query(query): Query<PeersQuery>,
+) -> Json<serde_json::Value> {
+    Json(db::peers_seen(&app.db, query.limit).await)
+}
+
+async fn stats_verdicts(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(db::verdict_users(&app.db).await)
+}
+
+async fn ban_user_ip(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+    let Some(ip) = db::last_ip(&app.db, &username).await else {
+        return StatusCode::NOT_FOUND;
+    };
+    db::add_to_list(&app.db, "ip_ban", &ip).await;
+    push_ip_bans(&app).await;
+    StatusCode::ACCEPTED
+}
+
+#[derive(Deserialize)]
+struct IpBanBody {
+    pattern: String,
+}
+
+fn canonical_ip_pattern(pattern: &str) -> Option<String> {
+    let parts: Vec<&str> = pattern.trim().split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut canonical = Vec::with_capacity(4);
+    for part in parts {
+        if part == "*" {
+            canonical.push("*".to_owned());
+        } else {
+            canonical.push(part.parse::<u8>().ok()?.to_string());
+        }
+    }
+    Some(canonical.join("."))
+}
+
+async fn push_ip_bans(app: &App) {
+    let patterns = db::load_list(&app.db, "ip_ban").await;
+    app.client.set_ip_bans(patterns.clone());
+    app.broadcast(json!({ "type": "ip_bans", "patterns": patterns }));
+}
+
+async fn list_ip_bans(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(json!({ "patterns": db::load_list(&app.db, "ip_ban").await }))
+}
+
+async fn add_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) -> StatusCode {
+    let Some(pattern) = canonical_ip_pattern(&body.pattern) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    db::add_to_list(&app.db, "ip_ban", &pattern).await;
+    push_ip_bans(&app).await;
+    StatusCode::ACCEPTED
+}
+
+async fn remove_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) -> StatusCode {
+    db::remove_from_list(&app.db, "ip_ban", &body.pattern).await;
+    push_ip_bans(&app).await;
     StatusCode::ACCEPTED
 }
 
@@ -1006,6 +1138,13 @@ async fn put_settings(
     State(app): State<Arc<App>>,
     Json(body): Json<Settings>,
 ) -> impl IntoResponse {
+    if !matches!(body.filter_level.as_str(), "open" | "guarded" | "strict") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown filter level {}", body.filter_level) })),
+        )
+            .into_response();
+    }
     let old = app.effective_settings();
     if let Some(key) = locked_change(&app.locked_settings, &old, &body) {
         return (
@@ -1021,15 +1160,13 @@ async fn put_settings(
         )
             .into_response();
     }
-    let login_changed = body.server != old.server
-        || body.username != old.username
-        || body.password != old.password;
+    let login_changed =
+        body.server != old.server || body.username != old.username || body.password != old.password;
     if login_changed {
         let server = match body.resolve_server() {
             Ok(server) => server,
             Err(error) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": error })))
-                    .into_response();
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
             }
         };
         app.client.set_login(server, &body.username, &body.password);
@@ -1044,15 +1181,18 @@ async fn put_settings(
         app.client.set_shared_folders(body.shares.clone());
     }
     if body.upload_slots != old.upload_slots || body.queue_file_limit != old.queue_file_limit {
-        app.client.set_upload_slots(body.upload_slots, body.queue_file_limit);
+        app.client
+            .set_upload_slots(body.upload_slots, body.queue_file_limit);
     }
     if body.download_dir != old.download_dir || body.incomplete_dir() != old.incomplete_dir() {
-        app.client.set_download_dirs(body.download_dir.clone(), body.incomplete_dir());
+        app.client
+            .set_download_dirs(body.download_dir.clone(), body.incomplete_dir());
     }
     if body.upload_limit_kbps != old.upload_limit_kbps
         || body.download_limit_kbps != old.download_limit_kbps
     {
-        app.client.set_transfer_limits(body.upload_limit_kbps, body.download_limit_kbps);
+        app.client
+            .set_transfer_limits(body.upload_limit_kbps, body.download_limit_kbps);
     }
     if body.auto_reconnect != old.auto_reconnect {
         app.client.set_auto_reconnect(body.auto_reconnect);
@@ -1078,6 +1218,9 @@ async fn put_settings(
         stored
     };
     db::save_settings(&app.db, &serde_json::to_string(&stored).unwrap()).await;
+    if body.filter_level != old.filter_level || body.denied_message != old.denied_message {
+        behavior::apply_level(&app).await;
+    }
 
     {
         let mut data = app.data.write().unwrap();
@@ -1095,4 +1238,24 @@ async fn put_settings(
         "gluetun": app.gluetun_enabled,
     }));
     StatusCode::ACCEPTED.into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_ip_pattern;
+
+    #[test]
+    fn ip_patterns_canonicalize() {
+        assert_eq!(
+            canonical_ip_pattern("10.0.*.*").as_deref(),
+            Some("10.0.*.*")
+        );
+        assert_eq!(
+            canonical_ip_pattern(" 192.168.001.5 ").as_deref(),
+            Some("192.168.1.5")
+        );
+        assert_eq!(canonical_ip_pattern("300.1.1.1"), None);
+        assert_eq!(canonical_ip_pattern("1.2.3"), None);
+        assert_eq!(canonical_ip_pattern("1.2.3.4.5"), None);
+    }
 }

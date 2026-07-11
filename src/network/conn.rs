@@ -19,8 +19,7 @@ use super::codec::{
 };
 use super::event::ConnId;
 use crate::protocol::{
-    DistributedMessage, FileOffset, FileTransferInit, PeerInitMessage, PeerMessage,
-    ServerResponse,
+    DistributedMessage, FileOffset, FileTransferInit, PeerInitMessage, PeerMessage, ServerResponse,
 };
 use crate::types::ConnectionType;
 
@@ -53,7 +52,10 @@ struct Throttle {
 
 impl Throttle {
     fn new() -> Self {
-        Self { window_start: Instant::now(), window_bytes: 0 }
+        Self {
+            window_start: Instant::now(),
+            window_bytes: 0,
+        }
     }
 
     async fn pace(&mut self, count: u64, limit_bps: u64) {
@@ -79,27 +81,73 @@ impl Throttle {
 pub enum ConnControl {
     Send(Vec<u8>),
     SendFileInit(u32),
-    AssumeIdentity { username: String, conn_type: ConnectionType },
-    Download { file: std::fs::File, offset: u64, bytes_left: u64 },
-    Upload { file: std::fs::File, size: u64 },
+    AssumeIdentity {
+        username: String,
+        conn_type: ConnectionType,
+    },
+    Download {
+        file: std::fs::File,
+        offset: u64,
+        bytes_left: u64,
+    },
+    Upload {
+        file: std::fs::File,
+        size: u64,
+    },
     Close,
 }
 
 #[derive(Debug)]
 pub enum ConnEvent {
     ServerMessage(ServerResponse),
-    ServerClosed { error: Option<String> },
-    OutgoingEstablished { conn_id: ConnId },
-    IncomingInit { conn_id: ConnId, init: PeerInitMessage, addr: SocketAddr },
-    Peer { conn_id: ConnId, message: PeerMessage },
-    Distrib { conn_id: ConnId, message: DistributedMessage },
-    FileInit { conn_id: ConnId, token: u32 },
-    FileOffsetReceived { conn_id: ConnId, offset: u64 },
-    DownloadProgress { conn_id: ConnId, bytes_left: u64, bytes_received: u64 },
-    UploadProgress { conn_id: ConnId, offset: u64, bytes_sent: u64 },
-    FileDone { conn_id: ConnId },
-    FileError { conn_id: ConnId, error: String },
-    Closed { conn_id: ConnId, error: Option<String> },
+    ServerClosed {
+        error: Option<String>,
+    },
+    OutgoingEstablished {
+        conn_id: ConnId,
+    },
+    IncomingInit {
+        conn_id: ConnId,
+        init: PeerInitMessage,
+        addr: SocketAddr,
+    },
+    Peer {
+        conn_id: ConnId,
+        message: PeerMessage,
+    },
+    Distrib {
+        conn_id: ConnId,
+        message: DistributedMessage,
+    },
+    FileInit {
+        conn_id: ConnId,
+        token: u32,
+    },
+    FileOffsetReceived {
+        conn_id: ConnId,
+        offset: u64,
+    },
+    DownloadProgress {
+        conn_id: ConnId,
+        bytes_left: u64,
+        bytes_received: u64,
+    },
+    UploadProgress {
+        conn_id: ConnId,
+        offset: u64,
+        bytes_sent: u64,
+    },
+    FileDone {
+        conn_id: ConnId,
+    },
+    FileError {
+        conn_id: ConnId,
+        error: String,
+    },
+    Closed {
+        conn_id: ConnId,
+        error: Option<String>,
+    },
 }
 
 pub struct PeerTask {
@@ -186,7 +234,7 @@ async fn read_server_frames(
                 return;
             }
         };
-        if size > MAX_MESSAGE_SIZE_LARGE || size < 4 {
+        if !(4..=MAX_MESSAGE_SIZE_LARGE).contains(&size) {
             let _ = frames.send(Err(format!("invalid server message size {size}")));
             return;
         }
@@ -214,11 +262,13 @@ pub async fn run_outgoing_peer(
     init: PeerInitMessage,
     conn_type: ConnectionType,
 ) {
-    let PeerTask { conn_id, events, control, allowed, limits } = task;
     let stream = match connect(addr).await {
         Ok(stream) => stream,
         Err(error) => {
-            let _ = events.send(ConnEvent::Closed { conn_id, error: Some(error) });
+            let _ = task.events.send(ConnEvent::Closed {
+                conn_id: task.conn_id,
+                error: Some(error),
+            });
             return;
         }
     };
@@ -227,86 +277,121 @@ pub async fn run_outgoing_peer(
     let mut writer = BufWriter::new(write_half);
 
     if write_all(&mut writer, &init.to_bytes()).await.is_err() {
-        let _ = events.send(ConnEvent::Closed { conn_id, error: Some("write failed".into()) });
+        let _ = task.events.send(ConnEvent::Closed {
+            conn_id: task.conn_id,
+            error: Some("write failed".into()),
+        });
         return;
     }
-    if events.send(ConnEvent::OutgoingEstablished { conn_id }).is_err() {
+    if task
+        .events
+        .send(ConnEvent::OutgoingEstablished {
+            conn_id: task.conn_id,
+        })
+        .is_err()
+    {
         return;
     }
-    run_typed_loop(conn_id, events, control, allowed, limits, reader, writer, username, conn_type)
-        .await;
+    run_typed_loop(task, reader, writer, username, conn_type).await;
 }
 
-pub async fn run_incoming_peer(task: PeerTask, stream: TcpStream, addr: SocketAddr) {
-    let PeerTask { conn_id, events, mut control, allowed, limits } = task;
+pub async fn run_incoming_peer(mut task: PeerTask, stream: TcpStream, addr: SocketAddr) {
     stream.set_nodelay(true).ok();
 
     let (read_half, write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let writer = BufWriter::new(write_half);
 
-    let init = match timeout(GHOST_TIMEOUT, read_frame_u8(&mut reader, MAX_MESSAGE_SIZE_SMALL))
-        .await
+    let init = match timeout(
+        GHOST_TIMEOUT,
+        read_frame_u8(&mut reader, MAX_MESSAGE_SIZE_SMALL),
+    )
+    .await
     {
         Ok(Ok((code, payload))) => match PeerInitMessage::parse(code, &payload) {
             Ok(init) => init,
             Err(error) => {
-                let _ = events.send(ConnEvent::Closed { conn_id, error: Some(error.to_string()) });
+                let _ = task.events.send(ConnEvent::Closed {
+                    conn_id: task.conn_id,
+                    error: Some(error.to_string()),
+                });
                 return;
             }
         },
         Ok(Err(error)) => {
-            let _ = events.send(ConnEvent::Closed { conn_id, error: Some(error.to_string()) });
+            let _ = task.events.send(ConnEvent::Closed {
+                conn_id: task.conn_id,
+                error: Some(error.to_string()),
+            });
             return;
         }
         Err(_) => {
-            let _ = events.send(ConnEvent::Closed { conn_id, error: Some("ghost connection".into()) });
+            let _ = task.events.send(ConnEvent::Closed {
+                conn_id: task.conn_id,
+                error: Some("ghost connection".into()),
+            });
             return;
         }
     };
 
     let identity = match &init {
-        PeerInitMessage::PeerInit { username, conn_type } => {
-            Some((username.clone(), *conn_type))
-        }
+        PeerInitMessage::PeerInit {
+            username,
+            conn_type,
+        } => Some((username.clone(), *conn_type)),
         PeerInitMessage::PierceFireWall { .. } => None,
     };
-    if events.send(ConnEvent::IncomingInit { conn_id, init, addr }).is_err() {
+    if task
+        .events
+        .send(ConnEvent::IncomingInit {
+            conn_id: task.conn_id,
+            init,
+            addr,
+        })
+        .is_err()
+    {
         return;
     }
 
     let (username, conn_type) = match identity {
         Some(identity) => identity,
-        None => match control.recv().await {
-            Some(ConnControl::AssumeIdentity { username, conn_type }) => (username, conn_type),
+        None => match task.control.recv().await {
+            Some(ConnControl::AssumeIdentity {
+                username,
+                conn_type,
+            }) => (username, conn_type),
             Some(ConnControl::Close) | None => {
-                let _ = events.send(ConnEvent::Closed { conn_id, error: None });
+                let _ = task.events.send(ConnEvent::Closed {
+                    conn_id: task.conn_id,
+                    error: None,
+                });
                 return;
             }
             Some(other) => unreachable!("invalid pre-init control {other:?}"),
         },
     };
 
-    run_typed_loop(conn_id, events, control, allowed, limits, reader, writer, username, conn_type)
-        .await;
+    run_typed_loop(task, reader, writer, username, conn_type).await;
 }
 
 async fn run_typed_loop(
-    conn_id: ConnId,
-    events: mpsc::UnboundedSender<ConnEvent>,
-    control: mpsc::UnboundedReceiver<ConnControl>,
-    allowed: SharedAllowed,
-    limits: SharedLimits,
+    task: PeerTask,
     reader: BufReader<OwnedReadHalf>,
     writer: BufWriter<OwnedWriteHalf>,
     username: String,
     conn_type: ConnectionType,
 ) {
+    let PeerTask {
+        conn_id,
+        events,
+        control,
+        allowed,
+        limits,
+    } = task;
     match conn_type {
         ConnectionType::Peer => {
             let (frames_tx, frames) = mpsc::unbounded_channel();
-            let reader_task =
-                tokio::spawn(read_peer_frames(reader, frames_tx, allowed, username));
+            let reader_task = tokio::spawn(read_peer_frames(reader, frames_tx, allowed, username));
             run_message_loop(conn_id, events, control, frames, writer, reader_task, true).await;
         }
         ConnectionType::Distributed => {
@@ -356,8 +441,11 @@ async fn read_peer_frames(
         let code = u32::from_le_bytes(frame[..4].try_into().unwrap());
 
         let is_large_response = matches!(code, 5 | 16);
-        let limit =
-            if is_large_response { MAX_MESSAGE_SIZE_LARGE } else { MAX_MESSAGE_SIZE_MEDIUM };
+        let limit = if is_large_response {
+            MAX_MESSAGE_SIZE_LARGE
+        } else {
+            MAX_MESSAGE_SIZE_MEDIUM
+        };
         if size - 4 > limit {
             let _ = frames.send(PeerFrame::Fatal(Some(format!(
                 "peer message size {size} exceeds limit {limit}"
@@ -380,7 +468,10 @@ async fn read_peer_frames(
                     debug!(code, username, "dropping disallowed peer response");
                     continue;
                 }
-                if frames.send(PeerFrame::Message(ConnEventPayload::Peer(message))).is_err() {
+                if frames
+                    .send(PeerFrame::Message(ConnEventPayload::Peer(message)))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -421,7 +512,9 @@ async fn read_distrib_frames(
         match read_frame_u8(&mut reader, MAX_MESSAGE_SIZE_SMALL).await {
             Ok((code, payload)) => match DistributedMessage::parse(code, &payload) {
                 Ok(message) => {
-                    if frames.send(PeerFrame::Message(ConnEventPayload::Distrib(message))).is_err()
+                    if frames
+                        .send(PeerFrame::Message(ConnEventPayload::Distrib(message)))
+                        .is_err()
                     {
                         return;
                     }
@@ -522,11 +615,13 @@ async fn run_file_loop(
                         if write_all(&mut writer, &offset_bytes).await.is_err() {
                             break Some("write failed".into());
                         }
-                        run_download(conn_id, &events, &mut control, &limits, &mut reader, file, bytes_left).await;
+                        let task = TransferTask { conn_id, events: &events, control: &mut control, limits: &limits };
+                        run_download(task, &mut reader, file, bytes_left).await;
                         return;
                     }
                     Some(ConnControl::Upload { file, size }) => {
-                        run_upload(conn_id, &events, &mut control, &limits, &mut writer, &mut reader, file, size).await;
+                        let task = TransferTask { conn_id, events: &events, control: &mut control, limits: &limits };
+                        run_upload(task, &mut writer, &mut reader, file, size).await;
                         return;
                     }
                     Some(ConnControl::Close) | None => break None,
@@ -538,15 +633,25 @@ async fn run_file_loop(
     let _ = events.send(ConnEvent::Closed { conn_id, error });
 }
 
-async fn run_download(
+struct TransferTask<'a> {
     conn_id: ConnId,
-    events: &mpsc::UnboundedSender<ConnEvent>,
-    control: &mut mpsc::UnboundedReceiver<ConnControl>,
-    limits: &SharedLimits,
+    events: &'a mpsc::UnboundedSender<ConnEvent>,
+    control: &'a mut mpsc::UnboundedReceiver<ConnControl>,
+    limits: &'a SharedLimits,
+}
+
+async fn run_download(
+    task: TransferTask<'_>,
     reader: &mut BufReader<OwnedReadHalf>,
     file: std::fs::File,
     mut bytes_left: u64,
 ) {
+    let TransferTask {
+        conn_id,
+        events,
+        control,
+        limits,
+    } = task;
     let mut file = tokio::fs::File::from_std(file);
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
@@ -554,7 +659,10 @@ async fn run_download(
     let error = loop {
         if bytes_left == 0 {
             if let Err(error) = file.flush().await {
-                let _ = events.send(ConnEvent::FileError { conn_id, error: error.to_string() });
+                let _ = events.send(ConnEvent::FileError {
+                    conn_id,
+                    error: error.to_string(),
+                });
                 break None;
             }
             let _ = events.send(ConnEvent::DownloadProgress {
@@ -604,19 +712,25 @@ async fn run_download(
 }
 
 async fn run_upload(
-    conn_id: ConnId,
-    events: &mpsc::UnboundedSender<ConnEvent>,
-    control: &mut mpsc::UnboundedReceiver<ConnControl>,
-    limits: &SharedLimits,
+    task: TransferTask<'_>,
     writer: &mut BufWriter<OwnedWriteHalf>,
     reader: &mut BufReader<OwnedReadHalf>,
     file: std::fs::File,
     size: u64,
 ) {
+    let TransferTask {
+        conn_id,
+        events,
+        control,
+        limits,
+    } = task;
     let offset = match reader.read_u64_le().await {
         Ok(offset) => offset,
         Err(error) => {
-            let _ = events.send(ConnEvent::Closed { conn_id, error: Some(error.to_string()) });
+            let _ = events.send(ConnEvent::Closed {
+                conn_id,
+                error: Some(error.to_string()),
+            });
             return;
         }
     };
@@ -624,8 +738,14 @@ async fn run_upload(
 
     let mut file = tokio::fs::File::from_std(file);
     if let Err(error) = file.seek(SeekFrom::Start(offset)).await {
-        let _ = events.send(ConnEvent::FileError { conn_id, error: error.to_string() });
-        let _ = events.send(ConnEvent::Closed { conn_id, error: None });
+        let _ = events.send(ConnEvent::FileError {
+            conn_id,
+            error: error.to_string(),
+        });
+        let _ = events.send(ConnEvent::Closed {
+            conn_id,
+            error: None,
+        });
         return;
     }
 
@@ -640,18 +760,28 @@ async fn run_upload(
             Err(mpsc::error::TryRecvError::Empty) => {}
         }
         if offset + bytes_sent >= size {
-            let _ = events.send(ConnEvent::UploadProgress { conn_id, offset, bytes_sent });
+            let _ = events.send(ConnEvent::UploadProgress {
+                conn_id,
+                offset,
+                bytes_sent,
+            });
             let _ = events.send(ConnEvent::FileDone { conn_id });
             break None;
         }
         let count = match file.read(&mut buffer).await {
             Ok(0) => {
-                let _ = events.send(ConnEvent::FileError { conn_id, error: "file truncated".into() });
+                let _ = events.send(ConnEvent::FileError {
+                    conn_id,
+                    error: "file truncated".into(),
+                });
                 break None;
             }
             Ok(count) => count,
             Err(error) => {
-                let _ = events.send(ConnEvent::FileError { conn_id, error: error.to_string() });
+                let _ = events.send(ConnEvent::FileError {
+                    conn_id,
+                    error: error.to_string(),
+                });
                 break None;
             }
         };
@@ -659,10 +789,16 @@ async fn run_upload(
             break Some("write failed".into());
         }
         bytes_sent += count as u64;
-        throttle.pace(count as u64, limits.upload_bps.load(Ordering::Relaxed)).await;
+        throttle
+            .pace(count as u64, limits.upload_bps.load(Ordering::Relaxed))
+            .await;
         if last_report.elapsed() >= Duration::from_secs(1) {
             last_report = Instant::now();
-            let _ = events.send(ConnEvent::UploadProgress { conn_id, offset, bytes_sent });
+            let _ = events.send(ConnEvent::UploadProgress {
+                conn_id,
+                offset,
+                bytes_sent,
+            });
         }
     };
     let _ = events.send(ConnEvent::Closed { conn_id, error });

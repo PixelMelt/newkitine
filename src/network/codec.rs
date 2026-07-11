@@ -24,7 +24,10 @@ pub async fn read_frame_u8<R: AsyncRead + Unpin>(
 ) -> Result<(u8, Vec<u8>), FrameError> {
     let size = reader.read_u32_le().await? as usize;
     if size > max_size {
-        return Err(FrameError::TooLarge { size, limit: max_size });
+        return Err(FrameError::TooLarge {
+            size,
+            limit: max_size,
+        });
     }
     if size < 1 {
         return Err(FrameError::Truncated);

@@ -57,30 +57,47 @@ async fn login_peer_message_and_file_transfer() {
 
     alice.handle.peer(
         "bob",
-        PeerMessage::QueueUpload { file: "Music\\song.mp3".into(), legacy_client: false },
+        PeerMessage::QueueUpload {
+            file: "Music\\song.mp3".into(),
+            legacy_client: false,
+        },
     );
     let (from_user, received) = wait_for(&mut bob.events, |event| match event {
-        NetworkEvent::PeerMessage { username, message, .. } => Some((username, message)),
+        NetworkEvent::PeerMessage {
+            username, message, ..
+        } => Some((username, message)),
         _ => None,
     })
     .await;
     assert_eq!(from_user, "alice");
     assert_eq!(
         received,
-        PeerMessage::QueueUpload { file: "Music\\song.mp3".into(), legacy_client: false }
+        PeerMessage::QueueUpload {
+            file: "Music\\song.mp3".into(),
+            legacy_client: false
+        }
     );
 
-    let payload: Vec<u8> = (0u32..100_000).flat_map(|value| value.to_le_bytes()).collect();
+    let payload: Vec<u8> = (0u32..100_000)
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
     let mut source = tempfile();
     source.write_all(&payload).unwrap();
     source.seek(SeekFrom::Start(0)).unwrap();
     let dest = tempfile();
     let dest_read = dest.try_clone().unwrap();
 
-    bob.handle.send(NetworkCommand::RequestFileConnection { username: "alice".into(), token: 42 });
+    bob.handle.send(NetworkCommand::RequestFileConnection {
+        username: "alice".into(),
+        token: 42,
+    });
 
     let download_conn = wait_for(&mut alice.events, |event| match event {
-        NetworkEvent::FileTransferInit { username, token, conn_id } => {
+        NetworkEvent::FileTransferInit {
+            username,
+            token,
+            conn_id,
+        } => {
             assert_eq!(username, "bob");
             assert_eq!(token, 42);
             Some(conn_id)
@@ -90,9 +107,11 @@ async fn login_peer_message_and_file_transfer() {
     .await;
 
     let upload_conn = wait_for(&mut bob.events, |event| match event {
-        NetworkEvent::PeerConnected { conn_type: ConnectionType::File, conn_id, .. } => {
-            Some(conn_id)
-        }
+        NetworkEvent::PeerConnected {
+            conn_type: ConnectionType::File,
+            conn_id,
+            ..
+        } => Some(conn_id),
         _ => None,
     })
     .await;
@@ -140,26 +159,34 @@ async fn indirect_connection_via_pierce_firewall() {
 
     alice.handle.peer(
         "bob",
-        PeerMessage::PlaceInQueueRequest { file: "Music\\song.mp3".into(), legacy_client: false },
+        PeerMessage::PlaceInQueueRequest {
+            file: "Music\\song.mp3".into(),
+            legacy_client: false,
+        },
     );
 
     let (from_user, received) = wait_for(&mut bob.events, |event| match event {
-        NetworkEvent::PeerMessage { username, message, .. } => Some((username, message)),
+        NetworkEvent::PeerMessage {
+            username, message, ..
+        } => Some((username, message)),
         _ => None,
     })
     .await;
     assert_eq!(from_user, "alice");
     assert_eq!(
         received,
-        PeerMessage::PlaceInQueueRequest { file: "Music\\song.mp3".into(), legacy_client: false }
+        PeerMessage::PlaceInQueueRequest {
+            file: "Music\\song.mp3".into(),
+            legacy_client: false
+        }
     );
 
     wait_for(&mut alice.events, |event| match event {
-        NetworkEvent::PeerConnected { username, conn_type: ConnectionType::Peer, .. }
-            if username == "bob" =>
-        {
-            Some(())
-        }
+        NetworkEvent::PeerConnected {
+            username,
+            conn_type: ConnectionType::Peer,
+            ..
+        } if username == "bob" => Some(()),
         _ => None,
     })
     .await;

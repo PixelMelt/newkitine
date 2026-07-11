@@ -7,10 +7,14 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::timeout;
 
 use common::{free_port, start_fake_server, temp_dir, tempfile};
-use newkitine::client::{Client, ClientConfig, ClientEvent, DownloadUpdate, SharedFolder, UploadUpdate};
+use newkitine::client::{
+    Client, ClientConfig, ClientEvent, DownloadUpdate, SharedFolder, UploadUpdate,
+};
 use newkitine::network::{NetworkCommand, NetworkEvent, spawn as spawn_network};
 use newkitine::protocol::PeerMessage;
-use newkitine::types::{ConnectionType, FileAttributes, SearchScope, TransferDirection};
+use newkitine::types::{
+    ConnectionType, FileAttributes, Observation, Restriction, SearchScope, TransferDirection,
+};
 
 async fn wait_client<T>(
     events: &mut UnboundedReceiver<ClientEvent>,
@@ -63,8 +67,13 @@ async fn client_downloads_file_from_peer() {
 
     let download_dir = temp_dir("downloads");
     let incomplete_dir = temp_dir("incomplete");
-    let mut bob_config =
-        ClientConfig::new(server_addr, "bob", "secret", free_port(), download_dir.clone());
+    let mut bob_config = ClientConfig::new(
+        server_addr,
+        "bob",
+        "secret",
+        free_port(),
+        download_dir.clone(),
+    );
     bob_config.incomplete_dir = incomplete_dir;
     bob_config.description = "test client".into();
     let (bob, mut bob_events) = Client::spawn(bob_config);
@@ -74,30 +83,44 @@ async fn client_downloads_file_from_peer() {
     })
     .await;
 
-    let payload: Vec<u8> = (0u32..50_000).flat_map(|value| value.to_le_bytes()).collect();
+    let payload: Vec<u8> = (0u32..50_000)
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
     let virtual_path = "Music\\Album\\song.mp3";
-    bob.download("alice", virtual_path, payload.len() as u64, FileAttributes::default());
+    bob.download(
+        "alice",
+        virtual_path,
+        payload.len() as u64,
+        FileAttributes::default(),
+    );
 
     wait_net(&mut uploader_events, |event| match event {
-        NetworkEvent::PeerMessage { message: PeerMessage::QueueUpload { file, .. }, .. }
-            if file == virtual_path =>
-        {
-            Some(())
-        }
+        NetworkEvent::PeerMessage {
+            message: PeerMessage::QueueUpload { file, .. },
+            ..
+        } if file == virtual_path => Some(()),
         _ => None,
     })
     .await;
 
-    uploader.peer("bob", PeerMessage::TransferRequest {
-        direction: TransferDirection::Upload,
-        token: 99,
-        file: virtual_path.into(),
-        filesize: Some(payload.len() as u64),
-    });
+    uploader.peer(
+        "bob",
+        PeerMessage::TransferRequest {
+            direction: TransferDirection::Upload,
+            token: 99,
+            file: virtual_path.into(),
+            filesize: Some(payload.len() as u64),
+        },
+    );
 
     wait_net(&mut uploader_events, |event| match event {
         NetworkEvent::PeerMessage {
-            message: PeerMessage::TransferResponse { token: 99, allowed: true, .. },
+            message:
+                PeerMessage::TransferResponse {
+                    token: 99,
+                    allowed: true,
+                    ..
+                },
             ..
         } => Some(()),
         _ => None,
@@ -108,11 +131,16 @@ async fn client_downloads_file_from_peer() {
     source.write_all(&payload).unwrap();
     source.seek(SeekFrom::Start(0)).unwrap();
 
-    uploader.send(NetworkCommand::RequestFileConnection { username: "bob".into(), token: 99 });
+    uploader.send(NetworkCommand::RequestFileConnection {
+        username: "bob".into(),
+        token: 99,
+    });
     let upload_conn = wait_net(&mut uploader_events, |event| match event {
-        NetworkEvent::PeerConnected { conn_type: ConnectionType::File, conn_id, .. } => {
-            Some(conn_id)
-        }
+        NetworkEvent::PeerConnected {
+            conn_type: ConnectionType::File,
+            conn_id,
+            ..
+        } => Some(conn_id),
         _ => None,
     })
     .await;
@@ -152,12 +180,19 @@ async fn client_shares_answers_search_and_uploads() {
     let share_dir = temp_dir("shared-music");
     let album_dir = share_dir.join("Best Album");
     std::fs::create_dir_all(&album_dir).unwrap();
-    let payload: Vec<u8> = (0u32..50_000).flat_map(|value| value.to_le_bytes()).collect();
+    let payload: Vec<u8> = (0u32..50_000)
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
     std::fs::write(album_dir.join("unique melody.mp3"), &payload).unwrap();
     std::fs::write(album_dir.join("other tune.mp3"), b"tiny").unwrap();
 
-    let mut eve_config =
-        ClientConfig::new(server_addr, "eve", "secret", free_port(), temp_dir("eve-downloads"));
+    let mut eve_config = ClientConfig::new(
+        server_addr,
+        "eve",
+        "secret",
+        free_port(),
+        temp_dir("eve-downloads"),
+    );
     eve_config.shared_folders = vec![SharedFolder {
         virtual_name: "Music".into(),
         path: share_dir,
@@ -178,8 +213,13 @@ async fn client_shares_answers_search_and_uploads() {
     assert_eq!(files, 2);
 
     let download_dir = temp_dir("frank-downloads");
-    let frank_config =
-        ClientConfig::new(server_addr, "frank", "secret", free_port(), download_dir.clone());
+    let frank_config = ClientConfig::new(
+        server_addr,
+        "frank",
+        "secret",
+        free_port(),
+        download_dir.clone(),
+    );
     let (frank, mut frank_events) = Client::spawn(frank_config);
     wait_client(&mut frank_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
@@ -189,9 +229,12 @@ async fn client_shares_answers_search_and_uploads() {
 
     let token = frank.search("unique melody", SearchScope::Global);
     let (result_username, results) = wait_client(&mut frank_events, |event| match event {
-        ClientEvent::SearchResults { token: got, username, results, .. } if got == token => {
-            Some((username, results))
-        }
+        ClientEvent::SearchResults {
+            token: got,
+            username,
+            results,
+            ..
+        } if got == token => Some((username, results)),
         _ => None,
     })
     .await;
@@ -202,9 +245,9 @@ async fn client_shares_answers_search_and_uploads() {
 
     frank.browse_user("eve");
     let shares = wait_client(&mut frank_events, |event| match event {
-        ClientEvent::SharedFileList { username, shares, .. } if username == "eve" => {
-            Some(shares)
-        }
+        ClientEvent::SharedFileList {
+            username, shares, ..
+        } if username == "eve" => Some(shares),
         _ => None,
     })
     .await;
@@ -214,7 +257,12 @@ async fn client_shares_answers_search_and_uploads() {
         .expect("album folder in browse response");
     assert_eq!(album.files.len(), 2);
 
-    frank.download("eve", &results[0].name, results[0].size, results[0].attributes.clone());
+    frank.download(
+        "eve",
+        &results[0].name,
+        results[0].size,
+        results[0].attributes.clone(),
+    );
 
     wait_client(&mut eve_events, |event| match event {
         ClientEvent::Upload(UploadUpdate::Started { username, .. }) => {
@@ -236,9 +284,15 @@ async fn client_shares_answers_search_and_uploads() {
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
 
     wait_client(&mut eve_events, |event| match event {
-        ClientEvent::Upload(UploadUpdate::Finished { username, virtual_path }) => {
+        ClientEvent::Upload(UploadUpdate::Finished {
+            username,
+            virtual_path,
+            size,
+            ..
+        }) => {
             assert_eq!(username, "frank");
             assert_eq!(virtual_path, "Music\\Best Album\\unique melody.mp3");
+            assert_eq!(size, payload.len() as u64);
             Some(())
         }
         ClientEvent::Upload(UploadUpdate::Failed { reason, .. }) => {
@@ -287,7 +341,9 @@ async fn wishlist_search_runs_on_interval() {
     let (_heidi, mut heidi_events) = Client::spawn(heidi_config);
 
     let (username, results) = wait_client(&mut heidi_events, |event| match event {
-        ClientEvent::SearchResults { username, results, .. } => Some((username, results)),
+        ClientEvent::SearchResults {
+            username, results, ..
+        } => Some((username, results)),
         _ => None,
     })
     .await;
@@ -312,8 +368,13 @@ async fn client_receives_search_results() {
     })
     .await;
 
-    let mut dave_config =
-        ClientConfig::new(server_addr, "dave", "secret", free_port(), temp_dir("downloads2"));
+    let mut dave_config = ClientConfig::new(
+        server_addr,
+        "dave",
+        "secret",
+        free_port(),
+        temp_dir("downloads2"),
+    );
     dave_config.incomplete_dir = temp_dir("incomplete2");
     let (dave, mut dave_events) = Client::spawn(dave_config);
     wait_client(&mut dave_events, |event| match event {
@@ -336,24 +397,190 @@ async fn client_receives_search_results() {
             ..FileAttributes::default()
         },
     }];
-    responder.peer("dave", PeerMessage::FileSearchResponse {
-        username: "carol".into(),
-        token,
-        results: results.clone(),
-        free_upload_slots: true,
-        upload_speed: 500000,
-        queue_size: 0,
-        unknown: 0,
-        private_results: Vec::new(),
-    });
+    responder.peer(
+        "dave",
+        PeerMessage::FileSearchResponse {
+            username: "carol".into(),
+            token,
+            results: results.clone(),
+            free_upload_slots: true,
+            upload_speed: 500000,
+            queue_size: 0,
+            unknown: 0,
+            private_results: Vec::new(),
+        },
+    );
 
     let (username, received) = wait_client(&mut dave_events, |event| match event {
-        ClientEvent::SearchResults { token: got, username, results, .. } if got == token => {
-            Some((username, results))
-        }
+        ClientEvent::SearchResults {
+            token: got,
+            username,
+            results,
+            ..
+        } if got == token => Some((username, results)),
         _ => None,
     })
     .await;
     assert_eq!(username, "carol");
     assert_eq!(received, results);
+}
+
+#[tokio::test]
+async fn restrictions_gate_uploads_and_actions_are_observed() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("restricted-music");
+    let album_dir = share_dir.join("Best Album");
+    std::fs::create_dir_all(&album_dir).unwrap();
+    let payload = b"restricted payload".repeat(500);
+    std::fs::write(album_dir.join("guarded song.mp3"), &payload).unwrap();
+
+    let mut eve_config = ClientConfig::new(
+        server_addr,
+        "eve",
+        "secret",
+        free_port(),
+        temp_dir("eve-dl"),
+    );
+    eve_config.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    let (eve, mut eve_events) = Client::spawn(eve_config);
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesScanned { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let frank_config = ClientConfig::new(
+        server_addr,
+        "frank",
+        "secret",
+        free_port(),
+        temp_dir("frank-dl"),
+    );
+    let (frank, mut frank_events) = Client::spawn(frank_config);
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    frank.browse_user("eve");
+    let ip = wait_client(&mut eve_events, |event| match event {
+        ClientEvent::Observed(Observation::PeerConnected {
+            username,
+            ip,
+            conn_type: ConnectionType::Peer,
+        }) if username == "frank" => Some(ip),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ip, Some(std::net::Ipv4Addr::LOCALHOST));
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::Observed(Observation::BrowseRequest { username }) if username == "frank" => {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SharedFileList { username, .. } if username == "eve" => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let token = frank.search("guarded song", SearchScope::Global);
+    let (matched, query) = wait_client(&mut eve_events, |event| match event {
+        ClientEvent::Observed(Observation::SearchSeen {
+            username,
+            query,
+            matched,
+        }) if username == "frank" => Some((matched, query)),
+        _ => None,
+    })
+    .await;
+    assert!(matched);
+    assert_eq!(query, "guarded song");
+    let results = wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SearchResults {
+            token: got,
+            results,
+            ..
+        } if got == token => Some(results),
+        _ => None,
+    })
+    .await;
+    let virtual_path = results[0].name.clone();
+    let size = results[0].size;
+
+    eve.set_user_restriction(
+        "frank",
+        Restriction::Denied {
+            reason: "not welcome".into(),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    frank.download("eve", &virtual_path, size, results[0].attributes.clone());
+
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::Observed(Observation::QueueRequest {
+            username, accepted, ..
+        }) if username == "frank" => {
+            assert!(!accepted);
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::Download(DownloadUpdate::Failed { reason, .. }) => {
+            assert_eq!(reason, "not welcome");
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+
+    eve.set_user_restriction("frank", Restriction::Hold);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    frank.download("eve", &virtual_path, size, results[0].attributes.clone());
+
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::Observed(Observation::QueueRequest {
+            username, accepted, ..
+        }) if username == "frank" => {
+            assert!(accepted);
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::Upload(UploadUpdate::Queued { username, .. }) if username == "frank" => {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    while let Ok(event) = eve_events.try_recv() {
+        if let ClientEvent::Upload(UploadUpdate::Started { .. }) = event {
+            panic!("held upload was granted a slot");
+        }
+    }
+
+    eve.set_user_restriction("frank", Restriction::None);
+    let file_path = wait_client(&mut frank_events, |event| match event {
+        ClientEvent::Download(DownloadUpdate::Finished { file_path, .. }) => Some(file_path),
+        ClientEvent::Download(DownloadUpdate::Failed { reason, .. }) => {
+            panic!("download failed: {reason}")
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(std::fs::read(&file_path).unwrap(), payload);
 }

@@ -7,12 +7,18 @@ use sqlx::MySqlPool;
 use tokio::sync::broadcast;
 
 use newkitine::client::Client;
-use newkitine::types::{FileAttributes, FolderContents, SimilarUser, UserStats};
+use newkitine::types::{FileAttributes, FolderContents, Recommendations, SimilarUser, UserStats};
 
+use super::behavior::Behavior;
+use super::geo::Geo;
 use super::settings::Settings;
+use super::stats::StatsSink;
 
 pub fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 pub struct App {
@@ -23,6 +29,9 @@ pub struct App {
     pub settings: RwLock<Settings>,
     pub locked_settings: Vec<&'static str>,
     pub gluetun_enabled: bool,
+    pub geo: Option<Geo>,
+    pub stats: StatsSink,
+    pub behavior: Behavior,
 }
 
 impl App {
@@ -68,6 +77,7 @@ pub struct Status {
     pub shared_folders: u32,
     pub shared_files: u32,
     pub privileges_secs: u32,
+    pub peer_connections: usize,
 }
 
 #[derive(Clone, Serialize)]
@@ -166,8 +176,8 @@ pub struct BuddyView {
 pub struct InterestsView {
     pub liked: Vec<String>,
     pub hated: Vec<String>,
-    pub recommendations: Vec<(String, i32)>,
-    pub unrecommendations: Vec<(String, i32)>,
+    pub recommendations: Recommendations,
+    pub unrecommendations: Recommendations,
     pub recommendations_for: Option<String>,
     pub recommendations_global: bool,
     pub similar_users: Vec<SimilarUser>,

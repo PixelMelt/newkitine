@@ -3,8 +3,13 @@ use crate::types::ConnectionType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerInitMessage {
-    PierceFireWall { token: u32 },
-    PeerInit { username: String, conn_type: ConnectionType },
+    PierceFireWall {
+        token: u32,
+    },
+    PeerInit {
+        username: String,
+        conn_type: ConnectionType,
+    },
 }
 
 impl PeerInitMessage {
@@ -18,7 +23,10 @@ impl PeerInitMessage {
     pub fn write_payload(&self, w: &mut MessageWriter) {
         match self {
             Self::PierceFireWall { token } => w.write_u32(*token),
-            Self::PeerInit { username, conn_type } => {
+            Self::PeerInit {
+                username,
+                conn_type,
+            } => {
                 w.write_string(username);
                 w.write_string(conn_type.as_str());
                 w.write_u32(0);
@@ -29,7 +37,9 @@ impl PeerInitMessage {
     pub fn parse(code: u8, payload: &[u8]) -> Result<Self, ProtocolError> {
         let r = &mut MessageReader::new(payload);
         Ok(match code {
-            0 => Self::PierceFireWall { token: r.read_u32()? },
+            0 => Self::PierceFireWall {
+                token: r.read_u32()?,
+            },
             1 => Self::PeerInit {
                 username: r.read_string()?,
                 conn_type: ConnectionType::from_str_value(&r.read_string()?)?,

@@ -16,7 +16,7 @@
   {:else if item.submenu}
     <div class="item has-sub">
       {item.label}
-      <span class="arrow">▸</span>
+      <span class="arrow">»</span>
       <div class="menu submenu">
         <svelte:self items={item.submenu} />
       </div>

@@ -24,6 +24,8 @@ pub struct Settings {
     pub download_limit_kbps: u32,
     pub auto_reconnect: bool,
     pub theme: String,
+    pub filter_level: String,
+    pub denied_message: String,
 }
 
 impl Default for Settings {
@@ -43,6 +45,51 @@ impl Default for Settings {
             download_limit_kbps: 0,
             auto_reconnect: true,
             theme: "dark".into(),
+            filter_level: "open".into(),
+            denied_message: "You need to share files to download from me.".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PublicSettings {
+    pub server: String,
+    pub username: String,
+    pub password_set: bool,
+    pub listen_port: u16,
+    pub description: String,
+    pub download_dir: PathBuf,
+    pub incomplete_dir: Option<PathBuf>,
+    pub shares: Vec<SharedFolder>,
+    pub upload_slots: usize,
+    pub queue_file_limit: usize,
+    pub upload_limit_kbps: u32,
+    pub download_limit_kbps: u32,
+    pub auto_reconnect: bool,
+    pub theme: String,
+    pub filter_level: String,
+    pub denied_message: String,
+}
+
+impl From<&Settings> for PublicSettings {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            server: settings.server.clone(),
+            username: settings.username.clone(),
+            password_set: !settings.password.is_empty(),
+            listen_port: settings.listen_port,
+            description: settings.description.clone(),
+            download_dir: settings.download_dir.clone(),
+            incomplete_dir: settings.incomplete_dir.clone(),
+            shares: settings.shares.clone(),
+            upload_slots: settings.upload_slots,
+            queue_file_limit: settings.queue_file_limit,
+            upload_limit_kbps: settings.upload_limit_kbps,
+            download_limit_kbps: settings.download_limit_kbps,
+            auto_reconnect: settings.auto_reconnect,
+            theme: settings.theme.clone(),
+            filter_level: settings.filter_level.clone(),
+            denied_message: settings.denied_message.clone(),
         }
     }
 }
@@ -67,7 +114,9 @@ impl Settings {
             locked.push("password");
         }
         if let Some(value) = env_var("NEWKITINE_LISTEN_PORT") {
-            self.listen_port = value.parse().expect("NEWKITINE_LISTEN_PORT must be a port number");
+            self.listen_port = value
+                .parse()
+                .expect("NEWKITINE_LISTEN_PORT must be a port number");
             locked.push("listen_port");
         }
         if let Some(value) = env_var("NEWKITINE_DOWNLOAD_DIR") {
@@ -86,7 +135,9 @@ impl Settings {
     }
 
     pub fn incomplete_dir(&self) -> PathBuf {
-        self.incomplete_dir.clone().unwrap_or_else(|| self.download_dir.join("incomplete"))
+        self.incomplete_dir
+            .clone()
+            .unwrap_or_else(|| self.download_dir.join("incomplete"))
     }
 
     pub fn to_client_config(&self) -> Result<ClientConfig, String> {
@@ -107,6 +158,7 @@ impl Settings {
             buddies: Vec::new(),
             banned: Vec::new(),
             ignored: Vec::new(),
+            ip_bans: Vec::new(),
             wishlist: Vec::new(),
             liked_interests: Vec::new(),
             hated_interests: Vec::new(),
@@ -120,14 +172,16 @@ mod tests {
 
     #[test]
     fn settings_json_round_trip() {
-        let mut settings = Settings::default();
-        settings.username = "someone".into();
-        settings.shares.push(SharedFolder {
-            virtual_name: "Music".into(),
-            path: PathBuf::from("/data/shared"),
-            buddy_only: true,
-        });
-        settings.theme = "catppuccin".into();
+        let settings = Settings {
+            username: "someone".into(),
+            shares: vec![SharedFolder {
+                virtual_name: "Music".into(),
+                path: PathBuf::from("/data/shared"),
+                buddy_only: true,
+            }],
+            theme: "catppuccin".into(),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&settings).unwrap();
         let loaded: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(settings, loaded);

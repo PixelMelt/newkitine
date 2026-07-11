@@ -13,7 +13,10 @@ pub enum PeerMessage {
         unknown: u32,
         private_shares: Vec<FolderContents>,
     },
-    FileSearchRequest { token: u32, search_term: String },
+    FileSearchRequest {
+        token: u32,
+        search_term: String,
+    },
     FileSearchResponse {
         username: String,
         token: u32,
@@ -33,21 +36,50 @@ pub enum PeerMessage {
         slots_available: bool,
         upload_allowed: Option<u32>,
     },
-    FolderContentsRequest { token: u32, directory: String, legacy_client: bool },
-    FolderContentsResponse { token: u32, directory: String, folders: Vec<FolderContents> },
+    FolderContentsRequest {
+        token: u32,
+        directory: String,
+        legacy_client: bool,
+    },
+    FolderContentsResponse {
+        token: u32,
+        directory: String,
+        folders: Vec<FolderContents>,
+    },
     TransferRequest {
         direction: TransferDirection,
         token: u32,
         file: String,
         filesize: Option<u64>,
     },
-    TransferResponse { token: u32, allowed: bool, reason: Option<String>, filesize: Option<u64> },
-    PlaceholdUpload { file: String },
-    QueueUpload { file: String, legacy_client: bool },
-    PlaceInQueueResponse { filename: String, place: u32 },
-    UploadFailed { file: String },
-    UploadDenied { file: String, reason: String },
-    PlaceInQueueRequest { file: String, legacy_client: bool },
+    TransferResponse {
+        token: u32,
+        allowed: bool,
+        reason: Option<String>,
+        filesize: Option<u64>,
+    },
+    PlaceholdUpload {
+        file: String,
+    },
+    QueueUpload {
+        file: String,
+        legacy_client: bool,
+    },
+    PlaceInQueueResponse {
+        filename: String,
+        place: u32,
+    },
+    UploadFailed {
+        file: String,
+    },
+    UploadDenied {
+        file: String,
+        reason: String,
+    },
+    PlaceInQueueRequest {
+        file: String,
+        legacy_client: bool,
+    },
     UploadQueueNotification,
     UnknownPeerMessage,
 }
@@ -98,10 +130,18 @@ fn read_file_entry(r: &mut MessageReader, backslash_name: bool) -> Result<FileIn
     let ext_len = r.read_u32()? as usize;
     r.skip(ext_len)?;
     let attributes = read_file_attributes(r)?;
-    Ok(FileInfo { code, name, size, attributes })
+    Ok(FileInfo {
+        code,
+        name,
+        size,
+        attributes,
+    })
 }
 
-fn read_file_list(r: &mut MessageReader, backslash_name: bool) -> Result<Vec<FileInfo>, ProtocolError> {
+fn read_file_list(
+    r: &mut MessageReader,
+    backslash_name: bool,
+) -> Result<Vec<FileInfo>, ProtocolError> {
     let num = r.read_u32()? as usize;
     let mut files = Vec::with_capacity(num.min(65536));
     for _ in 0..num {
@@ -181,7 +221,11 @@ impl PeerMessage {
             | Self::UserInfoRequest
             | Self::UploadQueueNotification
             | Self::UnknownPeerMessage => {}
-            Self::SharedFileListResponse { shares, unknown, private_shares } => {
+            Self::SharedFileListResponse {
+                shares,
+                unknown,
+                private_shares,
+            } => {
                 write_folder_list(&mut w, shares);
                 w.write_u32(*unknown);
                 if !private_shares.is_empty() {
@@ -236,7 +280,11 @@ impl PeerMessage {
                 w.write_bool(*slots_available);
                 w.write_u32(upload_allowed.unwrap());
             }
-            Self::FolderContentsRequest { token, directory, legacy_client } => {
+            Self::FolderContentsRequest {
+                token,
+                directory,
+                legacy_client,
+            } => {
                 w.write_u32(*token);
                 if *legacy_client {
                     w.write_string_legacy(directory);
@@ -244,13 +292,22 @@ impl PeerMessage {
                     w.write_string(directory);
                 }
             }
-            Self::FolderContentsResponse { token, directory, folders } => {
+            Self::FolderContentsResponse {
+                token,
+                directory,
+                folders,
+            } => {
                 w.write_u32(*token);
                 w.write_string(directory);
                 write_folder_list(&mut w, folders);
                 return compress(&w.into_bytes());
             }
-            Self::TransferRequest { direction, token, file, filesize } => {
+            Self::TransferRequest {
+                direction,
+                token,
+                file,
+                filesize,
+            } => {
                 w.write_u32(direction.as_u32());
                 w.write_u32(*token);
                 w.write_string(file);
@@ -258,7 +315,12 @@ impl PeerMessage {
                     w.write_u64(filesize.unwrap());
                 }
             }
-            Self::TransferResponse { token, allowed, reason, filesize } => {
+            Self::TransferResponse {
+                token,
+                allowed,
+                reason,
+                filesize,
+            } => {
                 w.write_u32(*token);
                 w.write_bool(*allowed);
                 if let Some(reason) = reason {
@@ -269,8 +331,14 @@ impl PeerMessage {
                 }
             }
             Self::PlaceholdUpload { file } | Self::UploadFailed { file } => w.write_string(file),
-            Self::QueueUpload { file, legacy_client }
-            | Self::PlaceInQueueRequest { file, legacy_client } => {
+            Self::QueueUpload {
+                file,
+                legacy_client,
+            }
+            | Self::PlaceInQueueRequest {
+                file,
+                legacy_client,
+            } => {
                 if *legacy_client {
                     w.write_string_legacy(file);
                 } else {
@@ -297,9 +365,16 @@ impl PeerMessage {
                 let r = &mut MessageReader::new(&data);
                 let shares = read_folder_list(r)?;
                 let unknown = if r.has_remaining() { r.read_u32()? } else { 0 };
-                let private_shares =
-                    if r.has_remaining() { read_folder_list(r)? } else { Vec::new() };
-                Self::SharedFileListResponse { shares, unknown, private_shares }
+                let private_shares = if r.has_remaining() {
+                    read_folder_list(r)?
+                } else {
+                    Vec::new()
+                };
+                Self::SharedFileListResponse {
+                    shares,
+                    unknown,
+                    private_shares,
+                }
             }
             8 => {
                 let r = &mut MessageReader::new(payload);
@@ -318,8 +393,11 @@ impl PeerMessage {
                 let upload_speed = r.read_u32()?;
                 let queue_size = r.read_u32()?;
                 let unknown = if r.has_remaining() { r.read_u32()? } else { 0 };
-                let private_results =
-                    if r.has_remaining() { read_file_list(r, true)? } else { Vec::new() };
+                let private_results = if r.has_remaining() {
+                    read_file_list(r, true)?
+                } else {
+                    Vec::new()
+                };
                 Self::FileSearchResponse {
                     username,
                     token,
@@ -336,11 +414,19 @@ impl PeerMessage {
                 let r = &mut MessageReader::new(payload);
                 let description = r.read_string()?;
                 let has_picture = r.read_bool()?;
-                let picture = if has_picture { Some(r.read_bytes()?) } else { None };
+                let picture = if has_picture {
+                    Some(r.read_bytes()?)
+                } else {
+                    None
+                };
                 let total_uploads = r.read_u32()?;
                 let queue_size = r.read_u32()?;
                 let slots_available = r.read_bool()?;
-                let upload_allowed = if r.remaining() >= 4 { Some(r.read_u32()?) } else { None };
+                let upload_allowed = if r.remaining() >= 4 {
+                    Some(r.read_u32()?)
+                } else {
+                    None
+                };
                 Self::UserInfoResponse {
                     description,
                     picture,
@@ -383,7 +469,12 @@ impl PeerMessage {
                 } else {
                     None
                 };
-                Self::TransferRequest { direction, token, file, filesize }
+                Self::TransferRequest {
+                    direction,
+                    token,
+                    file,
+                    filesize,
+                }
             }
             41 => {
                 let r = &mut MessageReader::new(payload);
@@ -398,15 +489,25 @@ impl PeerMessage {
                         reason = Some(r.read_string()?);
                     }
                 }
-                Self::TransferResponse { token, allowed, reason, filesize }
+                Self::TransferResponse {
+                    token,
+                    allowed,
+                    reason,
+                    filesize,
+                }
             }
             42 => {
                 let r = &mut MessageReader::new(payload);
-                Self::PlaceholdUpload { file: r.read_string()? }
+                Self::PlaceholdUpload {
+                    file: r.read_string()?,
+                }
             }
             43 => {
                 let r = &mut MessageReader::new(payload);
-                Self::QueueUpload { file: r.read_string()?, legacy_client: false }
+                Self::QueueUpload {
+                    file: r.read_string()?,
+                    legacy_client: false,
+                }
             }
             44 => {
                 let r = &mut MessageReader::new(payload);
@@ -417,19 +518,32 @@ impl PeerMessage {
             }
             46 => {
                 let r = &mut MessageReader::new(payload);
-                Self::UploadFailed { file: r.read_string()? }
+                Self::UploadFailed {
+                    file: r.read_string()?,
+                }
             }
             50 => {
                 let r = &mut MessageReader::new(payload);
-                Self::UploadDenied { file: r.read_string()?, reason: r.read_string()? }
+                Self::UploadDenied {
+                    file: r.read_string()?,
+                    reason: r.read_string()?,
+                }
             }
             51 => {
                 let r = &mut MessageReader::new(payload);
-                Self::PlaceInQueueRequest { file: r.read_string()?, legacy_client: false }
+                Self::PlaceInQueueRequest {
+                    file: r.read_string()?,
+                    legacy_client: false,
+                }
             }
             52 => Self::UploadQueueNotification,
             12547 => Self::UnknownPeerMessage,
-            _ => return Err(ProtocolError::UnknownMessageCode { family: "peer", code }),
+            _ => {
+                return Err(ProtocolError::UnknownMessageCode {
+                    family: "peer",
+                    code,
+                });
+            }
         })
     }
 

@@ -33,8 +33,7 @@ pub fn frame(code: u32, payload: Vec<u8>) -> Vec<u8> {
 }
 
 fn read_string(payload: &[u8], offset: &mut usize) -> String {
-    let len =
-        u32::from_le_bytes(payload[*offset..*offset + 4].try_into().unwrap()) as usize;
+    let len = u32::from_le_bytes(payload[*offset..*offset + 4].try_into().unwrap()) as usize;
     *offset += 4;
     let value = String::from_utf8(payload[*offset..*offset + len].to_vec()).unwrap();
     *offset += len;
@@ -76,7 +75,11 @@ async fn handle_fake_client(stream: TcpStream, registry: Registry) {
                 username = read_string(payload, &mut offset);
                 registry.lock().await.insert(
                     username.clone(),
-                    FakeClient { port: 0, outgoing: outgoing_tx.clone(), hidden: false },
+                    FakeClient {
+                        port: 0,
+                        outgoing: outgoing_tx.clone(),
+                        hidden: false,
+                    },
                 );
                 let mut w = MessageWriter::new();
                 w.write_bool(true);
@@ -130,8 +133,10 @@ async fn handle_fake_client(stream: TcpStream, registry: Registry) {
                 let target = read_string(payload, &mut offset);
                 let conn_type = read_string(payload, &mut offset);
                 let registry = registry.lock().await;
-                let requester_port =
-                    registry.get(&username).map(|client| client.port).unwrap_or(0);
+                let requester_port = registry
+                    .get(&username)
+                    .map(|client| client.port)
+                    .unwrap_or(0);
                 if let Some(target_client) = registry.get(&target) {
                     let mut w = MessageWriter::new();
                     w.write_string(&username);
@@ -150,9 +155,12 @@ async fn handle_fake_client(stream: TcpStream, registry: Registry) {
     }
 }
 
-
 pub fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 pub async fn start_fake_server() -> (SocketAddr, Registry) {
@@ -165,7 +173,7 @@ pub async fn start_fake_server() -> (SocketAddr, Registry) {
 
 pub fn tempfile() -> std::fs::File {
     use std::io::{Seek, SeekFrom};
-    let mut file = std::fs::File::from(tempfile_named().1);
+    let mut file = tempfile_named().1;
     file.seek(SeekFrom::Start(0)).unwrap();
     file
 }
@@ -188,6 +196,7 @@ pub fn tempfile_named() -> (std::path::PathBuf, std::fs::File) {
     (path, file)
 }
 
+#[allow(dead_code)]
 pub fn temp_dir(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("newkitine-test-{}-{}", std::process::id(), label));
     std::fs::create_dir_all(&dir).unwrap();

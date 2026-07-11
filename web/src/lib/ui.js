@@ -7,21 +7,21 @@ export const userInfoTarget = writable(null);
 export const searchTarget = writable(null);
 
 export function openPrivateChat(username) {
-  chatTarget.set(username);
-  activeTab.set('chat');
+	chatTarget.set(username);
+	activeTab.set('chat');
 }
 
 export function openBrowse(username, folder = null) {
-  browseTarget.set({ username, folder });
-  activeTab.set('browse');
+	browseTarget.set({ username, folder });
+	activeTab.set('browse');
 }
 
 export function openUserInfo(username) {
-  userInfoTarget.set(username);
-  activeTab.set('userinfo');
+	userInfoTarget.set(username);
+	activeTab.set('userinfo');
 }
 
 export function openSearch(query) {
-  searchTarget.set(query);
-  activeTab.set('search');
+	searchTarget.set(query);
+	activeTab.set('search');
 }

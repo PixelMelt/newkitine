@@ -42,16 +42,37 @@ impl Transfer {
     }
 
     pub fn basename(&self) -> String {
-        self.virtual_path.rsplit('\\').next().unwrap_or(&self.virtual_path).to_owned()
+        self.virtual_path
+            .rsplit('\\')
+            .next()
+            .unwrap_or(&self.virtual_path)
+            .to_owned()
     }
 }
 
 #[derive(Debug)]
 pub enum DownloadUpdate {
-    Started { username: String, virtual_path: String, incomplete_path: PathBuf },
-    Progress { username: String, virtual_path: String, bytes_done: u64, size: u64 },
-    Finished { username: String, virtual_path: String, file_path: PathBuf },
-    Failed { username: String, virtual_path: String, reason: String },
+    Started {
+        username: String,
+        virtual_path: String,
+        incomplete_path: PathBuf,
+    },
+    Progress {
+        username: String,
+        virtual_path: String,
+        bytes_done: u64,
+        size: u64,
+    },
+    Finished {
+        username: String,
+        virtual_path: String,
+        file_path: PathBuf,
+    },
+    Failed {
+        username: String,
+        virtual_path: String,
+        reason: String,
+    },
 }
 
 pub struct Downloads {
@@ -115,18 +136,26 @@ impl Downloads {
                 activated_at: None,
             },
         );
-        self.net.server(ServerRequest::WatchUser { user: username.clone() });
-        self.net.peer(username, PeerMessage::QueueUpload {
-            file: virtual_path,
-            legacy_client: false,
+        self.net.server(ServerRequest::WatchUser {
+            user: username.clone(),
         });
+        self.net.peer(
+            username,
+            PeerMessage::QueueUpload {
+                file: virtual_path,
+                legacy_client: false,
+            },
+        );
     }
 
     pub fn abort(&mut self, username: &str, virtual_path: &str) {
         let key = (username.to_owned(), virtual_path.to_owned());
-        let Some(mut transfer) = self.transfers.remove(&key) else { return };
+        let Some(mut transfer) = self.transfers.remove(&key) else {
+            return;
+        };
         if let Some(token) = transfer.token.take() {
-            self.active_tokens.remove(&(transfer.username.clone(), token));
+            self.active_tokens
+                .remove(&(transfer.username.clone(), token));
         }
         if let Some(conn_id) = transfer.conn_id.take() {
             self.conn_tokens.remove(&conn_id);
@@ -151,15 +180,19 @@ impl Downloads {
             let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.status = TransferStatus::Queued;
             transfer.retry_attempt = false;
-            self.net.peer(key.0, PeerMessage::QueueUpload {
-                file: key.1,
-                legacy_client: false,
-            });
+            self.net.peer(
+                key.0,
+                PeerMessage::QueueUpload {
+                    file: key.1,
+                    legacy_client: false,
+                },
+            );
         }
     }
 
     pub fn owns_token(&self, username: &str, token: u32) -> bool {
-        self.active_tokens.contains_key(&(username.to_owned(), token))
+        self.active_tokens
+            .contains_key(&(username.to_owned(), token))
     }
 
     pub fn handle_transfer_request(
@@ -190,8 +223,14 @@ impl Downloads {
                 transfer.status = TransferStatus::GettingStatus;
                 transfer.token = Some(token);
                 transfer.activated_at = Some(Instant::now());
-                self.active_tokens.insert((username.to_owned(), token), file.to_owned());
-                PeerMessage::TransferResponse { token, allowed: true, reason: None, filesize: None }
+                self.active_tokens
+                    .insert((username.to_owned(), token), file.to_owned());
+                PeerMessage::TransferResponse {
+                    token,
+                    allowed: true,
+                    reason: None,
+                    filesize: None,
+                }
             }
             Some(transfer) if transfer.status == TransferStatus::Finished => {
                 PeerMessage::TransferResponse {
@@ -217,9 +256,15 @@ impl Downloads {
         token: u32,
         conn_id: ConnId,
     ) -> Vec<DownloadUpdate> {
-        let Some(virtual_path) = self.active_tokens.get(&(username.to_owned(), token)).cloned()
+        let Some(virtual_path) = self
+            .active_tokens
+            .get(&(username.to_owned(), token))
+            .cloned()
         else {
-            debug!(username, token, "file transfer init with unknown token, closing");
+            debug!(
+                username,
+                token, "file transfer init with unknown token, closing"
+            );
             self.net.send(NetworkCommand::CloseConnection(conn_id));
             return Vec::new();
         };
@@ -233,7 +278,8 @@ impl Downloads {
         }
         transfer.conn_id = Some(conn_id);
         transfer.activated_at = None;
-        self.conn_tokens.insert(conn_id, (username.to_owned(), token));
+        self.conn_tokens
+            .insert(conn_id, (username.to_owned(), token));
 
         let size_changed = transfer.size_changed;
         let open_result = (|| {
@@ -286,12 +332,17 @@ impl Downloads {
         token: u32,
         bytes_left: u64,
     ) -> Vec<DownloadUpdate> {
-        let Some(virtual_path) = self.active_tokens.get(&(username.to_owned(), token)).cloned()
+        let Some(virtual_path) = self
+            .active_tokens
+            .get(&(username.to_owned(), token))
+            .cloned()
         else {
             return Vec::new();
         };
         let key = (username.to_owned(), virtual_path.clone());
-        let Some(transfer) = self.transfers.get_mut(&key) else { return Vec::new() };
+        let Some(transfer) = self.transfers.get_mut(&key) else {
+            return Vec::new();
+        };
         transfer.bytes_done = transfer.size.saturating_sub(bytes_left);
         if bytes_left == 0 {
             return self.finish(&key);
@@ -310,19 +361,23 @@ impl Downloads {
         token: Option<u32>,
         conn_id: ConnId,
     ) -> Vec<DownloadUpdate> {
-        let token = match token.or_else(|| {
-            self.conn_tokens.get(&conn_id).map(|(_, token)| *token)
-        }) {
+        let token = match token.or_else(|| self.conn_tokens.get(&conn_id).map(|(_, token)| *token))
+        {
             Some(token) => token,
             None => return Vec::new(),
         };
         self.conn_tokens.remove(&conn_id);
-        let Some(virtual_path) = self.active_tokens.get(&(username.to_owned(), token)).cloned()
+        let Some(virtual_path) = self
+            .active_tokens
+            .get(&(username.to_owned(), token))
+            .cloned()
         else {
             return Vec::new();
         };
         let key = (username.to_owned(), virtual_path);
-        let Some(transfer) = self.transfers.get(&key) else { return Vec::new() };
+        let Some(transfer) = self.transfers.get(&key) else {
+            return Vec::new();
+        };
         match transfer.status {
             TransferStatus::Transferring => self.fail(&key, "connection closed".into()),
             _ => {
@@ -349,7 +404,9 @@ impl Downloads {
 
     pub fn handle_upload_failed(&mut self, username: &str, file: &str) -> Vec<DownloadUpdate> {
         let key = (username.to_owned(), file.to_owned());
-        let Some(transfer) = self.transfers.get_mut(&key) else { return Vec::new() };
+        let Some(transfer) = self.transfers.get_mut(&key) else {
+            return Vec::new();
+        };
         if transfer.status == TransferStatus::Finished {
             return Vec::new();
         }
@@ -361,7 +418,13 @@ impl Downloads {
             transfer.activated_at = None;
             let username = transfer.username.clone();
             let file = transfer.virtual_path.clone();
-            self.net.peer(username, PeerMessage::QueueUpload { file, legacy_client: false });
+            self.net.peer(
+                username,
+                PeerMessage::QueueUpload {
+                    file,
+                    legacy_client: false,
+                },
+            );
             return Vec::new();
         }
         self.fail(&key, "upload failed".into())
@@ -377,8 +440,11 @@ impl Downloads {
         for message in unsent {
             if let PeerMessage::QueueUpload { file, .. } = message {
                 let key = (username.to_owned(), file.clone());
-                let reason =
-                    if is_offline { "user is offline" } else { "connection timeout" };
+                let reason = if is_offline {
+                    "user is offline"
+                } else {
+                    "connection timeout"
+                };
                 updates.extend(self.fail(&key, reason.into()));
             }
         }
@@ -424,7 +490,8 @@ impl Downloads {
         let transfer = self.transfers.get_mut(key).unwrap();
         transfer.status = TransferStatus::Finished;
         if let Some(token) = transfer.token.take() {
-            self.active_tokens.remove(&(transfer.username.clone(), token));
+            self.active_tokens
+                .remove(&(transfer.username.clone(), token));
         }
         let username = transfer.username.clone();
         let virtual_path = transfer.virtual_path.clone();
@@ -435,8 +502,11 @@ impl Downloads {
         let destination = self.complete_file_path(&basename, size);
         let move_result = (|| {
             fs::create_dir_all(&self.download_dir)?;
-            fs::rename(&incomplete_path, &destination)
-                .or_else(|_| fs::copy(&incomplete_path, &destination).map(|_| ()).and_then(|_| fs::remove_file(&incomplete_path)))
+            fs::rename(&incomplete_path, &destination).or_else(|_| {
+                fs::copy(&incomplete_path, &destination)
+                    .map(|_| ())
+                    .and_then(|_| fs::remove_file(&incomplete_path))
+            })
         })();
         match move_result {
             Ok(()) => {
@@ -455,13 +525,19 @@ impl Downloads {
     }
 
     fn fail(&mut self, key: &(String, String), reason: String) -> Vec<DownloadUpdate> {
-        let Some(transfer) = self.transfers.get_mut(key) else { return Vec::new() };
-        if matches!(transfer.status, TransferStatus::Finished | TransferStatus::Failed(_)) {
+        let Some(transfer) = self.transfers.get_mut(key) else {
+            return Vec::new();
+        };
+        if matches!(
+            transfer.status,
+            TransferStatus::Finished | TransferStatus::Failed(_)
+        ) {
             return Vec::new();
         }
         transfer.status = TransferStatus::Failed(reason.clone());
         if let Some(token) = transfer.token.take() {
-            self.active_tokens.remove(&(transfer.username.clone(), token));
+            self.active_tokens
+                .remove(&(transfer.username.clone(), token));
         }
         if let Some(conn_id) = transfer.conn_id.take() {
             self.conn_tokens.remove(&conn_id);
@@ -475,10 +551,9 @@ impl Downloads {
 
     fn incomplete_file_path(&self, username: &str, virtual_path: &str) -> PathBuf {
         let digest = md5::compute(format!("{virtual_path}{username}").as_bytes());
-        let basename = clean_file_name(
-            virtual_path.rsplit('\\').next().unwrap_or(virtual_path),
-        );
-        self.incomplete_dir.join(format!("INCOMPLETE{digest:x}{basename}"))
+        let basename = clean_file_name(virtual_path.rsplit('\\').next().unwrap_or(virtual_path));
+        self.incomplete_dir
+            .join(format!("INCOMPLETE{digest:x}{basename}"))
     }
 
     fn complete_file_path(&self, basename: &str, size: u64) -> PathBuf {
@@ -493,7 +568,9 @@ impl Downloads {
             if metadata.len() == size {
                 break;
             }
-            candidate = self.download_dir.join(format!("{stem} ({counter}){extension}"));
+            candidate = self
+                .download_dir
+                .join(format!("{stem} ({counter}){extension}"));
             counter += 1;
         }
         candidate
@@ -502,6 +579,12 @@ impl Downloads {
 
 fn clean_file_name(name: &str) -> String {
     name.chars()
-        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect()
 }

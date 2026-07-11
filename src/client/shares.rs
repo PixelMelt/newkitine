@@ -53,7 +53,11 @@ pub struct SharesIndex {
 
 impl SharesIndex {
     pub fn counts(&self) -> (u32, u32) {
-        let folders = self.folders.iter().filter(|folder| !folder.buddy_only).count();
+        let folders = self
+            .folders
+            .iter()
+            .filter(|folder| !folder.buddy_only)
+            .count();
         let files = self.files.iter().filter(|file| !file.buddy_only).count();
         (folders as u32, files as u32)
     }
@@ -73,7 +77,9 @@ impl SharesIndex {
     }
 
     pub fn folder_contents(&self, directory: &str, is_buddy: bool) -> Vec<FolderContents> {
-        let Some(&index) = self.folder_lookup.get(directory) else { return Vec::new() };
+        let Some(&index) = self.folder_lookup.get(directory) else {
+            return Vec::new();
+        };
         let folder = &self.folders[index];
         if folder.buddy_only && !is_buddy {
             return Vec::new();
@@ -125,8 +131,7 @@ impl SharesIndex {
             .filter(|word| !excluded_words.contains(word) && !partial_words.contains(word))
             .collect();
 
-        let Some(indices) =
-            self.match_indices(&included_words, &excluded_words, &partial_words)
+        let Some(indices) = self.match_indices(&included_words, &excluded_words, &partial_words)
         else {
             return Vec::new();
         };
@@ -137,7 +142,9 @@ impl SharesIndex {
             .filter(|entry| is_buddy || !entry.buddy_only)
             .filter(|entry| {
                 let path_lower = entry.virtual_path.to_lowercase();
-                !excluded_phrases.iter().any(|phrase| path_lower.contains(phrase))
+                !excluded_phrases
+                    .iter()
+                    .any(|phrase| path_lower.contains(phrase))
             })
             .take(MAX_SEARCH_RESULTS)
             .map(|entry| FileInfo {
@@ -210,7 +217,12 @@ pub fn scan(shared_folders: &[SharedFolder]) -> SharesIndex {
         scan_shared_folder(&mut index, shared);
     }
     let (folders, files) = index.counts();
-    info!(folders, files, total_files = index.files.len(), "share scan complete");
+    info!(
+        folders,
+        files,
+        total_files = index.files.len(),
+        "share scan complete"
+    );
     index
 }
 
@@ -289,7 +301,9 @@ fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) {
         }
 
         files.sort_by(|a, b| a.name.cmp(&b.name));
-        index.folder_lookup.insert(virtual_dir.clone(), index.folders.len());
+        index
+            .folder_lookup
+            .insert(virtual_dir.clone(), index.folders.len());
         index.folders.push(ScannedFolder {
             virtual_path: virtual_dir,
             files,
@@ -299,7 +313,8 @@ fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) {
 }
 
 fn split_words(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty())
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
 }
 
 fn audio_attributes(path: &Path, size: u64) -> FileAttributes {
@@ -307,11 +322,16 @@ fn audio_attributes(path: &Path, size: u64) -> FileAttributes {
     if size <= 128 || !has_audio_extension(path) {
         return attributes;
     }
-    let Ok(tagged) = lofty::read_from_path(path) else { return attributes };
+    let Ok(tagged) = lofty::read_from_path(path) else {
+        return attributes;
+    };
     let properties = tagged.properties();
     attributes.bitrate = properties.audio_bitrate().filter(|&value| value > 0);
     attributes.sample_rate = properties.sample_rate().filter(|&value| value > 0);
-    attributes.bit_depth = properties.bit_depth().map(u32::from).filter(|&value| value > 0);
+    attributes.bit_depth = properties
+        .bit_depth()
+        .map(u32::from)
+        .filter(|&value| value > 0);
     let duration = properties.duration().as_secs();
     if duration < UINT32_LIMIT {
         attributes.length = Some(duration as u32);
@@ -345,7 +365,11 @@ mod tests {
                 path: base.join("public"),
                 buddy_only: false,
             },
-            SharedFolder { virtual_name: "Private".into(), path: secret, buddy_only: true },
+            SharedFolder {
+                virtual_name: "Private".into(),
+                path: secret,
+                buddy_only: true,
+            },
         ])
     }
 
@@ -380,7 +404,11 @@ mod tests {
         assert_eq!(buddy.len(), 1);
         assert_eq!(buddy[0].name, "Private\\hidden song.wav");
 
-        assert!(index.search("first song", false, &["first".into()]).is_empty());
+        assert!(
+            index
+                .search("first song", false, &["first".into()])
+                .is_empty()
+        );
     }
 
     #[test]
@@ -388,7 +416,11 @@ mod tests {
         let index = test_index();
 
         let public = index.browse(false);
-        assert!(public.iter().all(|folder| !folder.directory.starts_with("Private")));
+        assert!(
+            public
+                .iter()
+                .all(|folder| !folder.directory.starts_with("Private"))
+        );
         let buddy = index.browse(true);
         assert!(buddy.iter().any(|folder| folder.directory == "Private"));
 
@@ -400,7 +432,10 @@ mod tests {
         assert!(index.resolve("Private\\hidden song.wav", false).is_none());
         assert!(index.resolve("Private\\hidden song.wav", true).is_some());
 
-        assert_eq!(index.folder_contents("Public\\Sample Album", false).len(), 1);
+        assert_eq!(
+            index.folder_contents("Public\\Sample Album", false).len(),
+            1
+        );
         assert!(index.folder_contents("Private", false).is_empty());
         assert!(index.folder_contents("Nope", true).is_empty());
     }

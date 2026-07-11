@@ -18,7 +18,9 @@ pub use uploads::{DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_UPLOAD_SLOTS, UploadUpdate};
 
 use crate::network::ConnId;
 use crate::protocol::{PeerMessage, ServerRequest, ServerResponse, initial_token};
-use crate::types::{FileAttributes, FileInfo, FolderContents, SearchScope, UserStatus};
+use crate::types::{
+    FileAttributes, FileInfo, FolderContents, Observation, Restriction, SearchScope, UserStatus,
+};
 
 pub const DEFAULT_SERVER: &str = "server.slsknet.org:2242";
 
@@ -40,6 +42,7 @@ pub struct ClientConfig {
     pub buddies: Vec<String>,
     pub banned: Vec<String>,
     pub ignored: Vec<String>,
+    pub ip_bans: Vec<String>,
     pub wishlist: Vec<String>,
     pub liked_interests: Vec<String>,
     pub hated_interests: Vec<String>,
@@ -70,6 +73,7 @@ impl ClientConfig {
             buddies: Vec::new(),
             banned: Vec::new(),
             ignored: Vec::new(),
+            ip_bans: Vec::new(),
             wishlist: Vec::new(),
             liked_interests: Vec::new(),
             hated_interests: Vec::new(),
@@ -90,6 +94,7 @@ pub enum ClientEvent {
     Disconnected {
         manual: bool,
     },
+    ConnectionCount(usize),
     SharesScanned {
         folders: u32,
         files: u32,
@@ -145,34 +150,100 @@ pub enum ClientEvent {
         conn_id: ConnId,
         message: PeerMessage,
     },
+    Observed(Observation),
 }
 
 #[derive(Debug)]
 pub(crate) enum ClientCommand {
-    Search { token: u32, query: String, scope: SearchScope },
-    CancelSearch { token: u32 },
-    Download { username: String, virtual_path: String, size: u64, attributes: FileAttributes },
-    AbortDownload { username: String, virtual_path: String },
-    AbortUpload { username: String, virtual_path: String },
-    BrowseUser { username: String },
-    RequestUserInfo { username: String },
-    AddBuddy { username: String },
-    RemoveBuddy { username: String },
-    BanUser { username: String },
-    UnbanUser { username: String },
-    IgnoreUser { username: String },
-    UnignoreUser { username: String },
-    AddWish { term: String },
-    RemoveWish { term: String },
+    Search {
+        token: u32,
+        query: String,
+        scope: SearchScope,
+    },
+    CancelSearch {
+        token: u32,
+    },
+    Download {
+        username: String,
+        virtual_path: String,
+        size: u64,
+        attributes: FileAttributes,
+    },
+    AbortDownload {
+        username: String,
+        virtual_path: String,
+    },
+    AbortUpload {
+        username: String,
+        virtual_path: String,
+    },
+    BrowseUser {
+        username: String,
+    },
+    RequestUserInfo {
+        username: String,
+    },
+    AddBuddy {
+        username: String,
+    },
+    RemoveBuddy {
+        username: String,
+    },
+    BanUser {
+        username: String,
+    },
+    UnbanUser {
+        username: String,
+    },
+    IgnoreUser {
+        username: String,
+    },
+    UnignoreUser {
+        username: String,
+    },
+    SetIpBans {
+        patterns: Vec<String>,
+    },
+    SetUserRestriction {
+        username: String,
+        restriction: Restriction,
+    },
+    AddWish {
+        term: String,
+    },
+    RemoveWish {
+        term: String,
+    },
     RescanShares,
-    SetTransferLimits { upload_kbps: u32, download_kbps: u32 },
-    SetListenPort { port: u16 },
-    SetLogin { server: SocketAddr, username: String, password: String },
-    SetDescription { description: String },
-    SetSharedFolders { folders: Vec<SharedFolder> },
-    SetUploadSlots { upload_slots: usize, queue_file_limit: usize },
-    SetDownloadDirs { download_dir: PathBuf, incomplete_dir: PathBuf },
-    SetAutoReconnect { enabled: bool },
+    SetTransferLimits {
+        upload_kbps: u32,
+        download_kbps: u32,
+    },
+    SetListenPort {
+        port: u16,
+    },
+    SetLogin {
+        server: SocketAddr,
+        username: String,
+        password: String,
+    },
+    SetDescription {
+        description: String,
+    },
+    SetSharedFolders {
+        folders: Vec<SharedFolder>,
+    },
+    SetUploadSlots {
+        upload_slots: usize,
+        queue_file_limit: usize,
+    },
+    SetDownloadDirs {
+        download_dir: PathBuf,
+        incomplete_dir: PathBuf,
+    },
+    SetAutoReconnect {
+        enabled: bool,
+    },
     Server(ServerRequest),
     Connect,
     Reconnect,
@@ -189,8 +260,19 @@ impl Client {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let token_counter = Arc::new(AtomicU32::new(initial_token()));
-        tokio::spawn(actor::run(config, commands_rx, events_tx, token_counter.clone()));
-        (Self { commands: commands_tx, token_counter }, events_rx)
+        tokio::spawn(actor::run(
+            config,
+            commands_rx,
+            events_tx,
+            token_counter.clone(),
+        ));
+        (
+            Self {
+                commands: commands_tx,
+                token_counter,
+            },
+            events_rx,
+        )
     }
 
     fn send(&self, command: ClientCommand) {
@@ -199,7 +281,11 @@ impl Client {
 
     pub fn search(&self, query: &str, scope: SearchScope) -> u32 {
         let token = self.token_counter.fetch_add(1, Ordering::Relaxed) + 1;
-        self.send(ClientCommand::Search { token, query: query.to_owned(), scope });
+        self.send(ClientCommand::Search {
+            token,
+            query: query.to_owned(),
+            scope,
+        });
         token
     }
 
@@ -237,15 +323,21 @@ impl Client {
     }
 
     pub fn browse_user(&self, username: &str) {
-        self.send(ClientCommand::BrowseUser { username: username.to_owned() });
+        self.send(ClientCommand::BrowseUser {
+            username: username.to_owned(),
+        });
     }
 
     pub fn request_user_info(&self, username: &str) {
-        self.send(ClientCommand::RequestUserInfo { username: username.to_owned() });
+        self.send(ClientCommand::RequestUserInfo {
+            username: username.to_owned(),
+        });
     }
 
     pub fn watch_user(&self, username: &str) {
-        self.send(ClientCommand::Server(ServerRequest::WatchUser { user: username.to_owned() }));
+        self.send(ClientCommand::Server(ServerRequest::WatchUser {
+            user: username.to_owned(),
+        }));
     }
 
     pub fn unwatch_user(&self, username: &str) {
@@ -255,35 +347,62 @@ impl Client {
     }
 
     pub fn add_buddy(&self, username: &str) {
-        self.send(ClientCommand::AddBuddy { username: username.to_owned() });
+        self.send(ClientCommand::AddBuddy {
+            username: username.to_owned(),
+        });
     }
 
     pub fn remove_buddy(&self, username: &str) {
-        self.send(ClientCommand::RemoveBuddy { username: username.to_owned() });
+        self.send(ClientCommand::RemoveBuddy {
+            username: username.to_owned(),
+        });
     }
 
     pub fn ban_user(&self, username: &str) {
-        self.send(ClientCommand::BanUser { username: username.to_owned() });
+        self.send(ClientCommand::BanUser {
+            username: username.to_owned(),
+        });
     }
 
     pub fn unban_user(&self, username: &str) {
-        self.send(ClientCommand::UnbanUser { username: username.to_owned() });
+        self.send(ClientCommand::UnbanUser {
+            username: username.to_owned(),
+        });
     }
 
     pub fn ignore_user(&self, username: &str) {
-        self.send(ClientCommand::IgnoreUser { username: username.to_owned() });
+        self.send(ClientCommand::IgnoreUser {
+            username: username.to_owned(),
+        });
     }
 
     pub fn unignore_user(&self, username: &str) {
-        self.send(ClientCommand::UnignoreUser { username: username.to_owned() });
+        self.send(ClientCommand::UnignoreUser {
+            username: username.to_owned(),
+        });
+    }
+
+    pub fn set_ip_bans(&self, patterns: Vec<String>) {
+        self.send(ClientCommand::SetIpBans { patterns });
+    }
+
+    pub fn set_user_restriction(&self, username: &str, restriction: Restriction) {
+        self.send(ClientCommand::SetUserRestriction {
+            username: username.to_owned(),
+            restriction,
+        });
     }
 
     pub fn add_wish(&self, term: &str) {
-        self.send(ClientCommand::AddWish { term: term.to_owned() });
+        self.send(ClientCommand::AddWish {
+            term: term.to_owned(),
+        });
     }
 
     pub fn remove_wish(&self, term: &str) {
-        self.send(ClientCommand::RemoveWish { term: term.to_owned() });
+        self.send(ClientCommand::RemoveWish {
+            term: term.to_owned(),
+        });
     }
 
     pub fn rescan_shares(&self) {
@@ -291,7 +410,10 @@ impl Client {
     }
 
     pub fn set_transfer_limits(&self, upload_kbps: u32, download_kbps: u32) {
-        self.send(ClientCommand::SetTransferLimits { upload_kbps, download_kbps });
+        self.send(ClientCommand::SetTransferLimits {
+            upload_kbps,
+            download_kbps,
+        });
     }
 
     pub fn set_listen_port(&self, port: u16) {
@@ -307,7 +429,9 @@ impl Client {
     }
 
     pub fn set_description(&self, description: &str) {
-        self.send(ClientCommand::SetDescription { description: description.to_owned() });
+        self.send(ClientCommand::SetDescription {
+            description: description.to_owned(),
+        });
     }
 
     pub fn set_shared_folders(&self, folders: Vec<SharedFolder>) {
@@ -315,11 +439,17 @@ impl Client {
     }
 
     pub fn set_upload_slots(&self, upload_slots: usize, queue_file_limit: usize) {
-        self.send(ClientCommand::SetUploadSlots { upload_slots, queue_file_limit });
+        self.send(ClientCommand::SetUploadSlots {
+            upload_slots,
+            queue_file_limit,
+        });
     }
 
     pub fn set_download_dirs(&self, download_dir: PathBuf, incomplete_dir: PathBuf) {
-        self.send(ClientCommand::SetDownloadDirs { download_dir, incomplete_dir });
+        self.send(ClientCommand::SetDownloadDirs {
+            download_dir,
+            incomplete_dir,
+        });
     }
 
     pub fn set_auto_reconnect(&self, enabled: bool) {
@@ -366,7 +496,9 @@ impl Client {
     }
 
     pub fn leave_room(&self, room: &str) {
-        self.send(ClientCommand::Server(ServerRequest::LeaveRoom { room: room.to_owned() }));
+        self.send(ClientCommand::Server(ServerRequest::LeaveRoom {
+            room: room.to_owned(),
+        }));
     }
 
     pub fn say_room(&self, room: &str, message: &str) {

@@ -4,7 +4,10 @@
   import { get, post, formatSize, formatAttributes } from '../lib/api.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { sortRows } from '../lib/sort.js';
+  import Th from '../lib/Th.svelte';
 
+  let sort = { key: null, dir: 1 };
   let username = '';
   let viewing = '';
   let filter = '';
@@ -225,7 +228,7 @@
                 class="twisty"
                 on:click|stopPropagation={() => node.has_children && toggle(node)}
               >
-                {node.has_children ? (expanded[node.path] ? '▾' : '▸') : ''}
+                {node.has_children ? (expanded[node.path] ? '[-]' : '[+]') : ''}
               </span>
               <span>
                 {node.private ? '[PRIVATE] ' : ''}{node.name}
@@ -243,13 +246,13 @@
           <table>
             <thead>
               <tr>
-                <th class="grow">Filename</th>
-                <th>Size</th>
-                <th>Quality</th>
+                <Th bind:sort key="name" grow>Filename</Th>
+                <Th bind:sort key="size">Size</Th>
+                <Th bind:sort key="quality">Quality</Th>
               </tr>
             </thead>
             <tbody>
-              {#each files ?? [] as file}
+              {#each sortRows(files ?? [], sort, { quality: (f) => formatAttributes(f.attributes) }) as file}
                 <tr
                   class="clickable"
                   on:contextmenu={(e) => fileMenu(e, file)}

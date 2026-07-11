@@ -5,7 +5,10 @@
   import { autoscroll } from '../lib/autoscroll.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { sortRows } from '../lib/sort.js';
+  import Th from '../lib/Th.svelte';
 
+  let roomSort = { key: null, dir: 1 };
   let selected = null;
   let newRoom = '';
   let draft = '';
@@ -19,7 +22,7 @@
 
   $: {
     for (const [room, view] of Object.entries($rooms.joined)) {
-      const chatMessages = view.messages.filter((m) => !m.status).length;
+      const chatMessages = view.messages.length;
       if (counts[room] !== undefined && chatMessages > counts[room]
           && !(room === selected && $activeTab === 'rooms' && !showAvailable)) {
         unread[room] = true;
@@ -92,9 +95,14 @@
 {#if showAvailable}
   <div class="scroll" tabindex="0">
     <table>
-      <thead><tr><th class="grow">Room</th><th>Users</th></tr></thead>
+      <thead>
+        <tr>
+          <Th bind:sort={roomSort} key="name" grow>Room</Th>
+          <Th bind:sort={roomSort} key="users">Users</Th>
+        </tr>
+      </thead>
       <tbody>
-        {#each $rooms.available as room}
+        {#each sortRows($rooms.available, roomSort) as room}
           <tr
             class="clickable"
             on:dblclick={() => join(room.name)}
@@ -114,20 +122,17 @@
     <div class="main">
       <div class="messages" tabindex="0" use:autoscroll={current.messages}>
         {#each current.messages as message}
-          {#if message.status}
-            <div class="message status">
-              <span class="time">{formatTime(message.timestamp)}</span>
-              <span>{message.message}</span>
-            </div>
-          {:else}
-            <div class="message">
-              <span class="time">{formatTime(message.timestamp)}</span>
-              <span class="sender" class:self={message.sender === $status.username}>
-                {message.sender}:
-              </span>
-              <span>{message.message}</span>
-            </div>
-          {/if}
+          <div class="message">
+            <span class="time">{formatTime(message.timestamp)}</span>
+            <span
+              class="sender"
+              class:self={message.sender === $status.username}
+              on:contextmenu={(e) => openMenu(e, userMenu(message.sender))}
+            >
+              {message.sender}:
+            </span>
+            <span>{message.message}</span>
+          </div>
         {/each}
       </div>
       <div class="toolbar">

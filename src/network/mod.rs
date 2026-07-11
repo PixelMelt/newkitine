@@ -24,7 +24,10 @@ impl NetworkHandle {
     }
 
     pub fn peer(&self, username: impl Into<String>, message: crate::protocol::PeerMessage) {
-        self.send(NetworkCommand::SendPeerMessage { username: username.into(), message });
+        self.send(NetworkCommand::SendPeerMessage {
+            username: username.into(),
+            message,
+        });
     }
 }
 
@@ -32,5 +35,10 @@ pub fn spawn() -> (NetworkHandle, mpsc::UnboundedReceiver<NetworkEvent>) {
     let (commands_tx, commands_rx) = mpsc::unbounded_channel();
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     tokio::spawn(actor::Actor::new(commands_rx, events_tx).run());
-    (NetworkHandle { commands: commands_tx }, events_rx)
+    (
+        NetworkHandle {
+            commands: commands_tx,
+        },
+        events_rx,
+    )
 }

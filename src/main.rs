@@ -8,10 +8,12 @@ use tracing::{info, warn};
 
 use newkitine::client::Client;
 
+use app::behavior::Behavior;
 use app::config::{Bootstrap, GluetunConfig};
 use app::settings::Settings;
 use app::state::{App, AppData};
-use app::{api, db, events, gluetun};
+use app::stats::StatsSink;
+use app::{api, behavior, db, events, geo, gluetun, stats};
 
 async fn initial_gluetun_port(gluetun: &GluetunConfig) -> Option<u16> {
     for attempt in 1..=5u32 {
@@ -71,6 +73,7 @@ async fn main() {
     client_config.buddies = db::load_list(&pool, "buddy").await;
     client_config.banned = db::load_list(&pool, "banned").await;
     client_config.ignored = db::load_list(&pool, "ignored").await;
+    client_config.ip_bans = db::load_list(&pool, "ip_ban").await;
     client_config.wishlist = db::load_wishlist(&pool).await;
     client_config.liked_interests = db::load_interests(&pool, "liked").await;
     client_config.hated_interests = db::load_interests(&pool, "hated").await;
@@ -85,7 +88,8 @@ async fn main() {
     data.interests.liked = client_config.liked_interests.clone();
     data.interests.hated = client_config.hated_interests.clone();
     for username in &client_config.buddies {
-        data.buddies.insert(username.clone(), events::buddy_view(username));
+        data.buddies
+            .insert(username.clone(), events::buddy_view(username));
     }
     for (username, note) in db::load_notes(&pool).await {
         if let Some(buddy) = data.buddies.get_mut(&username) {
@@ -93,10 +97,12 @@ async fn main() {
         }
     }
     for view in db::load_transfers(&pool, "download").await {
-        data.downloads.insert((view.username.clone(), view.virtual_path.clone()), view);
+        data.downloads
+            .insert((view.username.clone(), view.virtual_path.clone()), view);
     }
     for view in db::load_transfers(&pool, "upload").await {
-        data.uploads.insert((view.username.clone(), view.virtual_path.clone()), view);
+        data.uploads
+            .insert((view.username.clone(), view.virtual_path.clone()), view);
     }
 
     let resumable: Vec<_> = data
@@ -111,6 +117,16 @@ async fn main() {
 
     let web_bind = bootstrap.web_bind.clone();
     let gluetun_config: Option<GluetunConfig> = bootstrap.gluetun.clone();
+    let geo = bootstrap
+        .geoip_db
+        .as_deref()
+        .map(|path| geo::Geo::load(std::path::Path::new(path)));
+    if geo.is_some() {
+        info!(
+            path = bootstrap.geoip_db.as_deref().unwrap(),
+            "geoip database loaded"
+        );
+    }
     let app = Arc::new(App {
         client,
         db: pool,
@@ -119,14 +135,29 @@ async fn main() {
         settings: RwLock::new(stored_settings),
         locked_settings,
         gluetun_enabled: gluetun_config.is_some(),
+        geo,
+        stats: StatsSink::default(),
+        behavior: Behavior::default(),
     });
 
+    behavior::load(&app).await;
+
     for view in resumable {
-        info!(username = view.username, virtual_path = view.virtual_path, "resuming download");
-        app.client.download(&view.username, &view.virtual_path, view.size, view.attributes);
+        info!(
+            username = view.username,
+            virtual_path = view.virtual_path,
+            "resuming download"
+        );
+        app.client.download(
+            &view.username,
+            &view.virtual_path,
+            view.size,
+            view.attributes,
+        );
     }
 
     tokio::spawn(events::run(app.clone(), client_events));
+    tokio::spawn(stats::flush_loop(app.clone()));
     if let Some(gluetun) = gluetun_config {
         tokio::spawn(gluetun::watch(app.clone(), gluetun, gluetun_port));
     }
@@ -137,5 +168,7 @@ async fn main() {
         .await
         .unwrap_or_else(|error| panic!("cannot bind web interface on {web_bind}: {error}"));
     info!(%web_bind, "web interface listening");
-    axum::serve(listener, router).await.expect("web server failed");
+    axum::serve(listener, router)
+        .await
+        .expect("web server failed");
 }

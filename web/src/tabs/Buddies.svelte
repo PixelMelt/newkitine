@@ -3,12 +3,19 @@
   import { post, del, formatSize } from '../lib/api.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { sortRows } from '../lib/sort.js';
+  import Th from '../lib/Th.svelte';
 
   let buddyName = '';
   let banName = '';
   let ignoreName = '';
+  let sort = { key: null, dir: 1 };
 
-  $: list = Object.values($buddies).sort((a, b) => a.username.localeCompare(b.username));
+  $: list = sortRows(
+    Object.values($buddies).sort((a, b) => a.username.localeCompare(b.username)),
+    sort,
+    { speed: (b) => b.stats.avgspeed, files: (b) => b.stats.files },
+  );
 
   function add(path, username, reset) {
     if (!username.trim()) return;
@@ -48,12 +55,12 @@
   <table>
     <thead>
       <tr>
-        <th class="grow">User</th>
-        <th>Status</th>
-        <th>Speed</th>
-        <th>Files</th>
-        <th>Privileged</th>
-        <th class="grow">Note</th>
+        <Th bind:sort key="username" grow>User</Th>
+        <Th bind:sort key="status">Status</Th>
+        <Th bind:sort key="speed">Speed</Th>
+        <Th bind:sort key="files">Files</Th>
+        <Th bind:sort key="privileged">Privileged</Th>
+        <Th bind:sort key="note" grow>Note</Th>
       </tr>
     </thead>
     <tbody>

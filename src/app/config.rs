@@ -35,6 +35,7 @@ impl Default for GluetunConfig {
 pub struct Bootstrap {
     pub database_url: String,
     pub web_bind: String,
+    pub geoip_db: Option<String>,
     pub gluetun: Option<GluetunConfig>,
 }
 
@@ -42,7 +43,8 @@ impl Default for Bootstrap {
     fn default() -> Self {
         Self {
             database_url: "mysql://newkitine:newkitine@localhost:3306/newkitine".into(),
-            web_bind: "0.0.0.0:8080".into(),
+            web_bind: "127.0.0.1:8080".into(),
+            geoip_db: None,
             gluetun: None,
         }
     }
@@ -63,6 +65,9 @@ impl Bootstrap {
         }
         if let Some(value) = env_var("NEWKITINE_WEB_BIND") {
             bootstrap.web_bind = value;
+        }
+        if let Some(value) = env_var("NEWKITINE_GEOIP_DB") {
+            bootstrap.geoip_db = Some(value);
         }
         if let Some(host) = env_var("GLUETUN_HOST") {
             let mut gluetun = bootstrap.gluetun.take().unwrap_or_default();

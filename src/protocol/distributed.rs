@@ -9,10 +9,19 @@ pub enum DistributedMessage {
         token: u32,
         search_term: String,
     },
-    BranchLevel { level: i32 },
-    BranchRoot { root_username: String },
-    ChildDepth { value: u32 },
-    EmbeddedMessage { distrib_code: u8, distrib_message: Vec<u8> },
+    BranchLevel {
+        level: i32,
+    },
+    BranchRoot {
+        root_username: String,
+    },
+    ChildDepth {
+        value: u32,
+    },
+    EmbeddedMessage {
+        distrib_code: u8,
+        distrib_message: Vec<u8>,
+    },
 }
 
 impl DistributedMessage {
@@ -30,7 +39,12 @@ impl DistributedMessage {
     pub fn write_payload(&self, w: &mut MessageWriter) {
         match self {
             Self::Ping => {}
-            Self::Search { identifier, search_username, token, search_term } => {
+            Self::Search {
+                identifier,
+                search_username,
+                token,
+                search_term,
+            } => {
                 w.write_u32(*identifier);
                 w.write_string(search_username);
                 w.write_u32(*token);
@@ -39,7 +53,10 @@ impl DistributedMessage {
             Self::BranchLevel { level } => w.write_i32(*level),
             Self::BranchRoot { root_username } => w.write_string(root_username),
             Self::ChildDepth { value } => w.write_u32(*value),
-            Self::EmbeddedMessage { distrib_code, distrib_message } => {
+            Self::EmbeddedMessage {
+                distrib_code,
+                distrib_message,
+            } => {
                 w.write_u8(*distrib_code);
                 w.write_raw(distrib_message);
             }
@@ -56,9 +73,15 @@ impl DistributedMessage {
                 token: r.read_u32()?,
                 search_term: r.read_string()?,
             },
-            4 => Self::BranchLevel { level: r.read_i32()? },
-            5 => Self::BranchRoot { root_username: r.read_string()? },
-            7 => Self::ChildDepth { value: r.read_u32()? },
+            4 => Self::BranchLevel {
+                level: r.read_i32()?,
+            },
+            5 => Self::BranchRoot {
+                root_username: r.read_string()?,
+            },
+            7 => Self::ChildDepth {
+                value: r.read_u32()?,
+            },
             93 => {
                 if payload.len() >= 3 && &payload[..3] == b"\x00\x00\x00" {
                     r.skip(3)?;

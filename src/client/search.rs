@@ -6,7 +6,9 @@ pub struct Searches {
 
 impl Searches {
     pub fn new() -> Self {
-        Self { active: HashMap::new() }
+        Self {
+            active: HashMap::new(),
+        }
     }
 
     pub fn add(&mut self, token: u32, query: String) {
@@ -27,5 +29,8 @@ impl Searches {
 }
 
 pub fn sanitize_search_term(text: &str) -> String {
-    text.split_whitespace().filter(|word| *word != "-").collect::<Vec<_>>().join(" ")
+    text.split_whitespace()
+        .filter(|word| *word != "-")
+        .collect::<Vec<_>>()
+        .join(" ")
 }

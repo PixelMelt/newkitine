@@ -47,3 +47,12 @@ pub struct SimilarUser {
     pub username: String,
     pub rating: u32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Restriction {
+    None,
+    Deprioritized,
+    Hold,
+    Denied { reason: String },
+}

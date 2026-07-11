@@ -3,8 +3,21 @@
   import { post, formatSize, formatQuality, baseName } from '../lib/api.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { sortRows } from '../lib/sort.js';
+  import Th from '../lib/Th.svelte';
 
-  $: list = Object.values($uploads).sort((a, b) => b.updated_at - a.updated_at);
+  let sort = { key: null, dir: 1 };
+
+  $: list = sortRows(
+    Object.values($uploads).sort((a, b) => b.updated_at - a.updated_at),
+    sort,
+    {
+      filename: (t) => baseName(t.virtual_path),
+      progress: (t) => (t.size ? t.bytes_done / t.size : 0),
+      quality: (t) => formatQuality(t.attributes),
+      speed: (t) => t.speed_bps,
+    },
+  );
 
   function abortUserUploads(username) {
     for (const t of list) {
@@ -57,13 +70,13 @@
   <table>
     <thead>
       <tr>
-        <th>User</th>
-        <th class="grow">Filename</th>
-        <th>Status</th>
-        <th>Progress</th>
-        <th>Size</th>
-        <th>Quality</th>
-        <th>Speed</th>
+        <Th bind:sort key="username">User</Th>
+        <Th bind:sort key="filename" grow>Filename</Th>
+        <Th bind:sort key="status">Status</Th>
+        <Th bind:sort key="progress">Progress</Th>
+        <Th bind:sort key="size">Size</Th>
+        <Th bind:sort key="quality">Quality</Th>
+        <Th bind:sort key="speed">Speed</Th>
       </tr>
     </thead>
     <tbody>

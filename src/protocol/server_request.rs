@@ -3,57 +3,166 @@ use crate::types::ConnectionType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerRequest {
-    Login { username: String, password: String, version: u32, minor_version: u32 },
-    SetWaitPort { port: u32 },
-    GetPeerAddress { user: String },
-    WatchUser { user: String },
-    UnwatchUser { user: String },
-    GetUserStatus { user: String },
-    SayChatroom { room: String, message: String },
-    JoinRoom { room: String, private: bool },
-    LeaveRoom { room: String },
-    ConnectToPeer { token: u32, user: String, conn_type: ConnectionType },
-    MessageUser { user: String, message: String },
-    MessageAcked { message_id: u32 },
-    FileSearch { token: u32, search_term: String },
-    SetStatus { status: i32 },
+    Login {
+        username: String,
+        password: String,
+        version: u32,
+        minor_version: u32,
+    },
+    SetWaitPort {
+        port: u32,
+    },
+    GetPeerAddress {
+        user: String,
+    },
+    WatchUser {
+        user: String,
+    },
+    UnwatchUser {
+        user: String,
+    },
+    GetUserStatus {
+        user: String,
+    },
+    SayChatroom {
+        room: String,
+        message: String,
+    },
+    JoinRoom {
+        room: String,
+        private: bool,
+    },
+    LeaveRoom {
+        room: String,
+    },
+    ConnectToPeer {
+        token: u32,
+        user: String,
+        conn_type: ConnectionType,
+    },
+    MessageUser {
+        user: String,
+        message: String,
+    },
+    MessageAcked {
+        message_id: u32,
+    },
+    FileSearch {
+        token: u32,
+        search_term: String,
+    },
+    SetStatus {
+        status: i32,
+    },
     ServerPing,
-    SharedFoldersFiles { folders: u32, files: u32 },
-    GetUserStats { user: String },
-    UserSearch { search_username: String, token: u32, search_term: String },
-    AddThingILike { thing: String },
-    RemoveThingILike { thing: String },
+    SharedFoldersFiles {
+        folders: u32,
+        files: u32,
+    },
+    GetUserStats {
+        user: String,
+    },
+    UserSearch {
+        search_username: String,
+        token: u32,
+        search_term: String,
+    },
+    AddThingILike {
+        thing: String,
+    },
+    RemoveThingILike {
+        thing: String,
+    },
     Recommendations,
     GlobalRecommendations,
-    UserInterests { user: String },
+    UserInterests {
+        user: String,
+    },
     RoomList,
-    HaveNoParent { no_parent: bool },
+    HaveNoParent {
+        no_parent: bool,
+    },
     CheckPrivileges,
-    AcceptChildren { enabled: bool },
-    WishlistSearch { token: u32, search_term: String },
+    AcceptChildren {
+        enabled: bool,
+    },
+    WishlistSearch {
+        token: u32,
+        search_term: String,
+    },
     SimilarUsers,
-    ItemRecommendations { thing: String },
-    ItemSimilarUsers { thing: String },
-    SetRoomTicker { room: String, msg: String },
-    AddThingIHate { thing: String },
-    RemoveThingIHate { thing: String },
-    RoomSearch { room: String, token: u32, search_term: String },
-    SendUploadSpeed { speed: u32 },
-    GivePrivileges { user: String, days: u32 },
-    BranchLevel { value: u32 },
-    BranchRoot { user: String },
-    AddRoomMember { room: String, user: String },
-    RemoveRoomMember { room: String, user: String },
-    CancelRoomMembership { room: String },
-    CancelRoomOwnership { room: String },
-    EnableRoomInvitations { enabled: bool },
-    ChangePassword { password: String },
-    AddRoomOperator { room: String, user: String },
-    RemoveRoomOperator { room: String, user: String },
-    MessageUsers { users: Vec<String>, msg: String },
+    ItemRecommendations {
+        thing: String,
+    },
+    ItemSimilarUsers {
+        thing: String,
+    },
+    SetRoomTicker {
+        room: String,
+        msg: String,
+    },
+    AddThingIHate {
+        thing: String,
+    },
+    RemoveThingIHate {
+        thing: String,
+    },
+    RoomSearch {
+        room: String,
+        token: u32,
+        search_term: String,
+    },
+    SendUploadSpeed {
+        speed: u32,
+    },
+    GivePrivileges {
+        user: String,
+        days: u32,
+    },
+    BranchLevel {
+        value: u32,
+    },
+    BranchRoot {
+        user: String,
+    },
+    AddRoomMember {
+        room: String,
+        user: String,
+    },
+    RemoveRoomMember {
+        room: String,
+        user: String,
+    },
+    CancelRoomMembership {
+        room: String,
+    },
+    CancelRoomOwnership {
+        room: String,
+    },
+    EnableRoomInvitations {
+        enabled: bool,
+    },
+    ChangePassword {
+        password: String,
+    },
+    AddRoomOperator {
+        room: String,
+        user: String,
+    },
+    RemoveRoomOperator {
+        room: String,
+        user: String,
+    },
+    MessageUsers {
+        users: Vec<String>,
+        msg: String,
+    },
     JoinGlobalRoom,
     LeaveGlobalRoom,
-    CantConnectToPeer { token: u32, user: String },
+    CantConnectToPeer {
+        token: u32,
+        user: String,
+    },
 }
 
 impl ServerRequest {
@@ -115,7 +224,12 @@ impl ServerRequest {
 
     pub fn write_payload(&self, w: &mut MessageWriter) {
         match self {
-            Self::Login { username, password, version, minor_version } => {
+            Self::Login {
+                username,
+                password,
+                version,
+                minor_version,
+            } => {
                 w.write_string(username);
                 w.write_string(password);
                 w.write_u32(*version);
@@ -137,7 +251,11 @@ impl ServerRequest {
                 w.write_u32(*private as u32);
             }
             Self::LeaveRoom { room } => w.write_string(room),
-            Self::ConnectToPeer { token, user, conn_type } => {
+            Self::ConnectToPeer {
+                token,
+                user,
+                conn_type,
+            } => {
                 w.write_u32(*token);
                 w.write_string(user);
                 w.write_string(conn_type.as_str());
@@ -159,7 +277,11 @@ impl ServerRequest {
                 w.write_u32(*files);
             }
             Self::GetUserStats { user } => w.write_string(user),
-            Self::UserSearch { search_username, token, search_term } => {
+            Self::UserSearch {
+                search_username,
+                token,
+                search_term,
+            } => {
                 w.write_string(search_username);
                 w.write_u32(*token);
                 w.write_string(search_term);
@@ -184,7 +306,11 @@ impl ServerRequest {
                 w.write_string(room);
                 w.write_string(msg);
             }
-            Self::RoomSearch { room, token, search_term } => {
+            Self::RoomSearch {
+                room,
+                token,
+                search_term,
+            } => {
                 w.write_string(room);
                 w.write_u32(*token);
                 w.write_string(search_term);

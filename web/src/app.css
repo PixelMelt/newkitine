@@ -1,443 +1,444 @@
 :root {
-  color-scheme: dark;
-  --bg: #242424;
-  --panel: #2d2d2d;
-  --chrome: #303030;
-  --border: #555;
-  --border-soft: #4a4a4a;
-  --border-faint: #3d3d3d;
-  --text: #eee;
-  --text-dim: #999;
-  --hover: #3a3a3a;
-  --hover-strong: #454545;
-  --active: #505050;
-  --selected: #15539e;
-  --danger: #ff6b6b;
-  --unread: #62a0ea;
-  --sender-self: #8ff0a4;
-  --sender-other: #99c1f1;
+	color-scheme: dark;
+	--bg: #242424;
+	--panel: #2d2d2d;
+	--chrome: #303030;
+	--border: #555;
+	--border-soft: #4a4a4a;
+	--border-faint: #3d3d3d;
+	--text: #eee;
+	--text-dim: #999;
+	--hover: #3a3a3a;
+	--hover-strong: #454545;
+	--active: #505050;
+	--selected: #15539e;
+	--danger: #ff6b6b;
+	--unread: #62a0ea;
+	--sender-self: #8ff0a4;
+	--sender-other: #99c1f1;
 }
 
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #fff;
-  --panel: #fff;
-  --chrome: #f6f6f6;
-  --border: #d0d0d0;
-  --border-soft: #ddd;
-  --border-faint: #e8e8e8;
-  --text: #1a1a1a;
-  --text-dim: #777;
-  --hover: #f2f2f2;
-  --hover-strong: #e8e8e8;
-  --active: #dcdcdc;
-  --selected: #cfe3f7;
-  --danger: #c00;
-  --unread: #1a5fb4;
-  --sender-self: #26a269;
-  --sender-other: #1a5fb4;
+:root[data-theme='light'] {
+	color-scheme: light;
+	--bg: #fff;
+	--panel: #fff;
+	--chrome: #f6f6f6;
+	--border: #d0d0d0;
+	--border-soft: #ddd;
+	--border-faint: #e8e8e8;
+	--text: #1a1a1a;
+	--text-dim: #777;
+	--hover: #f2f2f2;
+	--hover-strong: #e8e8e8;
+	--active: #dcdcdc;
+	--selected: #cfe3f7;
+	--danger: #c00;
+	--unread: #1a5fb4;
+	--sender-self: #26a269;
+	--sender-other: #1a5fb4;
 }
 
-:root[data-theme="catppuccin"] {
-  color-scheme: dark;
-  --bg: #1e1e2e;
-  --panel: #181825;
-  --chrome: #313244;
-  --border: #45475a;
-  --border-soft: #393b50;
-  --border-faint: #313244;
-  --text: #cdd6f4;
-  --text-dim: #7f849c;
-  --hover: #313244;
-  --hover-strong: #45475a;
-  --active: #585b70;
-  --selected: #3e4a6b;
-  --danger: #f38ba8;
-  --unread: #89b4fa;
-  --sender-self: #a6e3a1;
-  --sender-other: #89b4fa;
+:root[data-theme='catppuccin'] {
+	color-scheme: dark;
+	--bg: #1e1e2e;
+	--panel: #181825;
+	--chrome: #313244;
+	--border: #45475a;
+	--border-soft: #393b50;
+	--border-faint: #313244;
+	--text: #cdd6f4;
+	--text-dim: #7f849c;
+	--hover: #313244;
+	--hover-strong: #45475a;
+	--active: #585b70;
+	--selected: #3e4a6b;
+	--danger: #f38ba8;
+	--unread: #89b4fa;
+	--sender-self: #a6e3a1;
+	--sender-other: #89b4fa;
 }
 
 * {
-  box-sizing: border-box;
+	box-sizing: border-box;
 }
 
 body {
-  margin: 0;
-  font-family: system-ui, sans-serif;
-  font-size: 13px;
-  color: var(--text);
-  background: var(--bg);
+	margin: 0;
+	font-family: system-ui, sans-serif;
+	font-size: 13px;
+	color: var(--text);
+	background: var(--bg);
 }
 
 button {
-  font: inherit;
-  padding: 2px 8px;
-  background: var(--chrome);
-  border: 1px solid var(--border);
-  color: var(--text);
-  cursor: pointer;
+	font: inherit;
+	padding: 2px 8px;
+	background: var(--chrome);
+	border: 1px solid var(--border);
+	color: var(--text);
+	cursor: pointer;
 }
 
 button:hover {
-  background: var(--hover-strong);
+	background: var(--hover-strong);
 }
 
 button.active {
-  background: var(--active);
-  font-weight: bold;
+	background: var(--active);
+	font-weight: bold;
 }
 
-input, select {
-  font: inherit;
-  padding: 2px 4px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text);
+input,
+select {
+	font: inherit;
+	padding: 2px 4px;
+	border: 1px solid var(--border);
+	background: var(--panel);
+	color: var(--text);
 }
 
 table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--panel);
+	width: 100%;
+	border-collapse: collapse;
+	background: var(--panel);
 }
 
-th, td {
-  text-align: left;
-  padding: 2px 6px;
-  border: 1px solid var(--border-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+th,
+td {
+	text-align: left;
+	padding: 2px 6px;
+	border: 1px solid var(--border-faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 th {
-  background: var(--chrome);
-  position: sticky;
-  top: 0;
+	background: var(--chrome);
+	position: sticky;
+	top: 0;
 }
 
-td.grow, th.grow {
-  white-space: normal;
-  word-break: break-all;
+td.grow,
+th.grow {
+	white-space: normal;
+	word-break: break-all;
 }
 
 tr.clickable {
-  cursor: pointer;
+	cursor: pointer;
 }
 
 tr.clickable:hover td {
-  background: var(--hover);
+	background: var(--hover);
 }
 
 .tabs {
-  display: flex;
-  gap: 2px;
-  padding: 4px 4px 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--chrome);
-  flex-wrap: wrap;
+	display: flex;
+	gap: 2px;
+	padding: 4px 4px 0;
+	border-bottom: 1px solid var(--border);
+	background: var(--chrome);
+	flex-wrap: wrap;
 }
 
 .tabs button {
-  border-bottom: none;
+	border-bottom: none;
 }
 
 .pane {
-  padding: 6px;
-  flex: 1;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 0;
+	padding: 6px;
+	flex: 1;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-height: 0;
 }
 
 .toolbar {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  flex-wrap: wrap;
+	display: flex;
+	gap: 4px;
+	align-items: center;
+	flex-wrap: wrap;
 }
 
 .toolbar input {
-  min-width: 200px;
+	min-width: 200px;
 }
 
 .scroll {
-  overflow: auto;
-  flex: 1;
-  min-height: 0;
-  border: 1px solid var(--border-soft);
+	overflow: auto;
+	flex: 1;
+	min-height: 0;
+	border: 1px solid var(--border-soft);
 }
 
-.scroll:focus, .tree:focus, .list:focus, .messages:focus {
-  outline: none;
+.scroll:focus,
+.tree:focus,
+.list:focus,
+.messages:focus {
+	outline: none;
 }
 
 .subtabs {
-  display: flex;
-  gap: 2px;
-  flex-wrap: wrap;
+	display: flex;
+	gap: 2px;
+	flex-wrap: wrap;
 }
 
 .subtabs button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
 }
 
 .subtabs button.unread {
-  color: var(--unread);
+	color: var(--unread);
 }
 
 .subtab {
-  display: inline-flex;
+	display: inline-flex;
 }
 
 .subtab button + button {
-  border-left: none;
-  color: var(--text-dim);
+	border-left: none;
+	color: var(--text-dim);
 }
 
 .subtab button + button:hover {
-  color: var(--text);
-}
-
-.message.status {
-  color: var(--text-dim);
-  font-style: italic;
+	color: var(--text);
 }
 
 .statusbar {
-  display: flex;
-  gap: 16px;
-  padding: 3px 8px;
-  border-top: 1px solid var(--border);
-  background: var(--chrome);
-  font-size: 12px;
+	display: flex;
+	gap: 16px;
+	padding: 3px 8px;
+	border-top: 1px solid var(--border);
+	background: var(--chrome);
+	font-size: 12px;
 }
 
 .split {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-  min-height: 0;
+	display: flex;
+	gap: 6px;
+	flex: 1;
+	min-height: 0;
 }
 
 .side {
-  width: 220px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 0;
+	width: 220px;
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-height: 0;
 }
 
 .main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 0;
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-height: 0;
 }
 
 .messages {
-  flex: 1;
-  overflow-y: auto;
-  border: 1px solid var(--border-soft);
-  background: var(--panel);
-  padding: 4px;
+	flex: 1;
+	overflow-y: auto;
+	border: 1px solid var(--border-soft);
+	background: var(--panel);
+	padding: 4px;
 }
 
 .message .time {
-  color: var(--text-dim);
-  margin-right: 4px;
+	color: var(--text-dim);
+	margin-right: 4px;
 }
 
 .message .sender {
-  font-weight: bold;
-  margin-right: 4px;
-  color: var(--sender-other);
+	font-weight: bold;
+	margin-right: 4px;
+	color: var(--sender-other);
 }
 
 .message .sender.self {
-  color: var(--sender-self);
+	color: var(--sender-self);
 }
 
 .list {
-  overflow-y: auto;
-  border: 1px solid var(--border-soft);
-  background: var(--panel);
-  flex: 1;
-  min-height: 0;
+	overflow-y: auto;
+	border: 1px solid var(--border-soft);
+	background: var(--panel);
+	flex: 1;
+	min-height: 0;
 }
 
 .list div {
-  padding: 1px 6px;
-  cursor: pointer;
+	padding: 1px 6px;
+	cursor: pointer;
 }
 
 .list div:hover {
-  background: var(--hover);
+	background: var(--hover);
 }
 
 .list div.selected {
-  background: var(--selected);
+	background: var(--selected);
 }
 
 .list .row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 4px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 4px;
 }
 
 .notice {
-  color: var(--danger);
+	color: var(--danger);
 }
 
 .menu {
-  position: fixed;
-  z-index: 100;
-  min-width: 160px;
-  padding: 2px 0;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.2);
+	position: fixed;
+	z-index: 100;
+	min-width: 160px;
+	padding: 2px 0;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.2);
 }
 
 .menu .item {
-  position: relative;
-  padding: 3px 20px 3px 24px;
-  cursor: pointer;
-  white-space: nowrap;
+	position: relative;
+	padding: 3px 20px 3px 24px;
+	cursor: pointer;
+	white-space: nowrap;
 }
 
 .menu .item:hover {
-  background: var(--selected);
+	background: var(--selected);
 }
 
 .menu .item.disabled {
-  color: var(--text-dim);
-  cursor: default;
+	color: var(--text-dim);
+	cursor: default;
 }
 
 .menu .sep {
-  margin: 3px 0;
-  border-top: 1px solid var(--border-faint);
+	margin: 3px 0;
+	border-top: 1px solid var(--border-faint);
 }
 
 .menu .check {
-  position: absolute;
-  left: 8px;
+	position: absolute;
+	left: 8px;
 }
 
 .menu .arrow {
-  float: right;
-  margin-left: 12px;
-  color: var(--text-dim);
+	float: right;
+	margin-left: 12px;
+	color: var(--text-dim);
 }
 
 .menu .submenu {
-  display: none;
-  position: absolute;
-  left: calc(100% - 2px);
-  top: -3px;
+	display: none;
+	position: absolute;
+	left: calc(100% - 2px);
+	top: -3px;
 }
 
 .menu .item:hover > .submenu {
-  display: block;
+	display: block;
 }
 
 .description {
-  white-space: pre-wrap;
-  background: var(--panel);
-  border: 1px solid var(--border-soft);
-  padding: 6px;
-  margin: 0;
-  min-height: 60px;
+	white-space: pre-wrap;
+	background: var(--panel);
+	border: 1px solid var(--border-soft);
+	padding: 6px;
+	margin: 0;
+	min-height: 60px;
 }
 
 .tree {
-  overflow: auto;
-  border: 1px solid var(--border-soft);
-  background: var(--panel);
-  flex: 1;
-  min-height: 0;
+	overflow: auto;
+	border: 1px solid var(--border-soft);
+	background: var(--panel);
+	flex: 1;
+	min-height: 0;
 }
 
 .tree .node {
-  display: flex;
-  align-items: center;
-  padding: 1px 6px;
-  cursor: pointer;
-  white-space: nowrap;
+	display: flex;
+	align-items: center;
+	padding: 1px 6px;
+	cursor: pointer;
+	white-space: nowrap;
 }
 
 .tree .node:hover {
-  background: var(--hover);
+	background: var(--hover);
 }
 
 .tree .node.selected {
-  background: var(--selected);
+	background: var(--selected);
 }
 
 .tree .twisty {
-  width: 14px;
-  flex-shrink: 0;
-  color: var(--text-dim);
-  text-align: center;
+	width: 24px;
+	flex-shrink: 0;
+	color: var(--text-dim);
+	text-align: center;
 }
 
 .tree .count {
-  margin-left: 6px;
-  color: var(--text-dim);
+	margin-left: 6px;
+	color: var(--text-dim);
 }
 
 progress {
-  width: 90px;
-  height: 12px;
+	width: 90px;
+	height: 12px;
 }
 
 h3 {
-  margin: 4px 0 2px;
-  font-size: 13px;
+	margin: 4px 0 2px;
+	font-size: 13px;
 }
 
 textarea {
-  font: inherit;
-  padding: 4px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--text);
-  resize: vertical;
+	font: inherit;
+	padding: 4px;
+	border: 1px solid var(--border);
+	background: var(--panel);
+	color: var(--text);
+	resize: vertical;
 }
 
 .settings-page {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px;
-  background: var(--panel);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px;
+	background: var(--panel);
 }
 
 .form-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
 }
 
 .form-row > label:first-child {
-  width: 190px;
-  flex-shrink: 0;
+	width: 190px;
+	flex-shrink: 0;
 }
 
 .hint {
-  color: var(--text-dim);
-  font-size: 12px;
+	color: var(--text-dim);
+	font-size: 12px;
 }
 
 p.hint {
-  margin: 0;
+	margin: 0;
 }

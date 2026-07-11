@@ -1,6 +1,6 @@
 use crate::protocol::ProtocolError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ConnectionType {
     Peer,
     File,

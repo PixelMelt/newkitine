@@ -31,13 +31,15 @@ impl<'a> MessageReader<'a> {
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8], ProtocolError> {
-        let end = self.offset.checked_add(len).filter(|&end| end <= self.buf.len()).ok_or(
-            ProtocolError::UnexpectedEof {
+        let end = self
+            .offset
+            .checked_add(len)
+            .filter(|&end| end <= self.buf.len())
+            .ok_or(ProtocolError::UnexpectedEof {
                 offset: self.offset,
                 needed: len,
                 available: self.buf.len(),
-            },
-        )?;
+            })?;
         let slice = &self.buf[self.offset..end];
         self.offset = end;
         Ok(slice)

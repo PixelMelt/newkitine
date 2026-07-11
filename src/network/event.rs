@@ -31,12 +31,14 @@ pub enum NetworkEvent {
         username: String,
         conn_type: ConnectionType,
         conn_id: ConnId,
+        ip: Option<Ipv4Addr>,
     },
     PeerConnectionClosed {
         username: String,
         conn_type: ConnectionType,
         conn_id: ConnId,
     },
+    ConnectionCount(usize),
     PeerConnectionError {
         username: String,
         conn_type: ConnectionType,
