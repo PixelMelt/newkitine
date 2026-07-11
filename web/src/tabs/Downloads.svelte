@@ -21,7 +21,7 @@
     },
   );
 
-  const ref = (t) => ({ username: t.username, virtual_path: t.virtual_path });
+  const ref = (t) => ({ id: t.id });
 
   function rowMenu(event, t) {
     const items = [];
@@ -73,11 +73,11 @@
       </tr>
     </thead>
     <tbody>
-      {#each list as t (t.username + t.virtual_path)}
+      {#each list as t (t.id)}
         <tr on:contextmenu={(e) => rowMenu(e, t)}>
           <td>{t.username}</td>
           <td class="grow" title={t.virtual_path}>{baseName(t.virtual_path)}</td>
-          <td>{t.status}</td>
+          <td>{t.failure_reason ? `${t.status}: ${t.failure_reason}` : t.status}</td>
           <td>{t.queue_place || ''}</td>
           <td>
             <progress max={t.size || 1} value={t.bytes_done}></progress>

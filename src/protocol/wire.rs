@@ -18,6 +18,8 @@ pub enum ProtocolError {
     DecompressedTooLarge { limit: usize },
     #[error("invalid value for {field}: {value}")]
     InvalidValue { field: &'static str, value: u64 },
+    #[error("invalid connection type {value:?}")]
+    InvalidConnectionType { value: String },
 }
 
 pub struct MessageReader<'a> {
@@ -84,7 +86,11 @@ impl<'a> MessageReader<'a> {
     }
 
     pub fn read_u16_padded(&mut self) -> Result<u16, ProtocolError> {
-        Ok(self.read_u32()? as u16)
+        let value = self.read_u32()?;
+        u16::try_from(value).map_err(|_| ProtocolError::InvalidValue {
+            field: "u16",
+            value: value as u64,
+        })
     }
 
     pub fn read_ip(&mut self) -> Result<Ipv4Addr, ProtocolError> {

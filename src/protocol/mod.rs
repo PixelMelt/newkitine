@@ -10,7 +10,7 @@ mod wire;
 pub use compress::{compress, decompress};
 pub use distributed::DistributedMessage;
 pub use file::{FileOffset, FileTransferInit};
-pub use peer::{PeerMessage, read_file_attributes};
+pub use peer::PeerMessage;
 pub use peer_init::PeerInitMessage;
 pub use server_request::ServerRequest;
 pub use server_response::{LoginOutcome, ParentCandidate, ServerResponse};

@@ -2,12 +2,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::config::GluetunConfig;
+use super::session;
+use super::settings;
 use super::state::App;
 
 pub async fn fetch_forwarded_port(config: &GluetunConfig) -> Result<u16, String> {
@@ -63,24 +64,38 @@ async fn http_get(config: &GluetunConfig, path: &str) -> Result<String, String> 
     Ok(body.to_owned())
 }
 
-pub async fn watch(app: Arc<App>, config: GluetunConfig, mut current: Option<u16>) {
+const MAX_CONSECUTIVE_POLL_FAILURES: u32 = 30;
+
+pub async fn watch(app: Arc<App>, config: GluetunConfig, mut current: u16) {
     let interval = Duration::from_secs(config.poll_secs.max(10));
+    let mut failures = 0u32;
     loop {
         tokio::time::sleep(interval).await;
         match fetch_forwarded_port(&config).await {
             Ok(port) => {
-                if current != Some(port) {
+                failures = 0;
+                if current != port {
                     info!(port, "gluetun forwarded port changed, updating listen port");
-                    current = Some(port);
-                    {
-                        let mut data = app.data.write().unwrap();
-                        data.status.listen_port = port;
-                        app.broadcast(json!({ "type": "status", "status": &data.status }));
+                    current = port;
+                    app.settings.set_live_port(port);
+                    session::set_listen_port(&app, port);
+                    if let Err(error) = settings::apply_runtime(&app).await {
+                        warn!(%error, "cannot apply forwarded port");
                     }
-                    app.client.set_listen_port(port);
                 }
             }
-            Err(error) => warn!(%error, "cannot fetch forwarded port from gluetun"),
+            Err(error) => {
+                failures += 1;
+                if failures >= MAX_CONSECUTIVE_POLL_FAILURES {
+                    error!(
+                        %error,
+                        failures,
+                        "gluetun forwarded port has been unavailable for too long, exiting"
+                    );
+                    std::process::exit(1);
+                }
+                warn!(%error, failures, "cannot fetch forwarded port from gluetun");
+            }
         }
     }
 }

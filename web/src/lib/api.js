@@ -7,10 +7,12 @@ async function request(method, path, body) {
 	const response = await fetch('/api' + path, options);
 	const text = await response.text();
 	if (!response.ok) {
-		let detail = '';
+		let detail;
 		try {
-			detail = JSON.parse(text).error ?? '';
-		} catch {}
+			detail = JSON.parse(text).error;
+		} catch {
+			detail = text;
+		}
 		const error = new Error(detail || `${method} ${path}: ${response.status}`);
 		error.status = response.status;
 		throw error;

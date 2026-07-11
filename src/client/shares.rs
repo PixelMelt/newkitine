@@ -3,28 +3,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use lofty::prelude::AudioFile;
-use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::types::{FileAttributes, FileInfo, FolderContents, UINT32_LIMIT};
+use crate::types::{FileAttributes, FileInfo, FolderContents, SharedFolder, UINT32_LIMIT};
 
 const BACKSLASH_SENTINEL: &str = "@@BACKSLASH@@";
-pub const MAX_SEARCH_RESULTS: usize = 300;
-pub const MIN_SEARCH_CHARS: usize = 3;
+const MAX_SEARCH_RESULTS: usize = 300;
+const MIN_SEARCH_CHARS: usize = 3;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "ac3", "afc", "aif", "aifc", "aiff", "ape", "au", "bwav", "bwf", "dff", "dsd", "dsf",
     "dts", "flac", "m4a", "m4b", "mka", "mp1", "mp2", "mp3", "mp+", "mpc", "oga", "ogg", "opus",
     "spx", "tak", "tta", "wav", "wma", "wv",
 ];
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SharedFolder {
-    pub virtual_name: String,
-    pub path: PathBuf,
-    #[serde(default)]
-    pub buddy_only: bool,
-}
 
 #[derive(Debug)]
 struct ScannedFolder {
@@ -227,7 +218,21 @@ pub fn scan(shared_folders: &[SharedFolder]) -> SharesIndex {
 }
 
 fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) {
-    let mut stack = vec![(shared.path.clone(), shared.virtual_name.clone())];
+    let root = match fs::canonicalize(&shared.path) {
+        Ok(root) => root,
+        Err(error) => {
+            warn!(path = %shared.path.display(), %error, "cannot resolve shared folder, skipping");
+            return;
+        }
+    };
+    if index.folder_lookup.contains_key(&shared.virtual_name) {
+        warn!(
+            virtual_name = shared.virtual_name,
+            "duplicate virtual folder name, skipping"
+        );
+        return;
+    }
+    let mut stack = vec![(root, shared.virtual_name.clone())];
     while let Some((real_dir, virtual_dir)) = stack.pop() {
         if index.folder_lookup.contains_key(&virtual_dir) {
             continue;
@@ -251,13 +256,17 @@ fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) {
                 continue;
             }
             let path = entry.path();
-            let metadata = match fs::metadata(&path) {
+            let metadata = match fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     warn!(path = %path.display(), %error, "cannot stat entry");
                     continue;
                 }
             };
+            if metadata.file_type().is_symlink() {
+                warn!(path = %path.display(), "skipping symlink in shared folder");
+                continue;
+            }
             if metadata.is_dir() {
                 stack.push((path, format!("{virtual_dir}\\{name}")));
                 continue;
@@ -350,7 +359,13 @@ mod tests {
     use super::*;
 
     fn test_index() -> SharesIndex {
-        let base = std::env::temp_dir().join(format!("newkitine-shares-{}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "newkitine-shares-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
         let album = base.join("public/Sample Album");
         std::fs::create_dir_all(&album).unwrap();
         std::fs::write(album.join("First Song.flac"), b"x".repeat(300)).unwrap();

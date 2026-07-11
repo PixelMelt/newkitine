@@ -40,10 +40,16 @@ impl PeerInitMessage {
             0 => Self::PierceFireWall {
                 token: r.read_u32()?,
             },
-            1 => Self::PeerInit {
-                username: r.read_string()?,
-                conn_type: ConnectionType::from_str_value(&r.read_string()?)?,
-            },
+            1 => {
+                let username = r.read_string()?;
+                let value = r.read_string()?;
+                let conn_type = ConnectionType::from_str_value(&value)
+                    .ok_or(ProtocolError::InvalidConnectionType { value })?;
+                Self::PeerInit {
+                    username,
+                    conn_type,
+                }
+            }
             _ => {
                 return Err(ProtocolError::UnknownMessageCode {
                     family: "peer_init",

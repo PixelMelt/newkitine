@@ -1,10 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use serde_json::json;
-
-use newkitine::protocol::ServerRequest;
-use newkitine::types::Restriction;
+use crate::types::Restriction;
 
 use super::db;
 use super::state::{App, now};
@@ -76,11 +73,7 @@ pub struct Behavior {
 }
 
 fn policy(app: &App) -> (String, String) {
-    let settings = app.settings.read().unwrap();
-    (
-        settings.filter_level.clone(),
-        settings.denied_message.clone(),
-    )
+    app.settings.behavior_policy()
 }
 
 fn restriction_for(level: &str, verdict: Verdict, denied_message: &str) -> Restriction {
@@ -122,14 +115,68 @@ fn prune(window: &mut VecDeque<i64>, timestamp: i64) {
 }
 
 fn is_self(app: &App, username: &str) -> bool {
-    app.data.read().unwrap().status.username == username
+    app.data.read().unwrap().session.status().username == username
 }
 
 async fn exempt(app: &Arc<App>, username: &str) -> bool {
-    if app.data.read().unwrap().buddies.contains_key(username) {
+    if app.data.read().unwrap().users.is_buddy(username) {
         return true;
     }
-    db::has_downloaded_from(&app.db, username).await
+    has_downloaded_from(&app.db, username).await
+}
+
+async fn has_downloaded_from(pool: &sqlx::MySqlPool, username: &str) -> bool {
+    use sqlx::Row;
+    let count: i64 = sqlx::query(
+        "SELECT COUNT(*) FROM transfer_history WHERE direction = 'download' AND username = ?",
+    )
+    .bind(username)
+    .fetch_one(pool)
+    .await
+    .expect("downloaded-from check")
+    .get(0);
+    count > 0
+}
+
+async fn set_user_verdict(
+    pool: &sqlx::MySqlPool,
+    username: &str,
+    verdict: &str,
+    evidence: &str,
+    restriction: &str,
+    timestamp: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO users_seen (username, first_seen, last_seen, verdict, evidence, restriction)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            last_seen = VALUES(last_seen),
+            verdict = VALUES(verdict),
+            evidence = VALUES(evidence),
+            restriction = VALUES(restriction)",
+    )
+    .bind(username)
+    .bind(timestamp)
+    .bind(timestamp)
+    .bind(verdict)
+    .bind(evidence)
+    .bind(restriction)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn load_verdicts(pool: &sqlx::MySqlPool) -> Vec<(String, String, String)> {
+    use sqlx::Row;
+    sqlx::query(
+        "SELECT username, verdict, COALESCE(evidence, '') FROM users_seen WHERE verdict != 'clean'",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("load verdicts")
+    .into_iter()
+    .map(|row| (row.get(0), row.get(1), row.get(2)))
+    .collect()
 }
 
 async fn sync(app: &Arc<App>, username: &str) {
@@ -141,8 +188,8 @@ async fn sync(app: &Arc<App>, username: &str) {
     };
     let restriction = restriction_for(&level, verdict, &denied_message);
     let restriction_label = restriction_str(&restriction);
-    app.client.set_user_restriction(username, restriction);
-    db::set_user_verdict(
+    app.client.set_user_restriction(username, restriction).await;
+    set_user_verdict(
         &app.db,
         username,
         verdict.as_str(),
@@ -150,14 +197,8 @@ async fn sync(app: &Arc<App>, username: &str) {
         restriction_label,
         now(),
     )
-    .await;
-    app.broadcast(json!({
-        "type": "verdict",
-        "username": username,
-        "verdict": verdict.as_str(),
-        "evidence": evidence,
-        "restriction": restriction_label,
-    }));
+    .await
+    .unwrap_or_else(|error| db::fatal(error));
 }
 
 async fn convict(app: &Arc<App>, username: &str, verdict: Verdict, evidence: &str) {
@@ -245,11 +286,11 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
                 return;
             }
             if hold {
-                app.client.set_user_restriction(username, Restriction::Hold);
+                app.client
+                    .set_user_restriction(username, Restriction::Hold)
+                    .await;
             }
-            app.client.server_request(ServerRequest::GetUserStats {
-                user: username.to_owned(),
-            });
+            app.client.request_user_stats(username).await;
         }
         Action::None => {}
     }
@@ -295,7 +336,7 @@ pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u3
             )
             .await;
         }
-        Action::BrowseVerify => app.client.browse_user(username),
+        Action::BrowseVerify => app.client.browse_user(username).await,
         Action::Passed => sync(app, username).await,
         Action::None => {}
     }
@@ -318,10 +359,11 @@ pub async fn browse_received(app: &Arc<App>, username: &str, file_count: u32) {
         peer.check = Check::Idle;
         let stats_files = peer.stats.map(|(files, _)| files);
         if file_count == 0
-            && stats_files.is_some_and(|files| files >= CONTRADICTION_MIN_FILES)
+            && let Some(files) = stats_files
+            && files >= CONTRADICTION_MIN_FILES
             && peer.verdict != Verdict::Leech
         {
-            Action::Contradiction(stats_files.unwrap())
+            Action::Contradiction(files)
         } else if file_count == 0
             && (checking || stats_files == Some(0))
             && peer.verdict < Verdict::Suspect
@@ -384,7 +426,7 @@ pub async fn buddy_added(app: &Arc<App>, username: &str) {
 
 pub async fn load(app: &Arc<App>) {
     let (level, denied_message) = policy(app);
-    for (username, verdict, evidence) in db::load_verdicts(&app.db).await {
+    for (username, verdict, evidence) in load_verdicts(&app.db).await {
         let verdict = Verdict::from_str(&verdict);
         let evidence: Vec<String> = evidence
             .split(',')
@@ -404,7 +446,9 @@ pub async fn load(app: &Arc<App>) {
         }
         let restriction = restriction_for(&level, verdict, &denied_message);
         if restriction != Restriction::None {
-            app.client.set_user_restriction(&username, restriction);
+            app.client
+                .set_user_restriction(&username, restriction)
+                .await;
         }
     }
 }

@@ -202,3 +202,37 @@ pub fn temp_dir(label: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+#[allow(dead_code)]
+pub fn client_config(
+    server: SocketAddr,
+    username: &str,
+    listen_port: u16,
+    download_dir: std::path::PathBuf,
+) -> newkitine::types::ClientBootstrap {
+    newkitine::types::ClientBootstrap {
+        runtime: newkitine::types::RuntimeConfig {
+            server,
+            username: username.into(),
+            password: "secret".into(),
+            listen_port,
+            description: String::new(),
+            incomplete_dir: download_dir.join("incomplete"),
+            download_dir,
+            shared_folders: Vec::new(),
+            upload_slots: newkitine::types::DEFAULT_UPLOAD_SLOTS,
+            queue_file_limit: newkitine::types::DEFAULT_QUEUE_FILE_LIMIT,
+            upload_limit_kbps: 0,
+            download_limit_kbps: 0,
+            auto_reconnect: true,
+        },
+        buddies: Vec::new(),
+        banned: Vec::new(),
+        ignored: Vec::new(),
+        ip_bans: Vec::new(),
+        wishlist: Vec::new(),
+        liked_interests: Vec::new(),
+        hated_interests: Vec::new(),
+        transfers: Vec::new(),
+    }
+}

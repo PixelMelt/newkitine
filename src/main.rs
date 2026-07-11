@@ -1,31 +1,63 @@
-mod app;
-
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
+use newkitine::app;
 use newkitine::client::Client;
+use newkitine::types::{ClientBootstrap, Settings, TransferSeed};
 
 use app::behavior::Behavior;
+use app::chat::Chat;
 use app::config::{Bootstrap, GluetunConfig};
-use app::settings::Settings;
+use app::interests::Interests;
+use app::search::SearchState;
+use app::session::Session;
+use app::settings::SettingsState;
 use app::state::{App, AppData};
 use app::stats::StatsSink;
-use app::{api, behavior, db, events, geo, gluetun, stats};
+use app::transfers::Transfers;
+use app::users::UsersState;
+use app::{
+    api, behavior, config, db, events, geo, gluetun, interests, search, settings, stats, transfers,
+    users,
+};
 
-async fn initial_gluetun_port(gluetun: &GluetunConfig) -> Option<u16> {
+async fn connect_database(url: &str) -> sqlx::MySqlPool {
+    let mut attempts = 0u32;
+    loop {
+        match db::connect(url).await {
+            Ok(pool) => {
+                info!("connected to database");
+                return pool;
+            }
+            Err(error) => {
+                attempts += 1;
+                if attempts > 30 {
+                    panic!("cannot connect to database at {url}: {error}");
+                }
+                warn!(%error, attempts, "database not ready, retrying");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
+async fn initial_gluetun_port(gluetun: &GluetunConfig) -> u16 {
+    let mut last_error = String::new();
     for attempt in 1..=5u32 {
         match gluetun::fetch_forwarded_port(gluetun).await {
-            Ok(port) => return Some(port),
+            Ok(port) => return port,
             Err(error) => {
                 warn!(%error, attempt, "cannot fetch initial forwarded port from gluetun");
+                last_error = error;
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         }
     }
-    None
+    panic!("gluetun is configured but its forwarded port is unavailable: {last_error}");
 }
 
 #[tokio::main]
@@ -42,78 +74,73 @@ async fn main() {
     );
     let bootstrap = Bootstrap::load(&config_path);
 
-    let pool = db::connect(&bootstrap.database_url).await;
+    let pool = connect_database(&bootstrap.database_url).await;
     db::init_schema(&pool).await;
 
-    let stored_settings: Settings = match db::load_settings(&pool).await {
+    let stored_settings: Settings = match settings::load_settings(&pool).await {
         Some(data) => serde_json::from_str(&data)
             .unwrap_or_else(|error| panic!("corrupt settings row: {error}")),
         None => {
-            let settings = Settings::default();
-            db::save_settings(&pool, &serde_json::to_string(&settings).unwrap()).await;
-            settings
+            let defaults = Settings::default();
+            settings::save_settings(&pool, &serde_json::to_string(&defaults).unwrap())
+                .await
+                .expect("save default settings");
+            defaults
         }
     };
-    let mut settings = stored_settings.clone();
-    let locked_settings = settings.apply_env();
+    let locked_settings = config::apply_settings_env(&mut stored_settings.clone());
 
     let gluetun_port = match &bootstrap.gluetun {
-        Some(gluetun) => initial_gluetun_port(gluetun).await,
+        Some(gluetun) => Some(initial_gluetun_port(gluetun).await),
         None => None,
     };
     if let Some(port) = gluetun_port {
         info!(port, "using forwarded port from gluetun");
-        settings.listen_port = port;
     }
+    let settings_state = SettingsState::new(stored_settings, locked_settings, gluetun_port);
+    let settings = settings_state.effective();
 
-    let mut client_config = settings.to_client_config().unwrap_or_else(|error| {
+    let runtime = settings.runtime_config().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1)
     });
-    client_config.buddies = db::load_list(&pool, "buddy").await;
-    client_config.banned = db::load_list(&pool, "banned").await;
-    client_config.ignored = db::load_list(&pool, "ignored").await;
-    client_config.ip_bans = db::load_list(&pool, "ip_ban").await;
-    client_config.wishlist = db::load_wishlist(&pool).await;
-    client_config.liked_interests = db::load_interests(&pool, "liked").await;
-    client_config.hated_interests = db::load_interests(&pool, "hated").await;
+    let transfer_views = transfers::bootstrap(&pool).await;
+    let client_config = ClientBootstrap {
+        runtime,
+        buddies: db::load_list(&pool, "buddy").await,
+        banned: db::load_list(&pool, "banned").await,
+        ignored: db::load_list(&pool, "ignored").await,
+        ip_bans: db::load_list(&pool, "ip_ban").await,
+        wishlist: search::load_wishlist(&pool).await,
+        liked_interests: interests::load_interests(&pool, "liked").await,
+        hated_interests: interests::load_interests(&pool, "hated").await,
+        transfers: transfer_views.iter().map(TransferSeed::from).collect(),
+    };
 
-    let mut data = AppData::default();
-    data.status.server = settings.server.clone();
-    data.status.username = settings.username.clone();
-    data.status.listen_port = settings.listen_port;
-    data.banned = client_config.banned.clone();
-    data.ignored = client_config.ignored.clone();
-    data.wishlist = client_config.wishlist.clone();
-    data.interests.liked = client_config.liked_interests.clone();
-    data.interests.hated = client_config.hated_interests.clone();
-    for username in &client_config.buddies {
-        data.buddies
-            .insert(username.clone(), events::buddy_view(username));
-    }
-    for (username, note) in db::load_notes(&pool).await {
-        if let Some(buddy) = data.buddies.get_mut(&username) {
-            buddy.note = note;
-        }
-    }
-    for view in db::load_transfers(&pool, "download").await {
-        data.downloads
-            .insert((view.username.clone(), view.virtual_path.clone()), view);
-    }
-    for view in db::load_transfers(&pool, "upload").await {
-        data.uploads
-            .insert((view.username.clone(), view.virtual_path.clone()), view);
-    }
-
-    let resumable: Vec<_> = data
-        .downloads
-        .values()
-        .filter(|view| view.status == "queued" || view.status == "transferring")
-        .cloned()
-        .collect();
+    let data = AppData::new(
+        Session::new(
+            settings.server.clone(),
+            settings.username.clone(),
+            settings.listen_port,
+        ),
+        Transfers::load(transfer_views),
+        SearchState::load(client_config.wishlist.clone()),
+        UsersState::load(
+            &client_config.buddies,
+            users::load_notes(&pool).await,
+            client_config.banned.clone(),
+            client_config.ignored.clone(),
+        ),
+        Chat::load(db::load_list(&pool, "chat").await),
+        Interests::load(
+            client_config.liked_interests.clone(),
+            client_config.hated_interests.clone(),
+        ),
+    );
 
     let (client, client_events) = Client::spawn(client_config);
     let (events_tx, _) = broadcast::channel(256);
+    let (transfer_work_tx, transfer_work_rx) = tokio::sync::mpsc::channel(4096);
 
     let web_bind = bootstrap.web_bind.clone();
     let gluetun_config: Option<GluetunConfig> = bootstrap.gluetun.clone();
@@ -121,45 +148,41 @@ async fn main() {
         .geoip_db
         .as_deref()
         .map(|path| geo::Geo::load(std::path::Path::new(path)));
-    if geo.is_some() {
-        info!(
-            path = bootstrap.geoip_db.as_deref().unwrap(),
-            "geoip database loaded"
-        );
-    }
     let app = Arc::new(App {
         client,
         db: pool,
         data: RwLock::new(data),
         events: events_tx,
-        settings: RwLock::new(stored_settings),
-        locked_settings,
-        gluetun_enabled: gluetun_config.is_some(),
+        settings: settings_state,
         geo,
         stats: StatsSink::default(),
         behavior: Behavior::default(),
+        settings_revision: AtomicU64::new(0),
+        transfer_work: transfer_work_tx,
     });
 
     behavior::load(&app).await;
 
-    for view in resumable {
-        info!(
-            username = view.username,
-            virtual_path = view.virtual_path,
-            "resuming download"
-        );
-        app.client.download(
-            &view.username,
-            &view.virtual_path,
-            view.size,
-            view.attributes,
-        );
-    }
-
     tokio::spawn(events::run(app.clone(), client_events));
+    tokio::spawn(transfers::run_worker(app.clone(), transfer_work_rx));
     tokio::spawn(stats::flush_loop(app.clone()));
     if let Some(gluetun) = gluetun_config {
-        tokio::spawn(gluetun::watch(app.clone(), gluetun, gluetun_port));
+        tokio::spawn(gluetun::watch(
+            app.clone(),
+            gluetun,
+            gluetun_port.expect("gluetun configured without an initial forwarded port"),
+        ));
+    }
+
+    let bind_addrs: Vec<std::net::SocketAddr> =
+        std::net::ToSocketAddrs::to_socket_addrs(web_bind.as_str())
+            .unwrap_or_else(|error| panic!("cannot resolve web_bind {web_bind}: {error}"))
+            .collect();
+    if !bootstrap.allow_public_bind && bind_addrs.iter().any(|addr| !addr.ip().is_loopback()) {
+        panic!(
+            "refusing to bind the unauthenticated web interface on {web_bind}; \
+             set allow_public_bind = true or NEWKITINE_ALLOW_PUBLIC_BIND=1 to accept the exposure"
+        );
     }
 
     let web_root = std::env::var("NEWKITINE_WEB_ROOT").unwrap_or_else(|_| "web/dist".into());

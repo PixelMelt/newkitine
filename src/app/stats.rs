@@ -2,7 +2,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use newkitine::types::Observation;
+use axum::Json;
+use axum::extract::{Query, State};
+use serde::Deserialize;
+use sqlx::MySqlPool;
+use sqlx::Row;
+
+use crate::types::Observation;
 
 use super::db;
 use super::geo::Geo;
@@ -86,7 +92,256 @@ pub async fn flush_loop(app: Arc<App>) {
         }
         let timestamp = now();
         for (username, activity) in drained {
-            db::flush_activity(&app.db, &username, &activity, timestamp).await;
+            flush_activity(&app.db, &username, &activity, timestamp)
+                .await
+                .unwrap_or_else(|error| db::fatal(error));
         }
     }
+}
+
+async fn flush_activity(
+    pool: &MySqlPool,
+    username: &str,
+    activity: &PeerActivity,
+    timestamp: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO users_seen
+            (username, first_seen, last_seen, searches, searches_matched, queue_requests,
+             queue_rejected, browses, info_requests, folder_requests, connections, last_ip, country)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            last_seen = VALUES(last_seen),
+            searches = searches + VALUES(searches),
+            searches_matched = searches_matched + VALUES(searches_matched),
+            queue_requests = queue_requests + VALUES(queue_requests),
+            queue_rejected = queue_rejected + VALUES(queue_rejected),
+            browses = browses + VALUES(browses),
+            info_requests = info_requests + VALUES(info_requests),
+            folder_requests = folder_requests + VALUES(folder_requests),
+            connections = connections + VALUES(connections),
+            last_ip = COALESCE(VALUES(last_ip), last_ip),
+            country = COALESCE(VALUES(country), country)",
+    )
+    .bind(username)
+    .bind(timestamp)
+    .bind(timestamp)
+    .bind(activity.searches)
+    .bind(activity.searches_matched)
+    .bind(activity.queue_requests)
+    .bind(activity.queue_rejected)
+    .bind(activity.browses)
+    .bind(activity.info_requests)
+    .bind(activity.folder_requests)
+    .bind(activity.connections)
+    .bind(&activity.last_ip)
+    .bind(&activity.country)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn transfer_stats(pool: &MySqlPool) -> serde_json::Value {
+    let mut totals = serde_json::Map::new();
+    for direction in ["download", "upload"] {
+        totals.insert(
+            direction.into(),
+            serde_json::json!({ "count": 0, "bytes": 0, "avg_speed_bps": 0 }),
+        );
+    }
+    for row in sqlx::query(
+        "SELECT direction, COUNT(*), CAST(SUM(size) AS UNSIGNED),
+                CAST(COALESCE(AVG(speed_bps), 0) AS UNSIGNED)
+         FROM transfer_history GROUP BY direction",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("transfer totals")
+    {
+        let direction: String = row.get(0);
+        totals.insert(
+            direction,
+            serde_json::json!({
+                "count": row.get::<i64, _>(1),
+                "bytes": row.get::<u64, _>(2),
+                "avg_speed_bps": row.get::<u64, _>(3),
+            }),
+        );
+    }
+
+    let unique_upload_users: i64 = sqlx::query(
+        "SELECT COUNT(DISTINCT username) FROM transfer_history WHERE direction = 'upload'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("unique upload users")
+    .get(0);
+
+    let top_files: Vec<serde_json::Value> = sqlx::query(
+        "SELECT virtual_path, COUNT(*) AS c, CAST(SUM(size) AS UNSIGNED)
+         FROM transfer_history WHERE direction = 'upload'
+         GROUP BY virtual_path ORDER BY c DESC LIMIT 10",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("top files")
+    .into_iter()
+    .map(|row| {
+        serde_json::json!({
+            "virtual_path": row.get::<String, _>(0),
+            "count": row.get::<i64, _>(1),
+            "bytes": row.get::<u64, _>(2),
+        })
+    })
+    .collect();
+
+    let top_users: Vec<serde_json::Value> = sqlx::query(
+        "SELECT username, COUNT(*) AS c, CAST(SUM(size) AS UNSIGNED)
+         FROM transfer_history WHERE direction = 'upload'
+         GROUP BY username ORDER BY c DESC LIMIT 10",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("top users")
+    .into_iter()
+    .map(|row| {
+        serde_json::json!({
+            "username": row.get::<String, _>(0),
+            "count": row.get::<i64, _>(1),
+            "bytes": row.get::<u64, _>(2),
+        })
+    })
+    .collect();
+
+    let mut weekday_uploads = [0i64; 7];
+    for row in sqlx::query(
+        "SELECT CAST(WEEKDAY(FROM_UNIXTIME(finished_at)) AS UNSIGNED) AS d, COUNT(*)
+         FROM transfer_history WHERE direction = 'upload' GROUP BY d",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("weekday uploads")
+    {
+        weekday_uploads[row.get::<u64, _>(0) as usize] = row.get(1);
+    }
+
+    serde_json::json!({
+        "totals": totals,
+        "unique_upload_users": unique_upload_users,
+        "top_files": top_files,
+        "top_users": top_users,
+        "weekday_uploads": weekday_uploads,
+    })
+}
+
+async fn peers_seen(pool: &MySqlPool, limit: u32) -> serde_json::Value {
+    let total: i64 = sqlx::query("SELECT COUNT(*) FROM users_seen")
+        .fetch_one(pool)
+        .await
+        .expect("peers total")
+        .get(0);
+
+    let countries: Vec<serde_json::Value> = sqlx::query(
+        "SELECT country, COUNT(*) AS c FROM users_seen
+         WHERE country IS NOT NULL GROUP BY country ORDER BY c DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("peer countries")
+    .into_iter()
+    .map(|row| {
+        serde_json::json!({
+            "country": row.get::<String, _>(0),
+            "count": row.get::<i64, _>(1),
+        })
+    })
+    .collect();
+
+    let users: Vec<serde_json::Value> = sqlx::query(
+        "SELECT username, first_seen, last_seen, searches, searches_matched, queue_requests,
+                queue_rejected, browses, info_requests, folder_requests, connections, last_ip,
+                country, shared_files, shared_folders, verdict, restriction
+         FROM users_seen ORDER BY last_seen DESC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .expect("peers seen")
+    .into_iter()
+    .map(|row| {
+        serde_json::json!({
+            "username": row.get::<String, _>(0),
+            "first_seen": row.get::<i64, _>(1),
+            "last_seen": row.get::<i64, _>(2),
+            "searches": row.get::<u32, _>(3),
+            "searches_matched": row.get::<u32, _>(4),
+            "queue_requests": row.get::<u32, _>(5),
+            "queue_rejected": row.get::<u32, _>(6),
+            "browses": row.get::<u32, _>(7),
+            "info_requests": row.get::<u32, _>(8),
+            "folder_requests": row.get::<u32, _>(9),
+            "connections": row.get::<u32, _>(10),
+            "last_ip": row.get::<Option<String>, _>(11),
+            "country": row.get::<Option<String>, _>(12),
+            "shared_files": row.get::<Option<u32>, _>(13),
+            "shared_folders": row.get::<Option<u32>, _>(14),
+            "verdict": row.get::<String, _>(15),
+            "restriction": row.get::<String, _>(16),
+        })
+    })
+    .collect();
+
+    serde_json::json!({ "total": total, "countries": countries, "users": users })
+}
+
+async fn verdict_users(pool: &MySqlPool) -> serde_json::Value {
+    let users: Vec<serde_json::Value> = sqlx::query(
+        "SELECT username, verdict, COALESCE(evidence, ''), restriction, last_ip, country,
+                shared_files, shared_folders, last_seen
+         FROM users_seen WHERE verdict IN ('suspect', 'leech') ORDER BY last_seen DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("verdict users")
+    .into_iter()
+    .map(|row| {
+        serde_json::json!({
+            "username": row.get::<String, _>(0),
+            "verdict": row.get::<String, _>(1),
+            "evidence": row.get::<String, _>(2),
+            "restriction": row.get::<String, _>(3),
+            "last_ip": row.get::<Option<String>, _>(4),
+            "country": row.get::<Option<String>, _>(5),
+            "shared_files": row.get::<Option<u32>, _>(6),
+            "shared_folders": row.get::<Option<u32>, _>(7),
+            "last_seen": row.get::<i64, _>(8),
+        })
+    })
+    .collect();
+    serde_json::json!({ "users": users })
+}
+
+pub async fn stats_transfers(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(transfer_stats(&app.db).await)
+}
+
+#[derive(Deserialize)]
+pub struct PeersQuery {
+    #[serde(default = "default_peers_limit")]
+    limit: u32,
+}
+
+fn default_peers_limit() -> u32 {
+    100
+}
+
+pub async fn stats_peers(
+    State(app): State<Arc<App>>,
+    Query(query): Query<PeersQuery>,
+) -> Json<serde_json::Value> {
+    Json(peers_seen(&app.db, query.limit).await)
+}
+
+pub async fn stats_verdicts(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(verdict_users(&app.db).await)
 }

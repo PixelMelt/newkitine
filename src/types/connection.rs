@@ -1,5 +1,3 @@
-use crate::protocol::ProtocolError;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ConnectionType {
     Peer,
@@ -16,15 +14,12 @@ impl ConnectionType {
         }
     }
 
-    pub fn from_str_value(value: &str) -> Result<Self, ProtocolError> {
+    pub fn from_str_value(value: &str) -> Option<Self> {
         match value {
-            "P" => Ok(Self::Peer),
-            "F" => Ok(Self::File),
-            "D" => Ok(Self::Distributed),
-            _ => Err(ProtocolError::InvalidValue {
-                field: "conn_type",
-                value: value.bytes().next().unwrap_or(0) as u64,
-            }),
+            "P" => Some(Self::Peer),
+            "F" => Some(Self::File),
+            "D" => Some(Self::Distributed),
+            _ => None,
         }
     }
 }

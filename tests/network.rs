@@ -4,16 +4,16 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::Receiver;
 use tokio::time::timeout;
 
 use common::{free_port, start_fake_server, tempfile};
-use newkitine::network::{NetworkCommand, NetworkEvent, spawn};
+use newkitine::network::spawn;
 use newkitine::protocol::PeerMessage;
-use newkitine::types::ConnectionType;
+use newkitine::types::{ConnectionType, NetworkCommand, NetworkEvent};
 
 async fn wait_for<T>(
-    events: &mut UnboundedReceiver<NetworkEvent>,
+    events: &mut Receiver<NetworkEvent>,
     mut matcher: impl FnMut(NetworkEvent) -> Option<T>,
 ) -> T {
     timeout(Duration::from_secs(10), async {
@@ -30,7 +30,7 @@ async fn wait_for<T>(
 
 struct Stack {
     handle: newkitine::network::NetworkHandle,
-    events: UnboundedReceiver<NetworkEvent>,
+    events: Receiver<NetworkEvent>,
 }
 
 async fn connect_stack(server_addr: SocketAddr, username: &str) -> Stack {

@@ -54,7 +54,7 @@
     ipBans = (await get('/ip_bans')).patterns;
   }
 
-  $: if (!draft && $settings.settings) draft = structuredClone($settings.settings);
+  $: if (!draft && $settings.settings) draft = { ...structuredClone($settings.settings), password: '' };
   $: locked = new Set($settings.locked);
   $: portManaged = $settings.gluetun || locked.has('listen_port');
 
@@ -73,7 +73,7 @@
   }
 
   function revert() {
-    draft = structuredClone($settings.settings);
+    draft = { ...structuredClone($settings.settings), password: '' };
     applyTheme(draft.theme);
     saveError = '';
     saved = false;
@@ -82,8 +82,10 @@
   async function save() {
     saveError = '';
     saved = false;
+    const payload = { ...draft, incomplete_dir: draft.incomplete_dir || null };
+    if (!payload.password) delete payload.password;
     try {
-      await put('/settings', { ...draft, incomplete_dir: draft.incomplete_dir || null });
+      await put('/settings', payload);
       saved = true;
     } catch (error) {
       saveError = error.message;
@@ -113,6 +115,7 @@
           <div class="form-row">
             <label for="set-password">Password</label>
             <input id="set-password" type="password" bind:value={draft.password}
+              placeholder={draft.password_set ? 'unchanged' : ''}
               disabled={locked.has('password')} />
             {#if locked.has('password')}<span class="hint">set by environment</span>{/if}
           </div>

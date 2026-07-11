@@ -84,7 +84,7 @@ pub enum PeerMessage {
     UnknownPeerMessage,
 }
 
-pub fn read_file_attributes(r: &mut MessageReader) -> Result<FileAttributes, ProtocolError> {
+fn read_file_attributes(r: &mut MessageReader) -> Result<FileAttributes, ProtocolError> {
     let mut attrs = FileAttributes::default();
     let num = r.read_u32()?;
     for _ in 0..num {

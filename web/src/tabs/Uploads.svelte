@@ -22,7 +22,7 @@
   function abortUserUploads(username) {
     for (const t of list) {
       if (t.username === username && !isCleared(t.status)) {
-        post('/uploads/abort', { username: t.username, virtual_path: t.virtual_path });
+        post('/uploads/abort', { id: t.id });
       }
     }
   }
@@ -33,8 +33,7 @@
       items.push(
         {
           label: 'Abort',
-          action: () =>
-            post('/uploads/abort', { username: t.username, virtual_path: t.virtual_path }),
+          action: () => post('/uploads/abort', { id: t.id }),
         },
         { label: "Abort User's Uploads", action: () => abortUserUploads(t.username) },
         { sep: true },
@@ -80,11 +79,11 @@
       </tr>
     </thead>
     <tbody>
-      {#each list as t (t.username + t.virtual_path)}
+      {#each list as t (t.id)}
         <tr on:contextmenu={(e) => rowMenu(e, t)}>
           <td>{t.username}</td>
           <td class="grow" title={t.virtual_path}>{baseName(t.virtual_path)}</td>
-          <td>{t.status}</td>
+          <td>{t.failure_reason ? `${t.status}: ${t.failure_reason}` : t.status}</td>
           <td>{t.size ? Math.floor((t.bytes_done / t.size) * 100) : 0}%</td>
           <td>{formatSize(t.size)}</td>
           <td>{formatQuality(t.attributes)}</td>

@@ -1,10 +1,17 @@
 pub mod api;
 pub mod behavior;
+pub mod chat;
 pub mod config;
+pub mod contract;
 pub mod db;
 pub mod events;
 pub mod geo;
 pub mod gluetun;
+pub mod interests;
+pub mod search;
+pub mod session;
 pub mod settings;
 pub mod state;
 pub mod stats;
+pub mod transfers;
+pub mod users;

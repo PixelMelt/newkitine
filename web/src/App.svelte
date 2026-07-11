@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import {
-    connectWebSocket, loadInitialState, status, notices, speedTotals,
+    connectWebSocket, status, notices, speedTotals,
   } from './lib/stores.js';
   import { formatSize } from './lib/api.js';
   import { activeTab } from './lib/ui.js';
@@ -34,7 +34,6 @@
   ];
 
   onMount(() => {
-    loadInitialState();
     connectWebSocket();
   });
 </script>
@@ -70,8 +69,8 @@
       {/if}
     </span>
     <span>Port: {$status.listen_port}</span>
-    <span>Shares: {$status.shared_files ?? 0} files / {$status.shared_folders ?? 0} folders</span>
-    <span>Connections: {$status.peer_connections ?? 0}</span>
+    <span>Shares: {$status.shared_files} files / {$status.shared_folders} folders</span>
+    <span>Connections: {$status.peer_connections}</span>
     <span>↓ {formatSize($speedTotals.down)}/s</span>
     <span>↑ {formatSize($speedTotals.up)}/s</span>
     {#if $notices.length}

@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 
 use maxminddb::{Reader, geoip2};
+use tracing::info;
 
 pub struct Geo {
     reader: Reader<Vec<u8>>,
@@ -12,7 +13,10 @@ impl Geo {
         let reader = Reader::open_readfile(path).unwrap_or_else(|error| {
             panic!("cannot open geoip database {}: {error}", path.display())
         });
-        Self { reader }
+        let geo = Self { reader };
+        geo.country(Ipv4Addr::new(1, 1, 1, 1));
+        info!(path = %path.display(), "geoip database loaded");
+        geo
     }
 
     pub fn country(&self, ip: Ipv4Addr) -> Option<String> {

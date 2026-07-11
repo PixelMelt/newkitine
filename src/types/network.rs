@@ -1,18 +1,59 @@
-use std::net::Ipv4Addr;
+use std::fs::File;
+use std::net::{Ipv4Addr, SocketAddr};
 
-use crate::protocol::{PeerMessage, ServerResponse};
+use crate::protocol::{PeerMessage, ServerRequest, ServerResponse};
 use crate::types::ConnectionType;
 
 pub type ConnId = u64;
 
 #[derive(Debug)]
+pub enum NetworkCommand {
+    ServerConnect {
+        address: SocketAddr,
+        username: String,
+        password: String,
+        listen_port: u16,
+    },
+    ServerDisconnect,
+    SendServerMessage(ServerRequest),
+    SendPeerMessage {
+        username: String,
+        message: PeerMessage,
+    },
+    RequestFileConnection {
+        username: String,
+        token: u32,
+    },
+    DownloadFile {
+        conn_id: ConnId,
+        file: File,
+        offset: u64,
+        bytes_left: u64,
+    },
+    UploadFile {
+        conn_id: ConnId,
+        file: File,
+        size: u64,
+    },
+    SetTransferLimits {
+        upload_bps: u64,
+        download_bps: u64,
+    },
+    AllowSearchToken(u32),
+    DisallowSearchToken(u32),
+    AllowSharedListUser(String),
+    DisallowSharedListUser(String),
+    AllowUserInfoUser(String),
+    DisallowUserInfoUser(String),
+    CloseConnection(ConnId),
+    Quit,
+}
+
+#[derive(Debug)]
 pub enum NetworkEvent {
-    ServerConnected,
     LoggedIn {
         username: String,
         banner: String,
-        ip_address: Ipv4Addr,
-        is_supporter: bool,
     },
     LoginRejected {
         reason: String,
@@ -32,11 +73,6 @@ pub enum NetworkEvent {
         conn_type: ConnectionType,
         conn_id: ConnId,
         ip: Option<Ipv4Addr>,
-    },
-    PeerConnectionClosed {
-        username: String,
-        conn_type: ConnectionType,
-        conn_id: ConnId,
     },
     ConnectionCount(usize),
     PeerConnectionError {
@@ -59,14 +95,12 @@ pub enum NetworkEvent {
         username: String,
         token: u32,
         bytes_left: u64,
-        speed: u64,
     },
     FileUploadProgress {
         username: String,
         token: u32,
         offset: u64,
         bytes_sent: u64,
-        speed: u64,
     },
     FileTransferError {
         username: String,

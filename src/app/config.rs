@@ -1,9 +1,38 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::types::Settings;
+
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+pub fn apply_settings_env(settings: &mut Settings) -> Vec<&'static str> {
+    let mut locked = Vec::new();
+    if let Some(value) = env_var("NEWKITINE_SERVER") {
+        settings.server = value;
+        locked.push("server");
+    }
+    if let Some(value) = env_var("NEWKITINE_USERNAME") {
+        settings.username = value;
+        locked.push("username");
+    }
+    if let Some(value) = env_var("NEWKITINE_PASSWORD") {
+        settings.password = value;
+        locked.push("password");
+    }
+    if let Some(value) = env_var("NEWKITINE_LISTEN_PORT") {
+        settings.listen_port = value
+            .parse()
+            .expect("NEWKITINE_LISTEN_PORT must be a port number");
+        locked.push("listen_port");
+    }
+    if let Some(value) = env_var("NEWKITINE_DOWNLOAD_DIR") {
+        settings.download_dir = PathBuf::from(value);
+        locked.push("download_dir");
+    }
+    locked
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +64,7 @@ impl Default for GluetunConfig {
 pub struct Bootstrap {
     pub database_url: String,
     pub web_bind: String,
+    pub allow_public_bind: bool,
     pub geoip_db: Option<String>,
     pub gluetun: Option<GluetunConfig>,
 }
@@ -44,6 +74,7 @@ impl Default for Bootstrap {
         Self {
             database_url: "mysql://newkitine:newkitine@localhost:3306/newkitine".into(),
             web_bind: "127.0.0.1:8080".into(),
+            allow_public_bind: false,
             geoip_db: None,
             gluetun: None,
         }
@@ -65,6 +96,9 @@ impl Bootstrap {
         }
         if let Some(value) = env_var("NEWKITINE_WEB_BIND") {
             bootstrap.web_bind = value;
+        }
+        if let Some(value) = env_var("NEWKITINE_ALLOW_PUBLIC_BIND") {
+            bootstrap.allow_public_bind = matches!(value.as_str(), "1" | "true" | "yes");
         }
         if let Some(value) = env_var("NEWKITINE_GEOIP_DB") {
             bootstrap.geoip_db = Some(value);

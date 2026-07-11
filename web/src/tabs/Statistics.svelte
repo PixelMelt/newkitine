@@ -49,17 +49,17 @@
     openMenu(event, items);
   }
 
-  $: uploads = transfers?.totals?.upload ?? { count: 0, bytes: 0, avg_speed_bps: 0 };
-  $: uploadUsers = transfers?.unique_upload_users ?? 0;
-  $: downloads = transfers?.totals?.download ?? { count: 0, bytes: 0 };
-  $: maxWeekday = Math.max(1, ...(transfers?.weekday_uploads ?? [0]));
-  $: pie = buildPie(peers?.countries ?? []);
-  $: topFiles = sortRows(transfers?.top_files ?? [], fileSort, {
+  $: uploads = transfers ? transfers.totals.upload : { count: 0, bytes: 0, avg_speed_bps: 0 };
+  $: uploadUsers = transfers ? transfers.unique_upload_users : 0;
+  $: downloads = transfers ? transfers.totals.download : { count: 0, bytes: 0 };
+  $: maxWeekday = Math.max(1, ...(transfers ? transfers.weekday_uploads : [0]));
+  $: pie = buildPie(peers ? peers.countries : []);
+  $: topFiles = sortRows(transfers ? transfers.top_files : [], fileSort, {
     file: (f) => baseName(f.virtual_path),
   });
-  $: topUsers = sortRows(transfers?.top_users ?? [], userSort);
+  $: topUsers = sortRows(transfers ? transfers.top_users : [], userSort);
   $: verdictRows = sortRows(verdicts, verdictSort);
-  $: peerRows = sortRows(peers?.users ?? [], peerSort);
+  $: peerRows = sortRows(peers ? peers.users : [], peerSort);
 
   function buildPie(countries) {
     const total = countries.reduce((sum, entry) => sum + entry.count, 0);
@@ -85,7 +85,7 @@
 
 <div class="toolbar">
   <button on:click={refresh}>Refresh</button>
-  <span>{peers?.total ?? 0} peers seen</span>
+  <span>{peers ? peers.total : 0} peers seen</span>
   <span>uploaded to {uploadUsers} distinct {uploadUsers === 1 ? 'user' : 'users'}</span>
 </div>
 
@@ -158,7 +158,7 @@
 
   <h3>Uploads by Weekday</h3>
   <div class="bars">
-    {#each transfers?.weekday_uploads ?? [] as count, day}
+    {#each transfers ? transfers.weekday_uploads : [] as count, day}
       <div class="bar-row">
         <span class="bar-label">{WEEKDAYS[day]}</span>
         <div class="bar-track">
