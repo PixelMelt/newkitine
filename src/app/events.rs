@@ -31,6 +31,8 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             session::disconnected(app);
         }
         ClientEvent::ConnectionCount(count) => session::connection_count(app, count),
+        ClientEvent::ShareScanStarted => session::share_scan_started(app),
+        ClientEvent::ShareScanProgress { files } => session::share_scan_progress(app, files),
         ClientEvent::SharesScanned { folders, files } => {
             session::shares_scanned(app, folders, files);
         }

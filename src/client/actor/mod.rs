@@ -132,8 +132,8 @@ pub(crate) async fn run(
                 }
             }
             result = scan_rx.recv() => {
-                if let Some((generation, scan)) = result {
-                    actor.handle_scan_complete(generation, scan);
+                if let Some((generation, update)) = result {
+                    actor.handle_scan_update(generation, update);
                 }
             }
             _ = sweep.tick() => actor.sweep(),

@@ -15,6 +15,10 @@ pub enum ClientEvent {
     },
     Disconnected,
     ConnectionCount(usize),
+    ShareScanStarted,
+    ShareScanProgress {
+        files: u64,
+    },
     SharesScanned {
         folders: u32,
         files: u32,

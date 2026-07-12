@@ -707,6 +707,7 @@ mod tests {
                 buddy_only: false,
             }],
             &dir.with_extension("slots.cache"),
+            &|_| {},
         )
         .expect("scan test shares");
 
@@ -761,6 +762,7 @@ mod tests {
                 buddy_only: false,
             }],
             &dir.with_extension("deny.cache"),
+            &|_| {},
         )
         .expect("scan test shares");
 

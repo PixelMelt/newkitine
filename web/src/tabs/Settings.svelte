@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { settings, applyTheme } from '../lib/stores.js';
+  import { settings, status, applyTheme } from '../lib/stores.js';
   import { put, post, get } from '../lib/api.js';
 
   const pages = [
@@ -15,7 +15,7 @@
   const filterLevels = [
     ['open', 'Open', 'Observe and record peer behavior, never restrict anyone.'],
     ['guarded', 'Guarded', 'Deny peers with hard evidence of faked shares; deprioritize suspicious ones. Real users are never blocked.'],
-    ['strict', 'Strict', "Hold a stranger's first download until their shares are checked. Peers sharing nothing or faking their share counts are denied."],
+    ['strict', 'Strict', "Hold a peers's first download until their shares are checked. Peers sharing nothing or faking their share counts are denied."],
   ];
   const themes = [
     ['dark', 'Dark'],
@@ -166,7 +166,9 @@
             </tbody>
           </table>
           <div class="toolbar">
-            <button on:click={() => post('/shares/rescan')}>Rescan Shares Now</button>
+            <button disabled={$status.scanning} on:click={() => post('/shares/rescan')}>
+              {$status.scanning ? 'Scanning…' : 'Rescan Shares Now'}
+            </button>
             <span class="hint">Saved share changes are rescanned automatically.</span>
           </div>
 

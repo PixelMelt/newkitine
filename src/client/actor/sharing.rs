@@ -7,17 +7,23 @@ use crate::client::shares::{self, ScanError, SharesIndex};
 use crate::protocol::{PeerMessage, ServerRequest};
 use crate::types::{ClientEvent, Observation, Restriction};
 
+pub(super) enum ScanUpdate {
+    Progress(u64),
+    Complete(Result<SharesIndex, ScanError>),
+}
+
 pub(super) struct Sharing {
     pub(super) index: Option<SharesIndex>,
-    scan_results: mpsc::UnboundedSender<(u64, Result<SharesIndex, ScanError>)>,
+    scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
     scan_cache: PathBuf,
     generation: u64,
+    last_progress: u64,
     pub(super) excluded_phrases: Vec<String>,
 }
 
 impl Sharing {
     pub(super) fn new(
-        scan_results: mpsc::UnboundedSender<(u64, Result<SharesIndex, ScanError>)>,
+        scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
         scan_cache: PathBuf,
     ) -> Self {
         Self {
@@ -25,6 +31,7 @@ impl Sharing {
             scan_results,
             scan_cache,
             generation: 0,
+            last_progress: 0,
             excluded_phrases: Vec::new(),
         }
     }
@@ -36,20 +43,34 @@ impl ClientActor {
             return;
         }
         self.sharing.generation += 1;
+        self.sharing.last_progress = 0;
         let generation = self.sharing.generation;
+        self.emit(ClientEvent::ShareScanStarted);
         let shared_folders = self.config.shared_folders.clone();
         let cache_path = self.sharing.scan_cache.clone();
         let results = self.sharing.scan_results.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = results.send((generation, shares::scan(&shared_folders, &cache_path)));
+            let progress = |files| {
+                let _ = results.send((generation, ScanUpdate::Progress(files)));
+            };
+            let result = shares::scan(&shared_folders, &cache_path, &progress);
+            let _ = results.send((generation, ScanUpdate::Complete(result)));
         });
     }
 
-    pub(super) fn handle_scan_complete(
-        &mut self,
-        generation: u64,
-        result: Result<SharesIndex, ScanError>,
-    ) {
+    pub(super) fn handle_scan_update(&mut self, generation: u64, update: ScanUpdate) {
+        match update {
+            ScanUpdate::Progress(files) => {
+                if generation == self.sharing.generation && files > self.sharing.last_progress {
+                    self.sharing.last_progress = files;
+                    self.emit(ClientEvent::ShareScanProgress { files });
+                }
+            }
+            ScanUpdate::Complete(result) => self.handle_scan_complete(generation, result),
+        }
+    }
+
+    fn handle_scan_complete(&mut self, generation: u64, result: Result<SharesIndex, ScanError>) {
         if generation != self.sharing.generation {
             tracing::warn!(
                 generation,

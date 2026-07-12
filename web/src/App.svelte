@@ -69,7 +69,14 @@
       {/if}
     </span>
     <span>Port: {$status.listen_port}</span>
-    {#if $status.share_scan_error}
+    {#if $status.scanning}
+      <span>
+        Scanning shares…
+        {#if $status.scan_progress}
+          {$status.scan_progress.toLocaleString()} files
+        {/if}
+      </span>
+    {:else if $status.share_scan_error}
       <span class="notice">Share scan failed: {$status.share_scan_error}</span>
     {:else}
       <span>Shares: {$status.shared_files} files / {$status.shared_folders} folders</span>

@@ -87,16 +87,33 @@ pub fn connection_count(app: &App, count: usize) {
     data.broadcast(AppEvent::ConnCount { count });
 }
 
+pub fn share_scan_started(app: &App) {
+    update_status(app, |status| {
+        status.scanning = true;
+        status.scan_progress = 0;
+    });
+}
+
+pub fn share_scan_progress(app: &App, files: u64) {
+    update_status(app, |status| status.scan_progress = files);
+}
+
 pub fn shares_scanned(app: &App, folders: u32, files: u32) {
     update_status(app, |status| {
         status.shared_folders = folders;
         status.shared_files = files;
+        status.scanning = false;
+        status.scan_progress = 0;
         status.share_scan_error = None;
     });
 }
 
 pub fn share_scan_failed(app: &App, error: String) {
-    update_status(app, |status| status.share_scan_error = Some(error));
+    update_status(app, |status| {
+        status.scanning = false;
+        status.scan_progress = 0;
+        status.share_scan_error = Some(error);
+    });
 }
 
 pub fn privileges(app: &App, seconds: u32) {

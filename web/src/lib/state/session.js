@@ -9,6 +9,8 @@ export const status = writable({
 	listen_port: 0,
 	shared_folders: 0,
 	shared_files: 0,
+	scanning: false,
+	scan_progress: 0,
 	share_scan_error: null,
 	privileges_secs: 0,
 	peer_connections: 0,

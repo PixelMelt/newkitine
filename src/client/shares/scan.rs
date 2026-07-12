@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
 use lofty::prelude::AudioFile;
@@ -37,6 +37,7 @@ pub enum ScanError {
 
 const BACKSLASH_SENTINEL: &str = "@@BACKSLASH@@";
 const ATTRIBUTE_WORKER_CAP: usize = 12;
+const PROGRESS_INTERVAL: u64 = 1000;
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "ac3", "afc", "aif", "aifc", "aiff", "ape", "au", "bwav", "bwf", "dff", "dsd", "dsf",
@@ -49,6 +50,13 @@ struct RawFile {
     real_path: PathBuf,
     size: u64,
     mtime: u64,
+    class: FileClass,
+}
+
+enum FileClass {
+    Ready(FileAttributes),
+    CacheHit(FileAttributes),
+    NeedsRead,
 }
 
 struct RawFolder {
@@ -65,14 +73,31 @@ struct Miss {
     mtime: u64,
 }
 
-struct Merger<'a> {
+struct Merger {
     index: SharesIndex,
-    cache: &'a HashMap<String, CacheEntry>,
     new_cache: HashMap<String, CacheEntry>,
     misses: Vec<Miss>,
 }
 
-pub fn scan(shared_folders: &[SharedFolder], cache_path: &Path) -> Result<SharesIndex, ScanError> {
+struct Progress<'a> {
+    count: AtomicU64,
+    notify: &'a (dyn Fn(u64) + Sync),
+}
+
+impl Progress<'_> {
+    fn add(&self) {
+        let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_multiple_of(PROGRESS_INTERVAL) {
+            (self.notify)(count);
+        }
+    }
+}
+
+pub fn scan(
+    shared_folders: &[SharedFolder],
+    cache_path: &Path,
+    progress: &(dyn Fn(u64) + Sync),
+) -> Result<SharesIndex, ScanError> {
     let mut virtual_names = HashSet::new();
     for shared in shared_folders {
         if !virtual_names.insert(shared.virtual_name.as_str()) {
@@ -83,20 +108,27 @@ pub fn scan(shared_folders: &[SharedFolder], cache_path: &Path) -> Result<Shares
     }
 
     let cache = cache::load(cache_path);
-    let roots: Vec<Vec<RawFolder>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = shared_folders
-            .iter()
-            .map(|shared| scope.spawn(move || walk_root(shared)))
-            .collect();
-        handles
-            .into_iter()
-            .map(join_scan_thread)
-            .collect::<Result<_, _>>()
-    })?;
+    let progress = Progress {
+        count: AtomicU64::new(0),
+        notify: progress,
+    };
+    let roots: Vec<Vec<RawFolder>> = {
+        let cache = &cache;
+        let progress = &progress;
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = shared_folders
+                .iter()
+                .map(|shared| scope.spawn(move || walk_root(shared, cache, progress)))
+                .collect();
+            handles
+                .into_iter()
+                .map(join_scan_thread)
+                .collect::<Result<_, _>>()
+        })?
+    };
 
     let mut merger = Merger {
         index: SharesIndex::default(),
-        cache: &cache,
         new_cache: HashMap::new(),
         misses: Vec::new(),
     };
@@ -109,12 +141,11 @@ pub fn scan(shared_folders: &[SharedFolder], cache_path: &Path) -> Result<Shares
         mut index,
         mut new_cache,
         misses,
-        cache: _,
     } = merger;
 
     let cache_hits = new_cache.len();
     let attribute_reads = misses.len();
-    read_missing_attributes(&mut index, &mut new_cache, misses);
+    read_missing_attributes(&mut index, &mut new_cache, misses, &progress);
     cache::save(cache_path, &new_cache);
 
     let (folders, files) = index.counts();
@@ -129,7 +160,11 @@ pub fn scan(shared_folders: &[SharedFolder], cache_path: &Path) -> Result<Shares
     Ok(index)
 }
 
-fn walk_root(shared: &SharedFolder) -> Result<Vec<RawFolder>, ScanError> {
+fn walk_root(
+    shared: &SharedFolder,
+    cache: &HashMap<String, CacheEntry>,
+    progress: &Progress,
+) -> Result<Vec<RawFolder>, ScanError> {
     let root = fs::canonicalize(&shared.path).map_err(|error| ScanError::Root {
         path: shared.path.clone(),
         error,
@@ -171,11 +206,28 @@ fn walk_root(shared: &SharedFolder) -> Result<Vec<RawFolder>, ScanError> {
                 path: entry.path(),
                 error,
             })?;
+            let real_path = entry.path();
+            let size = metadata.len();
+            let mtime = unix_mtime(&metadata);
+            let class = if size <= 128 || !has_audio_extension(&real_path) {
+                FileClass::Ready(FileAttributes::default())
+            } else {
+                match cache.get(real_path.to_string_lossy().as_ref()) {
+                    Some(entry) if entry.size == size && entry.mtime == mtime => {
+                        FileClass::CacheHit(entry.attributes.clone())
+                    }
+                    _ => FileClass::NeedsRead,
+                }
+            };
+            if !matches!(class, FileClass::NeedsRead) {
+                progress.add();
+            }
             files.push(RawFile {
                 name,
-                real_path: entry.path(),
-                size: metadata.len(),
-                mtime: unix_mtime(&metadata),
+                real_path,
+                size,
+                mtime,
+                class,
             });
         }
         folders.push(RawFolder {
@@ -186,7 +238,7 @@ fn walk_root(shared: &SharedFolder) -> Result<Vec<RawFolder>, ScanError> {
     Ok(folders)
 }
 
-impl Merger<'_> {
+impl Merger {
     fn add_folder(&mut self, buddy_only: bool, folder: RawFolder) -> Result<(), ScanError> {
         let RawFolder {
             virtual_path: virtual_dir,
@@ -221,34 +273,29 @@ impl Merger<'_> {
                     .push(file_index);
             }
 
-            let attributes = if file.size <= 128 || !has_audio_extension(&file.real_path) {
-                FileAttributes::default()
-            } else {
-                let key = file.real_path.to_string_lossy().into_owned();
-                match self.cache.get(&key) {
-                    Some(entry) if entry.size == file.size && entry.mtime == file.mtime => {
-                        let attributes = entry.attributes.clone();
-                        self.new_cache.insert(
-                            key,
-                            CacheEntry {
-                                size: file.size,
-                                mtime: file.mtime,
-                                attributes: attributes.clone(),
-                            },
-                        );
-                        attributes
-                    }
-                    _ => {
-                        self.misses.push(Miss {
-                            file_index,
-                            folder_index,
-                            position,
-                            key,
+            let attributes = match file.class {
+                FileClass::Ready(attributes) => attributes,
+                FileClass::CacheHit(attributes) => {
+                    self.new_cache.insert(
+                        file.real_path.to_string_lossy().into_owned(),
+                        CacheEntry {
                             size: file.size,
                             mtime: file.mtime,
-                        });
-                        FileAttributes::default()
-                    }
+                            attributes: attributes.clone(),
+                        },
+                    );
+                    attributes
+                }
+                FileClass::NeedsRead => {
+                    self.misses.push(Miss {
+                        file_index,
+                        folder_index,
+                        position,
+                        key: file.real_path.to_string_lossy().into_owned(),
+                        size: file.size,
+                        mtime: file.mtime,
+                    });
+                    FileAttributes::default()
                 }
             };
 
@@ -288,6 +335,7 @@ fn read_missing_attributes(
     index: &mut SharesIndex,
     new_cache: &mut HashMap<String, CacheEntry>,
     mut misses: Vec<Miss>,
+    progress: &Progress,
 ) {
     if misses.is_empty() {
         return;
@@ -314,6 +362,7 @@ fn read_missing_attributes(
                                 position,
                                 audio_attributes(&files[miss.file_index as usize].real_path),
                             ));
+                            progress.add();
                         }
                     })
                 })
@@ -438,6 +487,7 @@ mod tests {
                 },
             ],
             &cache_path(&base),
+            &|_| {},
         )
         .expect("scan test shares")
     }
@@ -497,6 +547,7 @@ mod tests {
                 buddy_only: false,
             }],
             &cache_path(&base),
+            &|_| {},
         )
         .expect("case collision must not fail the scan");
 
@@ -572,6 +623,7 @@ mod tests {
                 buddy_only: false,
             }],
             &cache_path,
+            &|_| {},
         )
         .unwrap();
 
@@ -622,6 +674,7 @@ mod tests {
                 buddy_only: false,
             }],
             &cache_path,
+            &|_| {},
         )
         .unwrap();
 
@@ -664,6 +717,7 @@ mod tests {
                 buddy_only: false,
             }],
             &cache_path,
+            &|_| {},
         )
         .unwrap();
 
@@ -700,10 +754,28 @@ mod tests {
                 buddy_only: false,
             }],
             &cache_path,
+            &|_| {},
         )
         .unwrap();
 
         assert!(!cache::load(&cache_path).contains_key("/nowhere/gone.mp3"));
+    }
+
+    #[test]
+    fn progress_notifies_every_interval() {
+        let seen = std::sync::Mutex::new(Vec::new());
+        let notify = |count| seen.lock().unwrap().push(count);
+        let progress = Progress {
+            count: AtomicU64::new(0),
+            notify: &notify,
+        };
+        for _ in 0..(PROGRESS_INTERVAL * 2 + 1) {
+            progress.add();
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![PROGRESS_INTERVAL, PROGRESS_INTERVAL * 2]
+        );
     }
 
     #[test]
@@ -721,6 +793,7 @@ mod tests {
                 buddy_only: false,
             }],
             &cache_path(&base),
+            &|_| {},
         )
         .unwrap();
 

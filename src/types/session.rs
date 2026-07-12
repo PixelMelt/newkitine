@@ -10,6 +10,8 @@ pub struct Status {
     pub listen_port: u16,
     pub shared_folders: u32,
     pub shared_files: u32,
+    pub scanning: bool,
+    pub scan_progress: u64,
     pub share_scan_error: Option<String>,
     pub privileges_secs: u32,
     pub peer_connections: usize,

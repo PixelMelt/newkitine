@@ -70,6 +70,8 @@ fn status_fixture() -> Status {
         listen_port: 2234,
         shared_folders: 1,
         shared_files: 2,
+        scanning: true,
+        scan_progress: 42,
         share_scan_error: Some("scan failed".into()),
         privileges_secs: 0,
         peer_connections: 3,

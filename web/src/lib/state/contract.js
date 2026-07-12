@@ -69,6 +69,8 @@ const status = shape({
 	listen_port: num,
 	shared_folders: num,
 	shared_files: num,
+	scanning: bool,
+	scan_progress: num,
 	share_scan_error: nullable(str),
 	privileges_secs: num,
 	peer_connections: num,
