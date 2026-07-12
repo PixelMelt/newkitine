@@ -2,16 +2,16 @@ use tokio::sync::oneshot;
 
 use super::ClientActor;
 use crate::types::{
-    AbortResult, ClientEvent, ConnId, EnqueueResult, FileAttributes, NetworkCommand, Restriction,
-    TransferDirection, TransferEvent, TransferId, TransferStatus,
+    AbortResult, ConnId, EnqueueResult, FileAttributes, NetworkCommand, Restriction, RetryResult,
+    TransferDirection, TransferId, TransferStatus, TransferWork,
 };
 
 use crate::protocol::PeerMessage;
 
 impl ClientActor {
-    pub(super) fn emit_transfers(&self, events: Vec<TransferEvent>) {
-        for event in events {
-            self.emit(ClientEvent::Transfer(event));
+    pub(super) fn emit_transfers(&self, work: Vec<TransferWork>) {
+        for item in work {
+            self.emit_transfer_work(item);
         }
     }
 
@@ -23,9 +23,19 @@ impl ClientActor {
         attributes: FileAttributes,
         ack: oneshot::Sender<EnqueueResult>,
     ) {
-        let (result, events) =
-            self.downloads
-                .enqueue(&mut self.transfer_ids, username, virtual_path, size, attributes);
+        let (result, events) = self.downloads.enqueue(
+            &mut self.transfer_ids,
+            username,
+            virtual_path,
+            size,
+            attributes,
+        );
+        self.emit_transfers(events);
+        Self::ack(ack, result);
+    }
+
+    pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
+        let (result, events) = self.downloads.retry(&mut self.transfer_ids, id);
         self.emit_transfers(events);
         Self::ack(ack, result);
     }
@@ -55,7 +65,7 @@ impl ClientActor {
             TransferDirection::Upload => self.uploads.clear(&statuses),
         };
         if !ids.is_empty() {
-            self.emit(ClientEvent::TransfersRemoved { direction, ids });
+            self.emit_transfer_work(TransferWork::Removed { direction, ids });
         }
         Self::ack(ack, ());
     }
@@ -70,7 +80,7 @@ impl ClientActor {
             TransferDirection::Upload => self.uploads.clear_all(),
         };
         if !ids.is_empty() {
-            self.emit(ClientEvent::TransfersRemoved { direction, ids });
+            self.emit_transfer_work(TransferWork::Removed { direction, ids });
         }
         Self::ack(ack, ());
     }

@@ -1,6 +1,6 @@
 use crate::types::{
-    FolderContents, Observation, Recommendations, SearchResult, SimilarUser, TransferDirection,
-    TransferEvent, TransferId, UserStats, UserStatus,
+    FolderContents, Observation, Recommendations, SearchResult, SimilarUser, UserInfoReceived,
+    UserStats, UserStatus,
 };
 
 #[derive(Debug)]
@@ -18,6 +18,13 @@ pub enum ClientEvent {
     SharesScanned {
         folders: u32,
         files: u32,
+    },
+    ShareScanFailed {
+        error: String,
+    },
+    SearchStarted {
+        token: u32,
+        query: String,
     },
     SearchResults(SearchResult),
     UserStatus {
@@ -40,24 +47,12 @@ pub enum ClientEvent {
         liked: Vec<String>,
         hated: Vec<String>,
     },
-    Transfer(TransferEvent),
-    TransfersRemoved {
-        direction: TransferDirection,
-        ids: Vec<TransferId>,
-    },
     SharedFileList {
         username: String,
         shares: Vec<FolderContents>,
         private_shares: Vec<FolderContents>,
     },
-    UserInfo {
-        username: String,
-        description: String,
-        picture: Option<Vec<u8>>,
-        total_uploads: u32,
-        queue_size: u32,
-        slots_available: bool,
-    },
+    UserInfo(UserInfoReceived),
     PrivateMessage {
         username: String,
         message: String,

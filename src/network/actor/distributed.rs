@@ -94,10 +94,7 @@ impl Actor {
             && let Some(init_id) = self
                 .indirect
                 .existing_attempt(&parent, ConnectionType::Distributed)
-            && let Some(conn_id) = self
-                .indirect
-                .get(init_id)
-                .and_then(|init| init.conn_id)
+            && let Some(conn_id) = self.indirect.get(init_id).and_then(|init| init.conn_id)
         {
             self.close_conn(conn_id);
         }

@@ -11,19 +11,29 @@ pub const DEFAULT_QUEUE_FILE_LIMIT: usize = 500;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeConfig {
+    pub login: LoginConfig,
+    pub description: String,
+    pub auto_reconnect: bool,
+    pub transfers: TransferConfig,
+    pub shared_folders: Vec<SharedFolder>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoginConfig {
     pub server: SocketAddr,
     pub username: String,
     pub password: String,
     pub listen_port: u16,
-    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransferConfig {
     pub download_dir: PathBuf,
     pub incomplete_dir: PathBuf,
-    pub shared_folders: Vec<SharedFolder>,
     pub upload_slots: usize,
     pub queue_file_limit: usize,
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
-    pub auto_reconnect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +80,49 @@ impl Default for Settings {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PublicSettings {
+    pub server: String,
+    pub username: String,
+    pub password_set: bool,
+    pub listen_port: u16,
+    pub description: String,
+    pub download_dir: PathBuf,
+    pub incomplete_dir: Option<PathBuf>,
+    pub shares: Vec<SharedFolder>,
+    pub upload_slots: usize,
+    pub queue_file_limit: usize,
+    pub upload_limit_kbps: u32,
+    pub download_limit_kbps: u32,
+    pub auto_reconnect: bool,
+    pub theme: String,
+    pub filter_level: String,
+    pub denied_message: String,
+}
+
+impl From<&Settings> for PublicSettings {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            server: settings.server.clone(),
+            username: settings.username.clone(),
+            password_set: !settings.password.is_empty(),
+            listen_port: settings.listen_port,
+            description: settings.description.clone(),
+            download_dir: settings.download_dir.clone(),
+            incomplete_dir: settings.incomplete_dir.clone(),
+            shares: settings.shares.clone(),
+            upload_slots: settings.upload_slots,
+            queue_file_limit: settings.queue_file_limit,
+            upload_limit_kbps: settings.upload_limit_kbps,
+            download_limit_kbps: settings.download_limit_kbps,
+            auto_reconnect: settings.auto_reconnect,
+            theme: settings.theme.clone(),
+            filter_level: settings.filter_level.clone(),
+            denied_message: settings.denied_message.clone(),
+        }
+    }
+}
+
 impl Settings {
     pub fn locked_differs(&self, other: &Settings, key: &'static str) -> bool {
         match key {
@@ -109,19 +162,23 @@ impl Settings {
 
     pub fn runtime_config(&self) -> Result<RuntimeConfig, String> {
         Ok(RuntimeConfig {
-            server: self.resolve_server()?,
-            username: self.username.clone(),
-            password: self.password.clone(),
-            listen_port: self.listen_port,
+            login: LoginConfig {
+                server: self.resolve_server()?,
+                username: self.username.clone(),
+                password: self.password.clone(),
+                listen_port: self.listen_port,
+            },
             description: self.description.clone(),
-            download_dir: self.download_dir.clone(),
-            incomplete_dir: self.incomplete_dir(),
-            shared_folders: self.shares.clone(),
-            upload_slots: self.upload_slots,
-            queue_file_limit: self.queue_file_limit,
-            upload_limit_kbps: self.upload_limit_kbps,
-            download_limit_kbps: self.download_limit_kbps,
             auto_reconnect: self.auto_reconnect,
+            transfers: TransferConfig {
+                download_dir: self.download_dir.clone(),
+                incomplete_dir: self.incomplete_dir(),
+                upload_slots: self.upload_slots,
+                queue_file_limit: self.queue_file_limit,
+                upload_limit_kbps: self.upload_limit_kbps,
+                download_limit_kbps: self.download_limit_kbps,
+            },
+            shared_folders: self.shares.clone(),
         })
     }
 }

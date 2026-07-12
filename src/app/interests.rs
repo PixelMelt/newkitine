@@ -7,25 +7,11 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::MySqlPool;
 
-use serde::Serialize;
-
-use crate::types::{Recommendations, SimilarUser};
+use crate::types::{InterestsView, Recommendations, SimilarUser};
 
 use super::api;
 use super::contract::AppEvent;
 use super::state::App;
-
-#[derive(Default, Clone, Serialize)]
-pub struct InterestsView {
-    pub liked: Vec<String>,
-    pub hated: Vec<String>,
-    pub recommendations: Recommendations,
-    pub unrecommendations: Recommendations,
-    pub recommendations_for: Option<String>,
-    pub recommendations_global: bool,
-    pub similar_users: Vec<SimilarUser>,
-    pub similar_users_for: Option<String>,
-}
 
 #[derive(Default)]
 pub struct Interests {
@@ -49,12 +35,12 @@ impl Interests {
 }
 
 fn publish(app: &App, apply: impl FnOnce(&mut InterestsView)) {
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     apply(&mut data.interests.view);
     let event = AppEvent::Interests {
         interests: data.interests.view.clone(),
     };
-    app.broadcast(&mut data, event);
+    data.broadcast(event);
 }
 
 pub async fn recommendations(
@@ -152,7 +138,7 @@ async fn delete_interest(pool: &MySqlPool, kind: &str, thing: &str) -> Result<()
 }
 
 pub async fn interests(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "interests": data.interests.view() }))
 }
 
@@ -166,13 +152,15 @@ pub async fn add_interest(
     State(app): State<Arc<App>>,
     Json(body): Json<InterestBody>,
 ) -> StatusCode {
-    match body.kind.as_str() {
-        "liked" => app.client.add_liked_interest(&body.thing).await,
-        "hated" => app.client.add_hated_interest(&body.thing).await,
-        _ => return StatusCode::BAD_REQUEST,
+    if !matches!(body.kind.as_str(), "liked" | "hated") {
+        return StatusCode::BAD_REQUEST;
     }
     if let Err(error) = insert_interest(&app.db, &body.kind, &body.thing).await {
         return api::db_failed(error);
+    }
+    match body.kind.as_str() {
+        "liked" => app.client.add_liked_interest(&body.thing).await,
+        _ => app.client.add_hated_interest(&body.thing).await,
     }
     publish(&app, |view| {
         let list = if body.kind == "liked" {
@@ -192,13 +180,15 @@ pub async fn remove_interest(
     State(app): State<Arc<App>>,
     Json(body): Json<InterestBody>,
 ) -> StatusCode {
-    match body.kind.as_str() {
-        "liked" => app.client.remove_liked_interest(&body.thing).await,
-        "hated" => app.client.remove_hated_interest(&body.thing).await,
-        _ => return StatusCode::BAD_REQUEST,
+    if !matches!(body.kind.as_str(), "liked" | "hated") {
+        return StatusCode::BAD_REQUEST;
     }
     if let Err(error) = delete_interest(&app.db, &body.kind, &body.thing).await {
         return api::db_failed(error);
+    }
+    match body.kind.as_str() {
+        "liked" => app.client.remove_liked_interest(&body.thing).await,
+        _ => app.client.remove_hated_interest(&body.thing).await,
     }
     publish(&app, |view| {
         let list = if body.kind == "liked" {
@@ -213,7 +203,7 @@ pub async fn remove_interest(
 
 pub async fn refresh_interests(State(app): State<Arc<App>>) -> StatusCode {
     let no_interests = {
-        let data = app.data.read().unwrap();
+        let data = app.projection.read();
         data.interests.view.liked.is_empty() && data.interests.view.hated.is_empty()
     };
     if no_interests {

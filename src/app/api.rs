@@ -7,11 +7,10 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::types::TransferDirection;
-
-use super::contract::Snapshot;
 use super::state::App;
-use super::{chat, interests, search, session, settings, stats, transfers, users};
+use super::transfers::http as transfers;
+use super::users::http as users;
+use super::{chat, interests, search, session, settings, stats};
 
 pub fn db_failed(error: sqlx::Error) -> axum::http::StatusCode {
     tracing::error!(%error, "database write failed");
@@ -36,14 +35,14 @@ pub fn router(app: Arc<App>, web_root: &str) -> Router {
         )
         .route(
             "/api/downloads",
-            get(transfers::list_downloads).post(transfers::http_enqueue_download),
+            get(transfers::list_downloads).post(transfers::enqueue_download),
         )
         .route(
             "/api/downloads/folder",
             post(transfers::enqueue_folder_download),
         )
         .route("/api/downloads/abort", post(transfers::abort_download))
-        .route("/api/downloads/retry", post(transfers::http_retry_download))
+        .route("/api/downloads/retry", post(transfers::retry_download))
         .route("/api/downloads/clear", post(transfers::clear_downloads))
         .route(
             "/api/downloads/clear_all",
@@ -122,36 +121,10 @@ async fn ws_upgrade(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> impl I
     ws.on_upgrade(move |socket| ws_session(app, socket))
 }
 
-fn snapshot(app: &App) -> String {
-    let settings = app.settings.payload();
-    let data = app.data.read().unwrap();
-    serde_json::to_string(&Snapshot {
-        kind: "snapshot",
-        rev: data.revision(),
-        status: data.session.status(),
-        downloads: data.transfers.list(TransferDirection::Download),
-        uploads: data.transfers.list(TransferDirection::Upload),
-        searches: data.search.searches(),
-        buddies: data.users.buddies().collect(),
-        banned: data.users.banned(),
-        ignored: data.users.ignored(),
-        wishlist: data.search.wishlist(),
-        interests: data.interests.view(),
-        rooms: data.chat.rooms(),
-        chat_partners: data.chat.partners(),
-        browses: data.users.browse_timestamps().collect(),
-        settings,
-    })
-    .expect("snapshot serialization")
-}
-
 async fn ws_session(app: Arc<App>, mut socket: WebSocket) {
-    let mut events = app.events.subscribe();
-    if socket
-        .send(Message::Text(snapshot(&app).into()))
-        .await
-        .is_err()
-    {
+    let mut events = app.projection.subscribe();
+    let snapshot = app.projection.snapshot_json(&app.settings);
+    if socket.send(Message::Text(snapshot.into())).await.is_err() {
         return;
     }
     loop {

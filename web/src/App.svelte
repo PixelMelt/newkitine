@@ -69,7 +69,11 @@
       {/if}
     </span>
     <span>Port: {$status.listen_port}</span>
-    <span>Shares: {$status.shared_files} files / {$status.shared_folders} folders</span>
+    {#if $status.share_scan_error}
+      <span class="notice">Share scan failed: {$status.share_scan_error}</span>
+    {:else}
+      <span>Shares: {$status.shared_files} files / {$status.shared_folders} folders</span>
+    {/if}
     <span>Connections: {$status.peer_connections}</span>
     <span>↓ {formatSize($speedTotals.down)}/s</span>
     <span>↑ {formatSize($speedTotals.up)}/s</span>

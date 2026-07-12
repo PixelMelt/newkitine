@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::{ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, connect, write_all};
-use crate::network::codec::MAX_MESSAGE_SIZE_LARGE;
-use crate::protocol::ServerResponse;
+use crate::network::codec::{MAX_SERVER_MESSAGE_SIZE, read_payload};
+use crate::protocol::{ProtocolError, ServerResponse};
 
 pub async fn run_server_conn(
     address: SocketAddr,
@@ -71,25 +71,41 @@ async fn read_server_frames(
                 return;
             }
         };
-        if !(4..=MAX_MESSAGE_SIZE_LARGE).contains(&size) {
+        if !(4..=MAX_SERVER_MESSAGE_SIZE).contains(&size) {
             let _ = frames
                 .send(Err(format!("invalid server message size {size}")))
                 .await;
             return;
         }
-        let mut frame = vec![0u8; size];
-        if let Err(error) = reader.read_exact(&mut frame).await {
-            let _ = frames.send(Err(error.to_string())).await;
-            return;
-        }
-        let code = u32::from_le_bytes(frame[..4].try_into().unwrap());
-        match ServerResponse::parse(code, &frame[4..]) {
+        let code = match reader.read_u32_le().await {
+            Ok(code) => code,
+            Err(error) => {
+                let _ = frames.send(Err(error.to_string())).await;
+                return;
+            }
+        };
+        let payload = match read_payload(&mut reader, size - 4).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = frames.send(Err(error.to_string())).await;
+                return;
+            }
+        };
+        match ServerResponse::parse(code, &payload) {
             Ok(message) => {
                 if frames.send(Ok(message)).await.is_err() {
                     return;
                 }
             }
-            Err(error) => debug!(code, %error, "dropping unparsable server message"),
+            Err(ProtocolError::UnknownMessageCode { .. }) => {
+                debug!(code, "ignoring unsupported server message");
+            }
+            Err(error) => {
+                let _ = frames
+                    .send(Err(format!("malformed server message {code}: {error}")))
+                    .await;
+                return;
+            }
         }
     }
 }

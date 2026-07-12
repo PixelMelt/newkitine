@@ -34,10 +34,10 @@ impl ClientActor {
     pub(super) fn connect(&mut self) {
         self.session.connected = true;
         self.net.send(NetworkCommand::ServerConnect {
-            address: self.config.server,
-            username: self.config.username.clone(),
-            password: self.config.password.clone(),
-            listen_port: self.config.listen_port,
+            address: self.config.login.server,
+            username: self.config.login.username.clone(),
+            password: self.config.login.password.clone(),
+            listen_port: self.config.login.listen_port,
         });
     }
 
@@ -58,47 +58,28 @@ impl ClientActor {
         });
     }
 
-    pub(super) fn apply_config(&mut self, revision: u64, config: RuntimeConfig) {
+    pub(super) fn apply_config(&mut self, config: RuntimeConfig) {
         let old = std::mem::replace(&mut self.config, config);
-        if self.config.upload_slots != old.upload_slots
-            || self.config.queue_file_limit != old.queue_file_limit
-        {
-            let (slots, limit) = (self.config.upload_slots, self.config.queue_file_limit);
-            self.uploads.set_limits(slots, limit);
-        }
-        if self.config.download_dir != old.download_dir
-            || self.config.incomplete_dir != old.incomplete_dir
-        {
-            let dirs = (
-                self.config.download_dir.clone(),
-                self.config.incomplete_dir.clone(),
-            );
-            self.downloads.set_dirs(dirs.0, dirs.1);
-        }
-        if self.config.upload_limit_kbps != old.upload_limit_kbps
-            || self.config.download_limit_kbps != old.download_limit_kbps
-        {
-            self.set_transfer_limits(
-                self.config.upload_limit_kbps,
-                self.config.download_limit_kbps,
-            );
+        if self.config.transfers != old.transfers {
+            let transfers = self.config.transfers.clone();
+            self.uploads
+                .set_limits(transfers.upload_slots, transfers.queue_file_limit);
+            self.downloads
+                .set_dirs(transfers.download_dir, transfers.incomplete_dir);
+            self.set_transfer_limits(transfers.upload_limit_kbps, transfers.download_limit_kbps);
         }
         if self.config.shared_folders != old.shared_folders {
             self.apply_shared_folders();
         }
-        let login_changed = self.config.server != old.server
-            || self.config.username != old.username
-            || self.config.password != old.password
-            || self.config.listen_port != old.listen_port;
-        if login_changed {
+        if self.config.login != old.login {
             info!("login configuration changed, reconnecting");
             if self.session.connected {
                 self.reconnect();
-            } else if !self.config.username.is_empty() {
+            } else if !self.config.login.username.is_empty() {
                 self.connect();
             }
         }
-        info!(revision, "runtime configuration applied");
+        info!("runtime configuration applied");
     }
 
     pub(super) fn handle_logged_in(&mut self, username: String, banner: String) {

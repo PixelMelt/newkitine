@@ -13,16 +13,16 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep_until};
 use tracing::{debug, info, warn};
 
+use super::ClientCommand;
 use super::downloads::{Downloads, TransferIds};
 use super::search::Searches;
 use super::uploads::Uploads;
 use super::users::Users;
-use super::ClientCommand;
 use crate::network::{NetworkHandle, spawn as spawn_network};
 use crate::protocol::PeerMessage;
 use crate::types::{
     ClientBootstrap, ClientEvent, NetworkCommand, NetworkEvent, Observation, RuntimeConfig,
-    TransferDirection,
+    TransferDirection, TransferWork,
 };
 
 use search::Wishlist;
@@ -35,6 +35,7 @@ struct ClientActor {
     config: RuntimeConfig,
     net: NetworkHandle,
     events: mpsc::Sender<ClientEvent>,
+    transfers: mpsc::Sender<TransferWork>,
     token_counter: Arc<AtomicU32>,
     searches: Searches,
     transfer_ids: TransferIds,
@@ -52,6 +53,7 @@ pub(crate) async fn run(
     config: ClientBootstrap,
     mut commands: mpsc::Receiver<ClientCommand>,
     events: mpsc::Sender<ClientEvent>,
+    transfers: mpsc::Sender<TransferWork>,
     token_counter: Arc<AtomicU32>,
 ) {
     let (net, mut net_events) = spawn_network();
@@ -60,18 +62,19 @@ pub(crate) async fn run(
     let mut actor = ClientActor {
         net: net.clone(),
         events,
+        transfers,
         token_counter,
         searches: Searches::new(),
         transfer_ids: TransferIds::new(&config.transfers),
         downloads: Downloads::new(
             net.clone(),
-            config.runtime.download_dir.clone(),
-            config.runtime.incomplete_dir.clone(),
+            config.runtime.transfers.download_dir.clone(),
+            config.runtime.transfers.incomplete_dir.clone(),
         ),
         uploads: Uploads::new(
             net,
-            config.runtime.upload_slots,
-            config.runtime.queue_file_limit,
+            config.runtime.transfers.upload_slots,
+            config.runtime.transfers.queue_file_limit,
         ),
         users: Users::new(
             config.buddies.into_iter().collect(),
@@ -95,10 +98,10 @@ pub(crate) async fn run(
     }
 
     actor.set_transfer_limits(
-        actor.config.upload_limit_kbps,
-        actor.config.download_limit_kbps,
+        actor.config.transfers.upload_limit_kbps,
+        actor.config.transfers.download_limit_kbps,
     );
-    if actor.config.username.is_empty() {
+    if actor.config.login.username.is_empty() {
         info!("no login configured, waiting for credentials");
     } else {
         actor.connect();
@@ -129,8 +132,8 @@ pub(crate) async fn run(
                 }
             }
             result = scan_rx.recv() => {
-                if let Some((generation, index)) = result {
-                    actor.handle_scan_complete(generation, index);
+                if let Some((generation, scan)) = result {
+                    actor.handle_scan_complete(generation, scan);
                 }
             }
             _ = sweep.tick() => actor.sweep(),
@@ -151,6 +154,15 @@ impl ClientActor {
         match self.events.try_send(event) {
             Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
             Err(mpsc::error::TrySendError::Full(_)) => panic!("client event queue overflowed"),
+        }
+    }
+
+    fn emit_transfer_work(&self, work: TransferWork) {
+        match self.transfers.try_send(work) {
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                panic!("transfer persistence cannot keep up, transfer queue overflowed")
+            }
         }
     }
 
@@ -182,6 +194,7 @@ impl ClientActor {
                 attributes,
                 ack,
             } => self.enqueue_download(username, virtual_path, size, attributes, ack),
+            ClientCommand::RetryDownload { id, ack } => self.retry_download(id, ack),
             ClientCommand::AbortTransfer { direction, id, ack } => {
                 self.abort_transfer(direction, id, ack);
             }
@@ -231,12 +244,8 @@ impl ClientActor {
             ClientCommand::AddWish { term } => self.add_wish(term),
             ClientCommand::RemoveWish { term } => self.remove_wish(&term),
             ClientCommand::RescanShares => self.start_scan(),
-            ClientCommand::ApplyConfig {
-                revision,
-                config,
-                ack,
-            } => {
-                self.apply_config(revision, config);
+            ClientCommand::ApplyConfig { config, ack } => {
+                self.apply_config(config);
                 Self::ack(ack, ());
             }
             ClientCommand::Server(request) => self.net.server(request),

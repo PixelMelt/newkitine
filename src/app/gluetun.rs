@@ -7,7 +7,6 @@ use tokio::net::TcpStream;
 use tracing::{error, info, warn};
 
 use super::config::GluetunConfig;
-use super::session;
 use super::settings;
 use super::state::App;
 
@@ -76,11 +75,9 @@ pub async fn watch(app: Arc<App>, config: GluetunConfig, mut current: u16) {
                 failures = 0;
                 if current != port {
                     info!(port, "gluetun forwarded port changed, updating listen port");
-                    current = port;
-                    app.settings.set_live_port(port);
-                    session::set_listen_port(&app, port);
-                    if let Err(error) = settings::apply_runtime(&app).await {
-                        warn!(%error, "cannot apply forwarded port");
+                    match settings::apply_live_port(&app, port).await {
+                        Ok(()) => current = port,
+                        Err(error) => warn!(%error, "cannot apply forwarded port, will retry"),
                     }
                 }
             }
@@ -90,9 +87,9 @@ pub async fn watch(app: Arc<App>, config: GluetunConfig, mut current: u16) {
                     error!(
                         %error,
                         failures,
-                        "gluetun forwarded port has been unavailable for too long, exiting"
+                        "gluetun forwarded port has been unavailable for too long"
                     );
-                    std::process::exit(1);
+                    return;
                 }
                 warn!(%error, failures, "cannot fetch forwarded port from gluetun");
             }

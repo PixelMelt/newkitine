@@ -14,8 +14,8 @@ use super::{
     ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, PeerTask, SharedAllowed, connect, write_all,
 };
 use crate::network::codec::{
-    FrameError, MAX_MESSAGE_SIZE_LARGE, MAX_MESSAGE_SIZE_MEDIUM, MAX_MESSAGE_SIZE_SMALL,
-    read_frame_u8,
+    FrameError, MAX_CONTROL_MESSAGE_SIZE, MAX_LARGE_RESPONSE_SIZE, MAX_PEER_MESSAGE_SIZE,
+    read_frame_u8, read_payload,
 };
 use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage};
 use crate::types::{ConnId, ConnectionType};
@@ -81,7 +81,7 @@ pub async fn run_incoming_peer(mut task: PeerTask, stream: TcpStream, addr: Sock
 
     let init = match timeout(
         GHOST_TIMEOUT,
-        read_frame_u8(&mut reader, MAX_MESSAGE_SIZE_SMALL),
+        read_frame_u8(&mut reader, MAX_CONTROL_MESSAGE_SIZE),
     )
     .await
     {
@@ -234,9 +234,9 @@ async fn read_peer_frames(
 
         let is_large_response = matches!(code, 5 | 16);
         let limit = if is_large_response {
-            MAX_MESSAGE_SIZE_LARGE
+            MAX_LARGE_RESPONSE_SIZE
         } else {
-            MAX_MESSAGE_SIZE_MEDIUM
+            MAX_PEER_MESSAGE_SIZE
         };
         if size - 4 > limit {
             let _ = frames
@@ -251,11 +251,13 @@ async fn read_peer_frames(
             return;
         }
 
-        let mut payload = vec![0u8; size - 4];
-        if let Err(error) = reader.read_exact(&mut payload).await {
-            let _ = frames.send(PeerFrame::Fatal(Some(error.to_string()))).await;
-            return;
-        }
+        let payload = match read_payload(&mut reader, size - 4).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = frames.send(PeerFrame::Fatal(Some(error.to_string()))).await;
+                return;
+            }
+        };
         match PeerMessage::parse(code, &payload) {
             Ok(message) => {
                 if !is_parsed_message_allowed(&allowed, &message) {
@@ -298,7 +300,7 @@ async fn read_distrib_frames(
     frames: mpsc::Sender<PeerFrame>,
 ) {
     loop {
-        match read_frame_u8(&mut reader, MAX_MESSAGE_SIZE_SMALL).await {
+        match read_frame_u8(&mut reader, MAX_CONTROL_MESSAGE_SIZE).await {
             Ok((code, payload)) => match DistributedMessage::parse(code, &payload) {
                 Ok(message) => {
                     if frames

@@ -213,7 +213,11 @@ impl Indirect {
     }
 
     fn replace_conn(&mut self, init_id: InitId, conn_id: ConnId) -> Option<ConnId> {
-        self.inits.get_mut(&init_id).unwrap().conn_id.replace(conn_id)
+        self.inits
+            .get_mut(&init_id)
+            .unwrap()
+            .conn_id
+            .replace(conn_id)
     }
 
     fn drain_queue(&mut self, init_id: InitId) -> Option<(ConnId, String, Vec<QueuedItem>)> {
@@ -464,7 +468,11 @@ impl Actor {
         addr: SocketAddrV4,
         pierce_token: u32,
     ) {
-        if self.indirect.existing_attempt(&username, conn_type).is_some() {
+        if self
+            .indirect
+            .existing_attempt(&username, conn_type)
+            .is_some()
+        {
             debug!(username, "existing connection, ignoring indirect request");
         } else {
             self.spawn_outgoing_peer(

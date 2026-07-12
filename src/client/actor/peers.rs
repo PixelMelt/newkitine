@@ -1,6 +1,8 @@
 use super::ClientActor;
 use crate::protocol::PeerMessage;
-use crate::types::{ClientEvent, NetworkCommand, Observation, SearchResult, TransferDirection};
+use crate::types::{
+    ClientEvent, NetworkCommand, Observation, SearchResult, TransferDirection, UserInfoReceived,
+};
 
 impl ClientActor {
     pub(super) fn handle_peer_message(&mut self, username: String, message: PeerMessage) {
@@ -13,12 +15,9 @@ impl ClientActor {
                 queue_size,
                 ..
             } => {
-                if let Some(query) = self.searches.query(token)
-                    && !self.users.is_ignored(&username)
-                {
+                if self.searches.contains(token) && !self.users.is_ignored(&username) {
                     self.emit(ClientEvent::SearchResults(SearchResult {
                         token,
-                        query: query.clone(),
                         username,
                         results,
                         free_upload_slots,
@@ -80,8 +79,8 @@ impl ClientActor {
                 self.emit_transfers(updates);
             }
             PeerMessage::PlaceInQueueResponse { filename, place } => {
-                if let Some(event) = self.downloads.queue_place(&username, &filename, place) {
-                    self.emit(ClientEvent::Transfer(event));
+                if let Some(work) = self.downloads.queue_place(&username, &filename, place) {
+                    self.emit_transfer_work(work);
                 }
             }
             PeerMessage::PlaceInQueueRequest { file, .. } => {
@@ -110,14 +109,14 @@ impl ClientActor {
             } => {
                 self.net
                     .send(NetworkCommand::DisallowUserInfoUser(username.clone()));
-                self.emit(ClientEvent::UserInfo {
+                self.emit(ClientEvent::UserInfo(UserInfoReceived {
                     username,
                     description,
                     picture,
                     total_uploads,
                     queue_size,
                     slots_available,
-                });
+                }));
             }
             PeerMessage::SharedFileListRequest => self.handle_browse_request(username),
             PeerMessage::UserInfoRequest => {

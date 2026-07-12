@@ -7,6 +7,29 @@ use tracing::{info, warn};
 
 use crate::types::{FileAttributes, FileInfo, FolderContents, SharedFolder, UINT32_LIMIT};
 
+#[derive(Debug, thiserror::Error)]
+pub enum ScanError {
+    #[error("cannot resolve shared folder {path}: {error}")]
+    Root {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[error("duplicate virtual folder name {name}")]
+    DuplicateVirtualName { name: String },
+    #[error("cannot scan folder {path}: {error}")]
+    Folder {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[error("cannot stat {path}: {error}")]
+    Metadata {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    #[error("duplicate virtual path {path}")]
+    DuplicateVirtualPath { path: String },
+}
+
 const BACKSLASH_SENTINEL: &str = "@@BACKSLASH@@";
 const MAX_SEARCH_RESULTS: usize = 300;
 const MIN_SEARCH_CHARS: usize = 3;
@@ -202,10 +225,10 @@ impl SharesIndex {
     }
 }
 
-pub fn scan(shared_folders: &[SharedFolder]) -> SharesIndex {
+pub fn scan(shared_folders: &[SharedFolder]) -> Result<SharesIndex, ScanError> {
     let mut index = SharesIndex::default();
     for shared in shared_folders {
-        scan_shared_folder(&mut index, shared);
+        scan_shared_folder(&mut index, shared)?;
     }
     let (folders, files) = index.counts();
     info!(
@@ -214,55 +237,48 @@ pub fn scan(shared_folders: &[SharedFolder]) -> SharesIndex {
         total_files = index.files.len(),
         "share scan complete"
     );
-    index
+    Ok(index)
 }
 
-fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) {
-    let root = match fs::canonicalize(&shared.path) {
-        Ok(root) => root,
-        Err(error) => {
-            warn!(path = %shared.path.display(), %error, "cannot resolve shared folder, skipping");
-            return;
-        }
-    };
+fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) -> Result<(), ScanError> {
+    let root = fs::canonicalize(&shared.path).map_err(|error| ScanError::Root {
+        path: shared.path.clone(),
+        error,
+    })?;
     if index.folder_lookup.contains_key(&shared.virtual_name) {
-        warn!(
-            virtual_name = shared.virtual_name,
-            "duplicate virtual folder name, skipping"
-        );
-        return;
+        return Err(ScanError::DuplicateVirtualName {
+            name: shared.virtual_name.clone(),
+        });
     }
     let mut stack = vec![(root, shared.virtual_name.clone())];
     while let Some((real_dir, virtual_dir)) = stack.pop() {
         if index.folder_lookup.contains_key(&virtual_dir) {
-            continue;
+            return Err(ScanError::DuplicateVirtualPath { path: virtual_dir });
         }
-        let entries = match fs::read_dir(&real_dir) {
-            Ok(entries) => entries,
-            Err(error) => {
-                warn!(path = %real_dir.display(), %error, "cannot scan folder");
-                continue;
-            }
-        };
+        let entries = fs::read_dir(&real_dir).map_err(|error| ScanError::Folder {
+            path: real_dir.clone(),
+            error,
+        })?;
 
         let mut files = Vec::new();
         let virtual_dir_lower = virtual_dir.to_lowercase();
         let folder_words: HashSet<String> =
             split_words(&virtual_dir_lower).map(str::to_owned).collect();
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|error| ScanError::Folder {
+                path: real_dir.clone(),
+                error,
+            })?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') {
                 continue;
             }
             let path = entry.path();
-            let metadata = match fs::symlink_metadata(&path) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    warn!(path = %path.display(), %error, "cannot stat entry");
-                    continue;
-                }
-            };
+            let metadata = fs::symlink_metadata(&path).map_err(|error| ScanError::Metadata {
+                path: path.clone(),
+                error,
+            })?;
             if metadata.file_type().is_symlink() {
                 warn!(path = %path.display(), "skipping symlink in shared folder");
                 continue;
@@ -279,7 +295,7 @@ fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) {
             let virtual_path = format!("{virtual_dir}\\{basename}");
             let virtual_path_lower = virtual_path.to_lowercase();
             if index.paths_lower.contains_key(&virtual_path_lower) {
-                continue;
+                return Err(ScanError::DuplicateVirtualPath { path: virtual_path });
             }
 
             let size = metadata.len();
@@ -319,6 +335,7 @@ fn scan_shared_folder(index: &mut SharesIndex, shared: &SharedFolder) {
             buddy_only: shared.buddy_only,
         });
     }
+    Ok(())
 }
 
 fn split_words(text: &str) -> impl Iterator<Item = &str> {
@@ -386,6 +403,7 @@ mod tests {
                 buddy_only: true,
             },
         ])
+        .expect("scan test shares")
     }
 
     #[test]

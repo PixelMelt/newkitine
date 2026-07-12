@@ -1,19 +1,21 @@
 use tokio::sync::mpsc;
 
 use super::ClientActor;
-use crate::client::shares::{self, SharesIndex};
+use crate::client::shares::{self, ScanError, SharesIndex};
 use crate::protocol::{PeerMessage, ServerRequest};
 use crate::types::{ClientEvent, Observation, Restriction};
 
 pub(super) struct Sharing {
     pub(super) index: Option<SharesIndex>,
-    scan_results: mpsc::UnboundedSender<(u64, SharesIndex)>,
+    scan_results: mpsc::UnboundedSender<(u64, Result<SharesIndex, ScanError>)>,
     generation: u64,
     pub(super) excluded_phrases: Vec<String>,
 }
 
 impl Sharing {
-    pub(super) fn new(scan_results: mpsc::UnboundedSender<(u64, SharesIndex)>) -> Self {
+    pub(super) fn new(
+        scan_results: mpsc::UnboundedSender<(u64, Result<SharesIndex, ScanError>)>,
+    ) -> Self {
         Self {
             index: None,
             scan_results,
@@ -37,7 +39,11 @@ impl ClientActor {
         });
     }
 
-    pub(super) fn handle_scan_complete(&mut self, generation: u64, index: SharesIndex) {
+    pub(super) fn handle_scan_complete(
+        &mut self,
+        generation: u64,
+        result: Result<SharesIndex, ScanError>,
+    ) {
         if generation != self.sharing.generation {
             tracing::warn!(
                 generation,
@@ -46,6 +52,16 @@ impl ClientActor {
             );
             return;
         }
+        let index = match result {
+            Ok(index) => index,
+            Err(error) => {
+                tracing::error!(%error, "share scan failed, keeping previous index");
+                self.emit(ClientEvent::ShareScanFailed {
+                    error: error.to_string(),
+                });
+                return;
+            }
+        };
         let (folders, files) = index.counts();
         self.sharing.index = Some(index);
         if self.session.logged_in {
@@ -75,7 +91,7 @@ impl ClientActor {
     }
 
     pub(super) fn respond_to_search(&mut self, username: &str, token: u32, search_term: &str) {
-        if username == self.config.username {
+        if username == self.config.login.username {
             return;
         }
         let blocked = self.users.is_banned(username)
@@ -102,7 +118,7 @@ impl ClientActor {
         self.net.peer(
             username.to_owned(),
             PeerMessage::FileSearchResponse {
-                username: self.config.username.clone(),
+                username: self.config.login.username.clone(),
                 token,
                 results,
                 free_upload_slots: self.uploads.is_new_upload_accepted(),

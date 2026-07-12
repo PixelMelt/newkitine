@@ -1,5 +1,5 @@
 <script>
-  import { browses } from '../lib/stores.js';
+  import { browses, notice } from '../lib/stores.js';
   import { browseTarget } from '../lib/ui.js';
   import { get, post, formatSize, formatAttributes } from '../lib/api.js';
   import { openMenu } from '../lib/menu.js';
@@ -135,7 +135,9 @@
       virtual_path: currentDir + '\\' + file.name,
       size: file.size,
       attributes: file.attributes,
-    });
+    }).catch((error) =>
+      notice(error.status === 409 ? 'download already active' : error.message),
+    );
   }
 
   function downloadFolder(dir, recursive) {

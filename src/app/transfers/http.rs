@@ -7,25 +7,20 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus};
+use crate::types::{
+    AbortResult, EnqueueResult, FileAttributes, RetryResult, TransferDirection, TransferId,
+    TransferStatus,
+};
 
-use super::{TransferError, abort, enqueue_download, retry_download};
 use crate::app::state::App;
 
-fn transfer_status(result: Result<(), TransferError>) -> StatusCode {
-    match result {
-        Ok(()) => StatusCode::ACCEPTED,
-        Err(TransferError::NotFound) => StatusCode::NOT_FOUND,
-    }
-}
-
 pub async fn list_downloads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "transfers": data.transfers.list(TransferDirection::Download) }))
 }
 
 pub async fn list_uploads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "transfers": data.transfers.list(TransferDirection::Upload) }))
 }
 
@@ -38,19 +33,23 @@ pub struct DownloadBody {
     attributes: FileAttributes,
 }
 
-pub async fn http_enqueue_download(
+pub async fn enqueue_download(
     State(app): State<Arc<App>>,
     Json(body): Json<DownloadBody>,
 ) -> StatusCode {
-    enqueue_download(
-        &app,
-        &body.username,
-        &body.virtual_path,
-        body.size,
-        body.attributes,
-    )
-    .await;
-    StatusCode::ACCEPTED
+    match app
+        .client
+        .download(
+            &body.username,
+            &body.virtual_path,
+            body.size,
+            body.attributes,
+        )
+        .await
+    {
+        EnqueueResult::Enqueued => StatusCode::ACCEPTED,
+        EnqueueResult::AlreadyActive => StatusCode::CONFLICT,
+    }
 }
 
 #[derive(Deserialize)]
@@ -66,7 +65,7 @@ pub async fn enqueue_folder_download(
     Json(body): Json<FolderDownloadBody>,
 ) -> impl IntoResponse {
     let files: Vec<(String, u64, FileAttributes)> = {
-        let data = app.data.read().unwrap();
+        let data = app.projection.read();
         let Some(browse) = data.users.browse(&body.username) else {
             return StatusCode::NOT_FOUND.into_response();
         };
@@ -90,11 +89,18 @@ pub async fn enqueue_folder_download(
             })
             .collect()
     };
-    let count = files.len();
+    let (mut enqueued, mut already_active) = (0usize, 0usize);
     for (virtual_path, size, attributes) in files {
-        enqueue_download(&app, &body.username, &virtual_path, size, attributes).await;
+        match app
+            .client
+            .download(&body.username, &virtual_path, size, attributes)
+            .await
+        {
+            EnqueueResult::Enqueued => enqueued += 1,
+            EnqueueResult::AlreadyActive => already_active += 1,
+        }
     }
-    Json(json!({ "enqueued": count })).into_response()
+    Json(json!({ "enqueued": enqueued, "already_active": already_active })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -106,14 +112,25 @@ pub async fn abort_download(
     State(app): State<Arc<App>>,
     Json(body): Json<TransferRef>,
 ) -> StatusCode {
-    transfer_status(abort(&app, TransferDirection::Download, body.id).await)
+    abort(&app, TransferDirection::Download, body.id).await
 }
 
-pub async fn http_retry_download(
+pub async fn retry_download(
     State(app): State<Arc<App>>,
     Json(body): Json<TransferRef>,
 ) -> StatusCode {
-    transfer_status(retry_download(&app, body.id).await)
+    match app.client.retry_download(body.id).await {
+        RetryResult::Requeued => StatusCode::ACCEPTED,
+        RetryResult::AlreadyActive => StatusCode::CONFLICT,
+        RetryResult::NotFound => StatusCode::NOT_FOUND,
+    }
+}
+
+async fn abort(app: &App, direction: TransferDirection, id: TransferId) -> StatusCode {
+    match app.client.abort_transfer(direction, id).await {
+        AbortResult::Aborted => StatusCode::ACCEPTED,
+        AbortResult::NotFound => StatusCode::NOT_FOUND,
+    }
 }
 
 #[derive(Deserialize)]
@@ -145,7 +162,7 @@ pub async fn abort_upload(
     State(app): State<Arc<App>>,
     Json(body): Json<TransferRef>,
 ) -> StatusCode {
-    transfer_status(abort(&app, TransferDirection::Upload, body.id).await)
+    abort(&app, TransferDirection::Upload, body.id).await
 }
 
 pub async fn clear_uploads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {

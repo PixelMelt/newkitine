@@ -2,6 +2,7 @@ mod actor;
 mod downloads;
 mod files;
 mod queue;
+mod registry;
 mod search;
 mod shares;
 mod speed;
@@ -16,11 +17,13 @@ use tokio::sync::{mpsc, oneshot};
 use crate::protocol::{ServerRequest, initial_token};
 use crate::types::{
     AbortResult, ClientBootstrap, ClientEvent, EnqueueResult, FileAttributes, Restriction,
-    RuntimeConfig, SearchScope, TransferDirection, TransferId, TransferStatus,
+    RetryResult, RuntimeConfig, SearchScope, TransferDirection, TransferId, TransferStatus,
+    TransferWork,
 };
 
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
 pub const EVENT_QUEUE_CAPACITY: usize = 4096;
+pub const TRANSFER_QUEUE_CAPACITY: usize = 4096;
 
 #[derive(Debug)]
 pub(crate) enum ClientCommand {
@@ -38,6 +41,10 @@ pub(crate) enum ClientCommand {
         size: u64,
         attributes: FileAttributes,
         ack: oneshot::Sender<EnqueueResult>,
+    },
+    RetryDownload {
+        id: TransferId,
+        ack: oneshot::Sender<RetryResult>,
     },
     AbortTransfer {
         direction: TransferDirection,
@@ -92,7 +99,6 @@ pub(crate) enum ClientCommand {
     },
     RescanShares,
     ApplyConfig {
-        revision: u64,
         config: RuntimeConfig,
         ack: oneshot::Sender<()>,
     },
@@ -108,14 +114,22 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn spawn(config: ClientBootstrap) -> (Self, mpsc::Receiver<ClientEvent>) {
+    pub fn spawn(
+        config: ClientBootstrap,
+    ) -> (
+        Self,
+        mpsc::Receiver<ClientEvent>,
+        mpsc::Receiver<TransferWork>,
+    ) {
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
         let (events_tx, events_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+        let (transfers_tx, transfers_rx) = mpsc::channel(TRANSFER_QUEUE_CAPACITY);
         let token_counter = Arc::new(AtomicU32::new(initial_token()));
         tokio::spawn(actor::run(
             config,
             commands_rx,
             events_tx,
+            transfers_tx,
             token_counter.clone(),
         ));
         (
@@ -124,6 +138,7 @@ impl Client {
                 token_counter,
             },
             events_rx,
+            transfers_rx,
         )
     }
 
@@ -168,14 +183,28 @@ impl Client {
         done.await.expect("client actor dropped acknowledgement")
     }
 
-    pub async fn abort_transfer(&self, direction: TransferDirection, id: TransferId) -> AbortResult {
+    pub async fn retry_download(&self, id: TransferId) -> RetryResult {
+        let (ack, done) = oneshot::channel();
+        self.send(ClientCommand::RetryDownload { id, ack }).await;
+        done.await.expect("client actor dropped acknowledgement")
+    }
+
+    pub async fn abort_transfer(
+        &self,
+        direction: TransferDirection,
+        id: TransferId,
+    ) -> AbortResult {
         let (ack, done) = oneshot::channel();
         self.send(ClientCommand::AbortTransfer { direction, id, ack })
             .await;
         done.await.expect("client actor dropped acknowledgement")
     }
 
-    pub async fn clear_transfers(&self, direction: TransferDirection, statuses: Vec<TransferStatus>) {
+    pub async fn clear_transfers(
+        &self,
+        direction: TransferDirection,
+        statuses: Vec<TransferStatus>,
+    ) {
         let (ack, done) = oneshot::channel();
         self.send(ClientCommand::ClearTransfers {
             direction,
@@ -293,14 +322,9 @@ impl Client {
         self.send(ClientCommand::RescanShares).await;
     }
 
-    pub async fn apply_config(&self, revision: u64, config: RuntimeConfig) {
+    pub async fn apply_config(&self, config: RuntimeConfig) {
         let (ack, done) = oneshot::channel();
-        self.send(ClientCommand::ApplyConfig {
-            revision,
-            config,
-            ack,
-        })
-        .await;
+        self.send(ClientCommand::ApplyConfig { config, ack }).await;
         done.await.expect("client actor dropped acknowledgement")
     }
 

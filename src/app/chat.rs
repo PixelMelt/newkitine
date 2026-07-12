@@ -9,37 +9,12 @@ use serde_json::json;
 use sqlx::MySqlPool;
 use sqlx::Row;
 
-use serde::Serialize;
+use crate::types::{ChatMessage, RoomEntry, RoomView, RoomsView};
 
 use super::api;
 use super::contract::AppEvent;
 use super::db;
 use super::state::{App, now};
-
-#[derive(Clone, Serialize)]
-pub struct ChatMessage {
-    pub sender: String,
-    pub message: String,
-    pub timestamp: i64,
-}
-
-#[derive(Default, Serialize)]
-pub struct RoomsView {
-    pub available: Vec<RoomEntry>,
-    pub joined: HashMap<String, RoomView>,
-}
-
-#[derive(Clone, Serialize)]
-pub struct RoomEntry {
-    pub name: String,
-    pub users: u32,
-}
-
-#[derive(Default, Clone, Serialize)]
-pub struct RoomView {
-    pub users: Vec<String>,
-    pub messages: Vec<ChatMessage>,
-}
 
 const MAX_ROOM_MESSAGES: usize = 200;
 
@@ -109,7 +84,7 @@ pub async fn load_chat(pool: &MySqlPool, kind: &str, target: &str, limit: u32) -
 }
 
 fn record_private_message(app: &App, username: &str, message: ChatMessage) {
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     data.chat
         .private_chats
         .entry(username.to_owned())
@@ -118,13 +93,10 @@ fn record_private_message(app: &App, username: &str, message: ChatMessage) {
     if !data.chat.partners.iter().any(|user| user == username) {
         data.chat.partners.push(username.to_owned());
     }
-    app.broadcast(
-        &mut data,
-        AppEvent::PrivateMessage {
-            username: username.to_owned(),
-            message,
-        },
-    );
+    data.broadcast(AppEvent::PrivateMessage {
+        username: username.to_owned(),
+        message,
+    });
 }
 
 pub async fn private_message_received(
@@ -148,6 +120,14 @@ pub async fn private_message_received(
 }
 
 pub async fn room_message_received(app: &App, room: String, username: String, message: String) {
+    if !app.projection.read().chat.rooms.joined.contains_key(&room) {
+        tracing::warn!(
+            room,
+            username,
+            "message for a room we have not joined, dropping"
+        );
+        return;
+    }
     let message = ChatMessage {
         sender: username,
         message,
@@ -156,18 +136,20 @@ pub async fn room_message_received(app: &App, room: String, username: String, me
     insert_chat(&app.db, "room", &room, &message)
         .await
         .unwrap_or_else(|error| db::fatal(error));
-    let mut data = app.data.write().unwrap();
-    if let Some(view) = data.chat.rooms.joined.get_mut(&room) {
-        view.messages.push(message.clone());
-        if view.messages.len() > MAX_ROOM_MESSAGES {
-            view.messages.remove(0);
-        }
+    let mut data = app.projection.write();
+    let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
+        tracing::warn!(room, "room left while persisting its message, dropping");
+        return;
+    };
+    view.messages.push(message.clone());
+    if view.messages.len() > MAX_ROOM_MESSAGES {
+        view.messages.remove(0);
     }
-    app.broadcast(&mut data, AppEvent::RoomMessage { room, message });
+    data.broadcast(AppEvent::RoomMessage { room, message });
 }
 
 pub fn room_list(app: &App, rooms: Vec<(String, u32)>) {
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     data.chat.rooms.available = rooms
         .into_iter()
         .map(|(name, users)| RoomEntry { name, users })
@@ -179,27 +161,24 @@ pub fn room_list(app: &App, rooms: Vec<(String, u32)>) {
     let event = AppEvent::RoomList {
         rooms: data.chat.rooms.available.clone(),
     };
-    app.broadcast(&mut data, event);
+    data.broadcast(event);
 }
 
 pub async fn room_joined(app: &App, room: String, users: Vec<String>) {
     db::add_to_list(&app.db, "room", &room)
         .await
         .unwrap_or_else(|error| db::fatal(error));
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     let mut usernames = users;
     usernames.sort();
     let view = RoomView {
         users: usernames,
         messages: Vec::new(),
     };
-    app.broadcast(
-        &mut data,
-        AppEvent::RoomJoined {
-            room: room.clone(),
-            users: view.users.clone(),
-        },
-    );
+    data.broadcast(AppEvent::RoomJoined {
+        room: room.clone(),
+        users: view.users.clone(),
+    });
     data.chat.rooms.joined.insert(room, view);
 }
 
@@ -207,32 +186,44 @@ pub async fn room_left(app: &App, room: String) {
     db::remove_from_list(&app.db, "room", &room)
         .await
         .unwrap_or_else(|error| db::fatal(error));
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     data.chat.rooms.joined.remove(&room);
-    app.broadcast(&mut data, AppEvent::RoomLeft { room });
+    data.broadcast(AppEvent::RoomLeft { room });
 }
 
 pub fn room_user_joined(app: &App, room: String, username: String) {
-    let mut data = app.data.write().unwrap();
-    if let Some(view) = data.chat.rooms.joined.get_mut(&room) {
-        if !view.users.contains(&username) {
-            view.users.push(username.clone());
-            view.users.sort();
-        }
-        app.broadcast(&mut data, AppEvent::RoomUserJoined { room, username });
+    let mut data = app.projection.write();
+    let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
+        tracing::warn!(
+            room,
+            username,
+            "user joined a room we have not joined, dropping"
+        );
+        return;
+    };
+    if !view.users.contains(&username) {
+        view.users.push(username.clone());
+        view.users.sort();
     }
+    data.broadcast(AppEvent::RoomUserJoined { room, username });
 }
 
 pub fn room_user_left(app: &App, room: String, username: String) {
-    let mut data = app.data.write().unwrap();
-    if let Some(view) = data.chat.rooms.joined.get_mut(&room) {
-        view.users.retain(|user| user != &username);
-        app.broadcast(&mut data, AppEvent::RoomUserLeft { room, username });
-    }
+    let mut data = app.projection.write();
+    let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
+        tracing::warn!(
+            room,
+            username,
+            "user left a room we have not joined, dropping"
+        );
+        return;
+    };
+    view.users.retain(|user| user != &username);
+    data.broadcast(AppEvent::RoomUserLeft { room, username });
 }
 
 pub fn server_disconnected(app: &App) {
-    app.data.write().unwrap().chat.rooms.joined.clear();
+    app.projection.write().chat.rooms.joined.clear();
 }
 
 #[derive(Deserialize)]
@@ -246,7 +237,7 @@ fn default_limit() -> u32 {
 }
 
 pub async fn list_chats(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "chats": data.chat.partners() }))
 }
 
@@ -254,11 +245,11 @@ pub async fn open_chat(State(app): State<Arc<App>>, Path(username): Path<String>
     if let Err(error) = db::add_to_list(&app.db, "chat", &username).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     if !data.chat.partners.contains(&username) {
         data.chat.partners.push(username.clone());
     }
-    app.broadcast(&mut data, AppEvent::ChatOpened { username });
+    data.broadcast(AppEvent::ChatOpened { username });
     StatusCode::ACCEPTED
 }
 
@@ -266,9 +257,9 @@ pub async fn close_chat(State(app): State<Arc<App>>, Path(username): Path<String
     if let Err(error) = db::remove_from_list(&app.db, "chat", &username).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     data.chat.partners.retain(|user| user != &username);
-    app.broadcast(&mut data, AppEvent::ChatClosed { username });
+    data.broadcast(AppEvent::ChatClosed { username });
     StatusCode::ACCEPTED
 }
 
@@ -291,10 +282,7 @@ pub async fn send_private_message(
     Path(username): Path<String>,
     Json(body): Json<MessageBody>,
 ) -> StatusCode {
-    app.client
-        .send_private_message(&username, &body.message)
-        .await;
-    let sender = app.data.read().unwrap().session.status().username.clone();
+    let sender = app.projection.read().session.status().username.clone();
     let message = ChatMessage {
         sender,
         message: body.message,
@@ -306,12 +294,15 @@ pub async fn send_private_message(
     if let Err(error) = db::add_to_list(&app.db, "chat", &username).await {
         return api::db_failed(error);
     }
+    app.client
+        .send_private_message(&username, &message.message)
+        .await;
     record_private_message(&app, &username, message);
     StatusCode::ACCEPTED
 }
 
 pub async fn rooms(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "rooms": data.chat.rooms() }))
 }
 
@@ -337,7 +328,7 @@ pub async fn room_history(
 ) -> Json<serde_json::Value> {
     let messages = load_chat(&app.db, "room", &room, query.limit).await;
     let users = {
-        let data = app.data.read().unwrap();
+        let data = app.projection.read();
         data.chat
             .rooms
             .joined

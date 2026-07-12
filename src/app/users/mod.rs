@@ -1,57 +1,21 @@
 mod db;
-mod http;
+pub mod http;
 
 pub use db::{load_notes, record_user_shares};
-pub use http::{
-    add_buddy, add_ip_ban, ban_user, ban_user_ip, browse_user, get_user_info, ignore_user,
-    list_banned, list_buddies, list_ignored, list_ip_bans, remove_buddy, remove_ip_ban,
-    request_user_info, set_buddy_note, unban_user, unignore_user, user_files, user_folders,
-    user_tree,
-};
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use base64::Engine;
-use serde::Serialize;
 
-use crate::types::{FolderContents, UserStats, UserStatus};
+use crate::types::{
+    BrowseView, BuddyView, FolderContents, UserInfoReceived, UserInfoView, UserStats, UserStatus,
+};
 
 use super::behavior;
 use super::contract::AppEvent;
 use super::db::fatal;
 use super::state::{App, now};
-
-#[derive(Serialize)]
-pub struct BrowseView {
-    pub username: String,
-    pub folders: Vec<FolderContents>,
-    pub private_folders: Vec<FolderContents>,
-    pub received_at: i64,
-}
-
-#[derive(Default, Clone, Serialize)]
-pub struct UserInfoView {
-    pub username: String,
-    pub received: bool,
-    pub description: String,
-    pub picture_base64: Option<String>,
-    pub upload_slots: u32,
-    pub queue_size: u32,
-    pub slots_available: bool,
-    pub stats: Option<UserStats>,
-    pub interests_liked: Vec<String>,
-    pub interests_hated: Vec<String>,
-}
-
-#[derive(Default, Clone, Serialize)]
-pub struct BuddyView {
-    pub username: String,
-    pub status: String,
-    pub privileged: bool,
-    pub stats: UserStats,
-    pub note: String,
-}
 
 #[derive(Default)]
 pub struct UsersState {
@@ -80,8 +44,9 @@ impl UsersState {
             browses: HashMap::new(),
         };
         for (username, note) in notes {
-            if let Some(buddy) = state.buddies.get_mut(&username) {
-                buddy.note = note;
+            match state.buddies.get_mut(&username) {
+                Some(buddy) => buddy.note = note,
+                None => tracing::warn!(username, "note for a user that is not a buddy, ignoring"),
             }
         }
         state
@@ -112,6 +77,138 @@ impl UsersState {
             .iter()
             .map(|(username, browse)| (username, browse.received_at))
     }
+
+    fn insert_browse(&mut self, browse: BrowseView) {
+        self.browses.insert(browse.username.clone(), browse);
+    }
+
+    fn insert_buddy(&mut self, username: &str) -> BuddyView {
+        self.buddies
+            .entry(username.to_owned())
+            .or_insert_with(|| buddy_view(username))
+            .clone()
+    }
+
+    fn remove_buddy(&mut self, username: &str) {
+        self.buddies.remove(username);
+    }
+
+    fn set_note(&mut self, username: &str, note: String) -> Option<BuddyView> {
+        let buddy = self.buddies.get_mut(username)?;
+        buddy.note = note;
+        Some(buddy.clone())
+    }
+
+    fn set_status(
+        &mut self,
+        username: &str,
+        status: &'static str,
+        privileged: bool,
+    ) -> Option<BuddyView> {
+        let buddy = self.buddies.get_mut(username)?;
+        buddy.status = status.into();
+        buddy.privileged = privileged;
+        Some(buddy.clone())
+    }
+
+    fn apply_watch(
+        &mut self,
+        username: &str,
+        status: Option<&'static str>,
+        stats: Option<UserStats>,
+    ) -> Option<BuddyView> {
+        let buddy = self.buddies.get_mut(username)?;
+        if let Some(status) = status {
+            buddy.status = status.into();
+        }
+        if let Some(stats) = stats {
+            buddy.stats = stats;
+        }
+        Some(buddy.clone())
+    }
+
+    fn set_buddy_stats(&mut self, username: &str, stats: &UserStats) -> Option<BuddyView> {
+        let buddy = self.buddies.get_mut(username)?;
+        buddy.stats = stats.clone();
+        Some(buddy.clone())
+    }
+
+    fn set_info_stats(&mut self, username: &str, stats: UserStats) -> Option<UserInfoView> {
+        let info = self.user_infos.get_mut(username)?;
+        info.stats = Some(stats);
+        Some(info.clone())
+    }
+
+    fn set_info_interests(
+        &mut self,
+        username: &str,
+        liked: Vec<String>,
+        hated: Vec<String>,
+    ) -> Option<UserInfoView> {
+        let info = self.user_infos.get_mut(username)?;
+        info.interests_liked = liked;
+        info.interests_hated = hated;
+        Some(info.clone())
+    }
+
+    fn ensure_info(&mut self, username: &str) -> UserInfoView {
+        self.user_infos
+            .entry(username.to_owned())
+            .or_insert_with(|| UserInfoView {
+                username: username.to_owned(),
+                ..Default::default()
+            })
+            .clone()
+    }
+
+    fn info(&self, username: &str) -> Option<&UserInfoView> {
+        self.user_infos.get(username)
+    }
+
+    fn info_received(&mut self, received: UserInfoReceived) -> UserInfoView {
+        let info = self
+            .user_infos
+            .entry(received.username.clone())
+            .or_insert_with(|| UserInfoView {
+                username: received.username,
+                ..Default::default()
+            });
+        info.received = true;
+        info.description = received.description;
+        info.picture_base64 = received
+            .picture
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+        info.upload_slots = received.total_uploads;
+        info.queue_size = received.queue_size;
+        info.slots_available = received.slots_available;
+        info.clone()
+    }
+
+    fn ban(&mut self, username: String) -> Vec<String> {
+        if !self.banned.contains(&username) {
+            self.banned.push(username);
+            self.banned.sort();
+        }
+        self.banned.clone()
+    }
+
+    fn unban(&mut self, username: &str) -> Vec<String> {
+        self.banned.retain(|user| user != username);
+        self.banned.clone()
+    }
+
+    fn ignore(&mut self, username: String) -> Vec<String> {
+        if !self.ignored.contains(&username) {
+            self.ignored.push(username);
+            self.ignored.sort();
+        }
+        self.ignored.clone()
+    }
+
+    fn unignore(&mut self, username: &str) -> Vec<String> {
+        self.ignored.retain(|user| user != username);
+        self.ignored.clone()
+    }
 }
 
 pub fn buddy_view(username: &str) -> BuddyView {
@@ -130,21 +227,15 @@ pub fn status_string(status: Option<UserStatus>) -> &'static str {
         None => "unknown",
     }
 }
+
 pub fn user_status(app: &App, username: String, status: Option<UserStatus>, privileged: bool) {
-    let status = status_string(status);
-    let mut data = app.data.write().unwrap();
-    if let Some(buddy) = data.users.buddies.get_mut(&username) {
-        buddy.status = status.into();
-        buddy.privileged = privileged;
+    let mut data = app.projection.write();
+    if let Some(buddy) = data
+        .users
+        .set_status(&username, status_string(status), privileged)
+    {
+        data.broadcast(AppEvent::Buddy { buddy });
     }
-    app.broadcast(
-        &mut data,
-        AppEvent::UserStatus {
-            username,
-            status,
-            privileged,
-        },
-    );
 }
 
 pub async fn shared_file_list(
@@ -159,55 +250,24 @@ pub async fn shared_file_list(
         .map(|folder| folder.files.len())
         .sum();
     behavior::browse_received(app, &username, file_count as u32).await;
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     let received_at = now();
-    data.users.browses.insert(
-        username.clone(),
-        BrowseView {
-            username: username.clone(),
-            folders: shares,
-            private_folders: private_shares,
-            received_at,
-        },
-    );
-    app.broadcast(
-        &mut data,
-        AppEvent::BrowseLoaded {
-            username,
-            received_at,
-        },
-    );
+    data.users.insert_browse(BrowseView {
+        username: username.clone(),
+        folders: shares,
+        private_folders: private_shares,
+        received_at,
+    });
+    data.broadcast(AppEvent::BrowseLoaded {
+        username,
+        received_at,
+    });
 }
 
-pub struct UserInfoReceived {
-    pub username: String,
-    pub description: String,
-    pub picture: Option<Vec<u8>>,
-    pub total_uploads: u32,
-    pub queue_size: u32,
-    pub slots_available: bool,
-}
-
-pub fn user_info_received(app: &App, info: UserInfoReceived) {
-    let mut data = app.data.write().unwrap();
-    let view = data
-        .users
-        .user_infos
-        .entry(info.username.clone())
-        .or_insert_with(|| UserInfoView {
-            username: info.username,
-            ..Default::default()
-        });
-    view.received = true;
-    view.description = info.description;
-    view.picture_base64 = info
-        .picture
-        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
-    view.upload_slots = info.total_uploads;
-    view.queue_size = info.queue_size;
-    view.slots_available = info.slots_available;
-    let event = AppEvent::UserInfo { info: view.clone() };
-    app.broadcast(&mut data, event);
+pub fn user_info_received(app: &App, received: UserInfoReceived) {
+    let mut data = app.projection.write();
+    let info = data.users.info_received(received);
+    data.broadcast(AppEvent::UserInfo { info });
 }
 
 pub async fn watch_user(
@@ -223,18 +283,10 @@ pub async fn watch_user(
             .unwrap_or_else(|error| fatal(error));
         behavior::stats_received(app, &user, stats.files, stats.dirs).await;
     }
-    let mut data = app.data.write().unwrap();
-    if let Some(buddy) = data.users.buddies.get_mut(&user) {
-        if user_exists {
-            buddy.status = status_string(status).into();
-        }
-        if let Some(stats) = stats {
-            buddy.stats = stats;
-        }
-        let event = AppEvent::Buddy {
-            buddy: buddy.clone(),
-        };
-        app.broadcast(&mut data, event);
+    let status = user_exists.then(|| status_string(status));
+    let mut data = app.projection.write();
+    if let Some(buddy) = data.users.apply_watch(&user, status, stats) {
+        data.broadcast(AppEvent::Buddy { buddy });
     }
 }
 
@@ -243,27 +295,18 @@ pub async fn user_stats(app: &Arc<App>, user: String, stats: UserStats) {
         .await
         .unwrap_or_else(|error| fatal(error));
     behavior::stats_received(app, &user, stats.files, stats.dirs).await;
-    let mut data = app.data.write().unwrap();
-    if let Some(buddy) = data.users.buddies.get_mut(&user) {
-        buddy.stats = stats.clone();
-        let event = AppEvent::Buddy {
-            buddy: buddy.clone(),
-        };
-        app.broadcast(&mut data, event);
+    let mut data = app.projection.write();
+    if let Some(buddy) = data.users.set_buddy_stats(&user, &stats) {
+        data.broadcast(AppEvent::Buddy { buddy });
     }
-    if let Some(info) = data.users.user_infos.get_mut(&user) {
-        info.stats = Some(stats);
-        let event = AppEvent::UserInfo { info: info.clone() };
-        app.broadcast(&mut data, event);
+    if let Some(info) = data.users.set_info_stats(&user, stats) {
+        data.broadcast(AppEvent::UserInfo { info });
     }
 }
 
 pub fn user_interests(app: &App, user: String, likes: Vec<String>, hates: Vec<String>) {
-    let mut data = app.data.write().unwrap();
-    if let Some(info) = data.users.user_infos.get_mut(&user) {
-        info.interests_liked = likes;
-        info.interests_hated = hates;
-        let event = AppEvent::UserInfo { info: info.clone() };
-        app.broadcast(&mut data, event);
+    let mut data = app.projection.write();
+    if let Some(info) = data.users.set_info_interests(&user, likes, hates) {
+        data.broadcast(AppEvent::UserInfo { info });
     }
 }

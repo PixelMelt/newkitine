@@ -1,4 +1,5 @@
 import * as chat from './chat.js';
+import { validate } from './contract.js';
 import * as searches from './searches.js';
 import * as session from './session.js';
 import * as transfers from './transfers.js';
@@ -11,6 +12,7 @@ const handlers = Object.assign({}, ...domains.map((domain) => domain.handlers));
 let lastRev = 0;
 
 function dispatch(msg) {
+	validate(msg);
 	if (msg.type === 'snapshot') {
 		lastRev = msg.rev;
 		for (const domain of domains) {
@@ -20,9 +22,12 @@ function dispatch(msg) {
 	}
 	const handler = handlers[msg.type];
 	if (!handler) {
-		throw new Error(`unknown event type ${msg.type}`);
+		throw new Error(`unhandled event type ${msg.type}`);
 	}
 	if (msg.rev <= lastRev) return;
+	if (msg.rev !== lastRev + 1) {
+		throw new Error(`revision gap: expected ${lastRev + 1}, got ${msg.rev}`);
+	}
 	lastRev = msg.rev;
 	handler(msg);
 }

@@ -1,5 +1,5 @@
 <script>
-  import { downloads, isCleared } from '../lib/stores.js';
+  import { downloads, isCleared, notice } from '../lib/stores.js';
   import { post, formatSize, formatDuration, formatQuality, baseName } from '../lib/api.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
@@ -26,7 +26,13 @@
   function rowMenu(event, t) {
     const items = [];
     if (isCleared(t.status) && t.status !== 'finished') {
-      items.push({ label: 'Retry', action: () => post('/downloads/retry', ref(t)) });
+      items.push({
+        label: 'Retry',
+        action: () =>
+          post('/downloads/retry', ref(t)).catch((error) =>
+            notice(error.status === 409 ? 'download already active' : error.message),
+          ),
+      });
     } else if (t.status !== 'finished') {
       items.push({ label: 'Abort', action: () => post('/downloads/abort', ref(t)) });
     }

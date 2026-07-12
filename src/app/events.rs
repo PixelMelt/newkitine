@@ -5,14 +5,13 @@ use tokio::sync::mpsc;
 use crate::types::{ClientEvent, Observation};
 
 use super::state::App;
-use super::{behavior, chat, db, interests, search, session, transfers, users};
+use super::{behavior, chat, db, interests, search, session, users};
 
 pub async fn run(app: Arc<App>, mut events: mpsc::Receiver<ClientEvent>) {
     while let Some(event) = events.recv().await {
         handle(&app, event).await;
     }
-    tracing::error!("client actor terminated, exiting");
-    std::process::exit(1);
+    tracing::error!("client event stream ended, client actor is gone");
 }
 
 async fn handle(app: &Arc<App>, event: ClientEvent) {
@@ -35,6 +34,8 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::SharesScanned { folders, files } => {
             session::shares_scanned(app, folders, files);
         }
+        ClientEvent::ShareScanFailed { error } => session::share_scan_failed(app, error),
+        ClientEvent::SearchStarted { token, query } => search::search_started(app, token, query),
         ClientEvent::SearchResults(result) => search::apply_results(app, result),
         ClientEvent::UserStatus {
             username,
@@ -53,35 +54,12 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             liked,
             hated,
         } => users::user_interests(app, username, liked, hated),
-        ClientEvent::Transfer(event) => {
-            transfers::submit(app, transfers::TransferWork::Event(event)).await;
-        }
-        ClientEvent::TransfersRemoved { direction, ids } => {
-            transfers::submit(app, transfers::TransferWork::Removed { direction, ids }).await;
-        }
         ClientEvent::SharedFileList {
             username,
             shares,
             private_shares,
         } => users::shared_file_list(app, username, shares, private_shares).await,
-        ClientEvent::UserInfo {
-            username,
-            description,
-            picture,
-            total_uploads,
-            queue_size,
-            slots_available,
-        } => users::user_info_received(
-            app,
-            users::UserInfoReceived {
-                username,
-                description,
-                picture,
-                total_uploads,
-                queue_size,
-                slots_available,
-            },
-        ),
+        ClientEvent::UserInfo(info) => users::user_info_received(app, info),
         ClientEvent::PrivateMessage {
             username,
             message,

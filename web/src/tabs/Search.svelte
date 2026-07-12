@@ -1,5 +1,5 @@
 <script>
-  import { searches, wishlist, rooms } from '../lib/stores.js';
+  import { searches, wishlist, rooms, notice } from '../lib/stores.js';
   import { searchTarget, openBrowse, openUserInfo } from '../lib/ui.js';
   import { post, del, formatSize, formatAttributes, baseName, folderName } from '../lib/api.js';
   import { emptyFilters, compileFilters } from '../lib/filters.js';
@@ -85,7 +85,9 @@
       virtual_path: file.name,
       size: file.size,
       attributes: file.attributes,
-    });
+    }).catch((error) =>
+      notice(error.status === 409 ? 'download already active' : error.message),
+    );
   }
 
   function rowMenu(event, response, file) {

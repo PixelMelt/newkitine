@@ -1,26 +1,26 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 pub struct Searches {
-    active: HashMap<u32, String>,
+    active: HashSet<u32>,
 }
 
 impl Searches {
     pub fn new() -> Self {
         Self {
-            active: HashMap::new(),
+            active: HashSet::new(),
         }
     }
 
-    pub fn add(&mut self, token: u32, query: String) {
-        self.active.insert(token, query);
+    pub fn add(&mut self, token: u32) {
+        self.active.insert(token);
     }
 
-    pub fn remove(&mut self, token: u32) -> Option<String> {
-        self.active.remove(&token)
+    pub fn remove(&mut self, token: u32) {
+        self.active.remove(&token);
     }
 
-    pub fn query(&self, token: u32) -> Option<&String> {
-        self.active.get(&token)
+    pub fn contains(&self, token: u32) -> bool {
+        self.active.contains(&token)
     }
 
     pub fn clear(&mut self) {

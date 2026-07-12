@@ -5,12 +5,12 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use sqlx::MySqlPool;
 use sqlx::Row;
 
-use crate::types::{RuntimeConfig, Settings, SharedFolder};
+use crate::types::{PublicSettings, RuntimeConfig, Settings, SharedFolder};
 
 use super::api;
 use super::behavior;
@@ -22,6 +22,7 @@ use super::state::App;
 pub struct SettingsState {
     locked: Vec<&'static str>,
     gluetun_enabled: bool,
+    mutation: tokio::sync::Mutex<()>,
     inner: RwLock<Inner>,
 }
 
@@ -30,11 +31,11 @@ struct Inner {
     live_port: Option<u16>,
 }
 
-pub struct SettingsChange {
-    pub stored: Settings,
-    pub effective: Settings,
-    pub runtime: RuntimeConfig,
-    pub behavior_changed: bool,
+struct SettingsChange {
+    stored: Settings,
+    effective: Settings,
+    runtime: RuntimeConfig,
+    behavior_changed: bool,
 }
 
 impl SettingsState {
@@ -42,6 +43,7 @@ impl SettingsState {
         Self {
             locked,
             gluetun_enabled: live_port.is_some(),
+            mutation: tokio::sync::Mutex::new(()),
             inner: RwLock::new(Inner { stored, live_port }),
         }
     }
@@ -64,10 +66,6 @@ impl SettingsState {
         )
     }
 
-    pub fn set_live_port(&self, port: u16) {
-        self.inner.write().unwrap().live_port = Some(port);
-    }
-
     pub fn payload(&self) -> SettingsPayload {
         SettingsPayload {
             settings: PublicSettings::from(&self.effective()),
@@ -76,7 +74,7 @@ impl SettingsState {
         }
     }
 
-    pub fn stage_update(&self, update: SettingsUpdate) -> Result<SettingsChange, String> {
+    fn stage_update(&self, update: SettingsUpdate) -> Result<SettingsChange, String> {
         let old = self.effective();
         let effective = update.into_settings(&old);
         if !matches!(
@@ -117,9 +115,58 @@ impl SettingsState {
         })
     }
 
-    pub fn commit(&self, stored: Settings) {
+    fn commit(&self, stored: Settings) {
         self.inner.write().unwrap().stored = stored;
     }
+
+    fn runtime_with_live_port(&self, port: u16) -> Result<RuntimeConfig, String> {
+        let mut settings = self.effective();
+        settings.listen_port = port;
+        settings.runtime_config()
+    }
+
+    fn set_live_port(&self, port: u16) {
+        self.inner.write().unwrap().live_port = Some(port);
+    }
+}
+
+pub enum ApplyError {
+    Invalid(String),
+    Db(sqlx::Error),
+}
+
+pub async fn apply_update(app: &Arc<App>, update: SettingsUpdate) -> Result<(), ApplyError> {
+    let _mutation = app.settings.mutation.lock().await;
+    let change = app
+        .settings
+        .stage_update(update)
+        .map_err(ApplyError::Invalid)?;
+    save_settings(&app.db, &serde_json::to_string(&change.stored).unwrap())
+        .await
+        .map_err(ApplyError::Db)?;
+    app.client.apply_config(change.runtime).await;
+    app.settings.commit(change.stored);
+    if change.behavior_changed {
+        behavior::apply_level(app).await;
+    }
+    session::apply_settings(
+        app,
+        change.effective.server.clone(),
+        change.effective.listen_port,
+        &change.effective.username,
+    );
+    let mut data = app.projection.write();
+    data.broadcast(AppEvent::Settings(app.settings.payload()));
+    Ok(())
+}
+
+pub async fn apply_live_port(app: &Arc<App>, port: u16) -> Result<(), String> {
+    let _mutation = app.settings.mutation.lock().await;
+    let runtime = app.settings.runtime_with_live_port(port)?;
+    app.client.apply_config(runtime).await;
+    app.settings.set_live_port(port);
+    session::set_listen_port(app, port);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -165,49 +212,6 @@ impl SettingsUpdate {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PublicSettings {
-    pub server: String,
-    pub username: String,
-    pub password_set: bool,
-    pub listen_port: u16,
-    pub description: String,
-    pub download_dir: PathBuf,
-    pub incomplete_dir: Option<PathBuf>,
-    pub shares: Vec<SharedFolder>,
-    pub upload_slots: usize,
-    pub queue_file_limit: usize,
-    pub upload_limit_kbps: u32,
-    pub download_limit_kbps: u32,
-    pub auto_reconnect: bool,
-    pub theme: String,
-    pub filter_level: String,
-    pub denied_message: String,
-}
-
-impl From<&Settings> for PublicSettings {
-    fn from(settings: &Settings) -> Self {
-        Self {
-            server: settings.server.clone(),
-            username: settings.username.clone(),
-            password_set: !settings.password.is_empty(),
-            listen_port: settings.listen_port,
-            description: settings.description.clone(),
-            download_dir: settings.download_dir.clone(),
-            incomplete_dir: settings.incomplete_dir.clone(),
-            shares: settings.shares.clone(),
-            upload_slots: settings.upload_slots,
-            queue_file_limit: settings.queue_file_limit,
-            upload_limit_kbps: settings.upload_limit_kbps,
-            download_limit_kbps: settings.download_limit_kbps,
-            auto_reconnect: settings.auto_reconnect,
-            theme: settings.theme.clone(),
-            filter_level: settings.filter_level.clone(),
-            denied_message: settings.denied_message.clone(),
-        }
-    }
-}
-
 pub async fn load_settings(pool: &MySqlPool) -> Option<String> {
     sqlx::query("SELECT data FROM settings WHERE id = 1")
         .fetch_optional(pool)
@@ -227,14 +231,6 @@ pub async fn save_settings(pool: &MySqlPool, data: &str) -> Result<(), sqlx::Err
     Ok(())
 }
 
-pub async fn apply_runtime(app: &App) -> Result<(), String> {
-    let runtime = app.settings.effective().runtime_config()?;
-    app.client
-        .apply_config(app.next_settings_revision(), runtime)
-        .await;
-    Ok(())
-}
-
 pub async fn get_settings(State(app): State<Arc<App>>) -> Json<SettingsPayload> {
     Json(app.settings.payload())
 }
@@ -243,36 +239,13 @@ pub async fn put_settings(
     State(app): State<Arc<App>>,
     Json(update): Json<SettingsUpdate>,
 ) -> impl IntoResponse {
-    let change = match app.settings.stage_update(update) {
-        Ok(change) => change,
-        Err(error) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
+    match apply_update(&app, update).await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(ApplyError::Invalid(error)) => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response()
         }
-    };
-    if let Err(error) = save_settings(&app.db, &serde_json::to_string(&change.stored).unwrap()).await
-    {
-        return api::db_failed(error).into_response();
+        Err(ApplyError::Db(error)) => api::db_failed(error).into_response(),
     }
-    app.settings.commit(change.stored);
-
-    app.client
-        .apply_config(app.next_settings_revision(), change.runtime)
-        .await;
-    if change.behavior_changed {
-        behavior::apply_level(&app).await;
-    }
-
-    session::apply_settings(
-        &app,
-        change.effective.server.clone(),
-        change.effective.listen_port,
-        &change.effective.username,
-    );
-    {
-        let mut data = app.data.write().unwrap();
-        app.broadcast(&mut data, AppEvent::Settings(app.settings.payload()));
-    }
-    StatusCode::ACCEPTED.into_response()
 }
 
 #[cfg(test)]

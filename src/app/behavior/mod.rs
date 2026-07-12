@@ -1,182 +1,36 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+mod db;
+mod policy;
+mod state;
+
+pub use state::Behavior;
+
+use std::sync::Arc;
 
 use crate::types::Restriction;
 
-use super::db;
+use db::{has_downloaded_from, load_verdicts, set_user_verdict};
+use policy::{
+    CONTRADICTION_MIN_FILES, PRESET_STATS, QUEUE_FLOOD, SEARCH_FLOOD, Verdict, restriction_for,
+    restriction_str,
+};
+use state::{Check, Peer, prune};
+
+use super::db::fatal;
 use super::state::{App, now};
-
-const WINDOW_SECS: i64 = 600;
-const SEARCH_FLOOD: usize = 30;
-const QUEUE_FLOOD: usize = 100;
-const PRESET_STATS: &[(u32, u32)] = &[
-    (1, 1),
-    (1, 499),
-    (500, 25),
-    (1000, 50),
-    (1500, 75),
-    (2000, 100),
-];
-const CONTRADICTION_MIN_FILES: u32 = 50;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum Verdict {
-    #[default]
-    Clean,
-    Verified,
-    Suspect,
-    Leech,
-}
-
-impl Verdict {
-    fn as_str(self) -> &'static str {
-        match self {
-            Verdict::Clean => "clean",
-            Verdict::Verified => "verified",
-            Verdict::Suspect => "suspect",
-            Verdict::Leech => "leech",
-        }
-    }
-
-    fn from_str(value: &str) -> Self {
-        match value {
-            "clean" => Verdict::Clean,
-            "verified" => Verdict::Verified,
-            "suspect" => Verdict::Suspect,
-            "leech" => Verdict::Leech,
-            other => panic!("unknown verdict {other}"),
-        }
-    }
-}
-
-#[derive(Default, Clone, Copy, PartialEq)]
-enum Check {
-    #[default]
-    Idle,
-    AwaitingStats,
-    AwaitingBrowse,
-}
-
-#[derive(Default)]
-struct Peer {
-    searches: VecDeque<i64>,
-    queue_requests: VecDeque<i64>,
-    stats: Option<(u32, u32)>,
-    verdict: Verdict,
-    evidence: Vec<String>,
-    check: Check,
-}
-
-#[derive(Default)]
-pub struct Behavior {
-    peers: Mutex<HashMap<String, Peer>>,
-}
 
 fn policy(app: &App) -> (String, String) {
     app.settings.behavior_policy()
 }
 
-fn restriction_for(level: &str, verdict: Verdict, denied_message: &str) -> Restriction {
-    match level {
-        "open" => Restriction::None,
-        "guarded" => match verdict {
-            Verdict::Leech => Restriction::Denied {
-                reason: denied_message.to_owned(),
-            },
-            Verdict::Suspect => Restriction::Deprioritized,
-            Verdict::Clean | Verdict::Verified => Restriction::None,
-        },
-        "strict" => match verdict {
-            Verdict::Leech | Verdict::Suspect => Restriction::Denied {
-                reason: denied_message.to_owned(),
-            },
-            Verdict::Clean | Verdict::Verified => Restriction::None,
-        },
-        other => panic!("unknown filter level {other}"),
-    }
-}
-
-fn restriction_str(restriction: &Restriction) -> &'static str {
-    match restriction {
-        Restriction::None => "none",
-        Restriction::Deprioritized => "deprioritized",
-        Restriction::Hold => "hold",
-        Restriction::Denied { .. } => "denied",
-    }
-}
-
-fn prune(window: &mut VecDeque<i64>, timestamp: i64) {
-    while window
-        .front()
-        .is_some_and(|entry| timestamp - entry > WINDOW_SECS)
-    {
-        window.pop_front();
-    }
-}
-
 fn is_self(app: &App, username: &str) -> bool {
-    app.data.read().unwrap().session.status().username == username
+    app.projection.read().session.status().username == username
 }
 
 async fn exempt(app: &Arc<App>, username: &str) -> bool {
-    if app.data.read().unwrap().users.is_buddy(username) {
+    if app.projection.read().users.is_buddy(username) {
         return true;
     }
     has_downloaded_from(&app.db, username).await
-}
-
-async fn has_downloaded_from(pool: &sqlx::MySqlPool, username: &str) -> bool {
-    use sqlx::Row;
-    let count: i64 = sqlx::query(
-        "SELECT COUNT(*) FROM transfer_history WHERE direction = 'download' AND username = ?",
-    )
-    .bind(username)
-    .fetch_one(pool)
-    .await
-    .expect("downloaded-from check")
-    .get(0);
-    count > 0
-}
-
-async fn set_user_verdict(
-    pool: &sqlx::MySqlPool,
-    username: &str,
-    verdict: &str,
-    evidence: &str,
-    restriction: &str,
-    timestamp: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO users_seen (username, first_seen, last_seen, verdict, evidence, restriction)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-            last_seen = VALUES(last_seen),
-            verdict = VALUES(verdict),
-            evidence = VALUES(evidence),
-            restriction = VALUES(restriction)",
-    )
-    .bind(username)
-    .bind(timestamp)
-    .bind(timestamp)
-    .bind(verdict)
-    .bind(evidence)
-    .bind(restriction)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn load_verdicts(pool: &sqlx::MySqlPool) -> Vec<(String, String, String)> {
-    use sqlx::Row;
-    sqlx::query(
-        "SELECT username, verdict, COALESCE(evidence, '') FROM users_seen WHERE verdict != 'clean'",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("load verdicts")
-    .into_iter()
-    .map(|row| (row.get(0), row.get(1), row.get(2)))
-    .collect()
 }
 
 async fn sync(app: &Arc<App>, username: &str) {
@@ -198,7 +52,7 @@ async fn sync(app: &Arc<App>, username: &str) {
         now(),
     )
     .await
-    .unwrap_or_else(|error| db::fatal(error));
+    .unwrap_or_else(|error| fatal(error));
 }
 
 async fn convict(app: &Arc<App>, username: &str, verdict: Verdict, evidence: &str) {
@@ -449,50 +303,6 @@ pub async fn load(app: &Arc<App>) {
             app.client
                 .set_user_restriction(&username, restriction)
                 .await;
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn levels_map_verdicts_to_restrictions() {
-        assert!(Verdict::Clean < Verdict::Verified);
-        assert!(Verdict::Verified < Verdict::Suspect);
-        assert!(Verdict::Suspect < Verdict::Leech);
-        assert_eq!(
-            restriction_for("open", Verdict::Leech, "m"),
-            Restriction::None
-        );
-        assert_eq!(
-            restriction_for("guarded", Verdict::Suspect, "m"),
-            Restriction::Deprioritized
-        );
-        assert_eq!(
-            restriction_for("guarded", Verdict::Leech, "m"),
-            Restriction::Denied { reason: "m".into() }
-        );
-        assert_eq!(
-            restriction_for("strict", Verdict::Suspect, "m"),
-            Restriction::Denied { reason: "m".into() }
-        );
-        assert_eq!(
-            restriction_for("strict", Verdict::Verified, "m"),
-            Restriction::None
-        );
-    }
-
-    #[test]
-    fn verdict_round_trips_through_storage() {
-        for verdict in [
-            Verdict::Clean,
-            Verdict::Verified,
-            Verdict::Suspect,
-            Verdict::Leech,
-        ] {
-            assert_eq!(Verdict::from_str(verdict.as_str()), verdict);
         }
     }
 }

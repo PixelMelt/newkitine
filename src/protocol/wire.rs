@@ -22,6 +22,14 @@ pub enum ProtocolError {
     InvalidConnectionType { value: String },
 }
 
+fn decode_legacy_latin1(content: &[u8]) -> String {
+    tracing::debug!(
+        len = content.len(),
+        "non-utf8 protocol string, decoding as latin-1 for legacy clients"
+    );
+    content.iter().map(|&b| b as char).collect()
+}
+
 pub struct MessageReader<'a> {
     buf: &'a [u8],
     offset: usize,
@@ -107,7 +115,7 @@ impl<'a> MessageReader<'a> {
         let content = self.take(len)?;
         Ok(match std::str::from_utf8(content) {
             Ok(s) => s.to_owned(),
-            Err(_) => content.iter().map(|&b| b as char).collect(),
+            Err(_) => decode_legacy_latin1(content),
         })
     }
 

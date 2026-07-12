@@ -8,36 +8,11 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::MySqlPool;
 
-use serde::Serialize;
-
-use crate::types::{FileAttributes, SearchResult, SearchScope};
+use crate::types::{SearchFileView, SearchResponseView, SearchResult, SearchScope, SearchView};
 
 use super::api;
 use super::contract::AppEvent;
 use super::state::App;
-
-#[derive(Clone, Serialize)]
-pub struct SearchView {
-    pub token: u32,
-    pub query: String,
-    pub results: Vec<SearchResponseView>,
-}
-
-#[derive(Clone, Serialize)]
-pub struct SearchResponseView {
-    pub username: String,
-    pub free_upload_slots: bool,
-    pub upload_speed: u32,
-    pub queue_size: u32,
-    pub files: Vec<SearchFileView>,
-}
-
-#[derive(Clone, Serialize)]
-pub struct SearchFileView {
-    pub name: String,
-    pub size: u64,
-    pub attributes: FileAttributes,
-}
 
 const MAX_SEARCH_RESPONSES: usize = 500;
 
@@ -64,10 +39,23 @@ impl SearchState {
     }
 }
 
+pub fn search_started(app: &App, token: u32, query: String) {
+    let mut data = app.projection.write();
+    let search = SearchView {
+        token,
+        query,
+        results: Vec::new(),
+    };
+    let event = AppEvent::SearchAdded {
+        search: search.clone(),
+    };
+    data.search.searches.push(search);
+    data.broadcast(event);
+}
+
 pub fn apply_results(app: &App, result: SearchResult) {
     let SearchResult {
         token,
-        query,
         username,
         results,
         free_upload_slots,
@@ -88,32 +76,20 @@ pub fn apply_results(app: &App, result: SearchResult) {
             })
             .collect(),
     };
-    let mut data = app.data.write().unwrap();
-    let index = match data
+    let mut data = app.projection.write();
+    let Some(index) = data
         .search
         .searches
         .iter()
         .position(|search| search.token == token)
-    {
-        Some(index) => index,
-        None => {
-            let search = SearchView {
-                token,
-                query,
-                results: Vec::new(),
-            };
-            let event = AppEvent::SearchAdded {
-                search: search.clone(),
-            };
-            data.search.searches.push(search);
-            app.broadcast(&mut data, event);
-            data.search.searches.len() - 1
-        }
+    else {
+        tracing::warn!(token, "results for a removed search, dropping");
+        return;
     };
     let search = &mut data.search.searches[index];
     if search.results.len() < MAX_SEARCH_RESPONSES {
         search.results.push(response.clone());
-        app.broadcast(&mut data, AppEvent::SearchResults { token, response });
+        data.broadcast(AppEvent::SearchResults { token, response });
     }
 }
 
@@ -158,7 +134,7 @@ fn default_search_mode() -> String {
 }
 
 pub async fn list_searches(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     let searches: Vec<serde_json::Value> = data
         .search
         .searches
@@ -192,17 +168,6 @@ pub async fn start_search(
         _ => return StatusCode::BAD_REQUEST.into_response(),
     };
     let token = app.client.search(&body.query, scope).await;
-    let mut data = app.data.write().unwrap();
-    let search = SearchView {
-        token,
-        query: body.query,
-        results: Vec::new(),
-    };
-    let event = AppEvent::SearchAdded {
-        search: search.clone(),
-    };
-    data.search.searches.push(search);
-    app.broadcast(&mut data, event);
     Json(json!({ "token": token })).into_response()
 }
 
@@ -210,7 +175,7 @@ pub async fn search_results(
     State(app): State<Arc<App>>,
     Path(token): Path<u32>,
 ) -> impl IntoResponse {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     match data
         .search
         .searches
@@ -224,9 +189,9 @@ pub async fn search_results(
 
 pub async fn remove_search(State(app): State<Arc<App>>, Path(token): Path<u32>) -> StatusCode {
     app.client.cancel_search(token).await;
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     data.search.searches.retain(|search| search.token != token);
-    app.broadcast(&mut data, AppEvent::SearchRemoved { token });
+    data.broadcast(AppEvent::SearchRemoved { token });
     StatusCode::NO_CONTENT
 }
 
@@ -236,16 +201,16 @@ pub struct WishBody {
 }
 
 pub async fn list_wishlist(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "wishlist": data.search.wishlist() }))
 }
 
 pub async fn add_wish(State(app): State<Arc<App>>, Json(body): Json<WishBody>) -> StatusCode {
-    app.client.add_wish(&body.term).await;
     if let Err(error) = insert_wish(&app.db, &body.term).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
+    app.client.add_wish(&body.term).await;
+    let mut data = app.projection.write();
     if !data.search.wishlist.contains(&body.term) {
         data.search.wishlist.push(body.term);
         data.search.wishlist.sort();
@@ -253,20 +218,20 @@ pub async fn add_wish(State(app): State<Arc<App>>, Json(body): Json<WishBody>) -
     let event = AppEvent::Wishlist {
         wishlist: data.search.wishlist.clone(),
     };
-    app.broadcast(&mut data, event);
+    data.broadcast(event);
     StatusCode::ACCEPTED
 }
 
 pub async fn remove_wish(State(app): State<Arc<App>>, Json(body): Json<WishBody>) -> StatusCode {
-    app.client.remove_wish(&body.term).await;
     if let Err(error) = delete_wish(&app.db, &body.term).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
+    app.client.remove_wish(&body.term).await;
+    let mut data = app.projection.write();
     data.search.wishlist.retain(|term| term != &body.term);
     let event = AppEvent::Wishlist {
         wishlist: data.search.wishlist.clone(),
     };
-    app.broadcast(&mut data, event);
+    data.broadcast(event);
     StatusCode::ACCEPTED
 }

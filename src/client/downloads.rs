@@ -1,16 +1,18 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
 use super::files;
+use super::registry::{Registry, TransferKey};
 use super::speed::SpeedMeter;
 use crate::network::NetworkHandle;
 use crate::protocol::{PeerMessage, ServerRequest};
 use crate::types::{
-    AbortResult, ConnId, EnqueueResult, FileAttributes, NetworkCommand, TransferDirection,
-    TransferEvent, TransferId, TransferRejectReason, TransferSeed, TransferStatus, TransferUpdate,
+    AbortResult, ConnId, EnqueueResult, FileAttributes, NetworkCommand, RetryResult,
+    TransferDirection, TransferId, TransferRejectReason, TransferSnapshot, TransferStatus,
+    TransferWork,
 };
 
 const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
@@ -20,7 +22,7 @@ pub struct TransferIds {
 }
 
 impl TransferIds {
-    pub fn new(seeds: &[TransferSeed]) -> Self {
+    pub fn new(seeds: &[TransferSnapshot]) -> Self {
         Self {
             next: seeds.iter().map(|seed| seed.id.0).max().unwrap_or(0) + 1,
         }
@@ -55,17 +57,21 @@ impl TransferPhase {
     }
 
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Queued | Self::GettingStatus | Self::Transferring)
+        matches!(
+            self,
+            Self::Queued | Self::GettingStatus | Self::Transferring
+        )
     }
 
-    pub fn from_seed(seed: &TransferSeed) -> Self {
+    pub fn from_seed(seed: &TransferSnapshot) -> Self {
         match seed.status {
-            TransferStatus::Queued | TransferStatus::Transferring => Self::Queued,
+            TransferStatus::Queued => Self::Queued,
+            TransferStatus::Transferring => {
+                unreachable!("bootstrap normalizes transferring transfers before seeding")
+            }
             TransferStatus::Finished => Self::Finished,
             TransferStatus::Aborted => Self::Aborted,
-            TransferStatus::Failed => {
-                Self::Failed(seed.failure_reason.clone().unwrap_or_default())
-            }
+            TransferStatus::Failed => Self::Failed(seed.failure_reason.clone().unwrap_or_default()),
         }
     }
 }
@@ -78,9 +84,10 @@ pub struct Transfer {
     pub size: u64,
     pub attributes: FileAttributes,
     pub phase: TransferPhase,
-    pub token: Option<u32>,
-    pub conn_id: Option<ConnId>,
     pub bytes_done: u64,
+    pub file_path: Option<String>,
+    pub queue_place: u32,
+    pub speed_bps: u32,
     pub retry_attempt: bool,
     pub size_changed: bool,
     pub activated_at: Option<Instant>,
@@ -88,7 +95,7 @@ pub struct Transfer {
 }
 
 impl Transfer {
-    pub fn key(&self) -> (String, String) {
+    pub fn key(&self) -> TransferKey {
         (self.username.clone(), self.virtual_path.clone())
     }
 
@@ -100,24 +107,28 @@ impl Transfer {
             .to_owned()
     }
 
-    fn queued_event(&self) -> TransferEvent {
-        event(
-            self.id,
-            TransferUpdate::Queued {
-                username: self.username.clone(),
-                virtual_path: self.virtual_path.clone(),
-                size: self.size,
-                attributes: self.attributes.clone(),
+    fn snapshot(&self) -> TransferSnapshot {
+        TransferSnapshot {
+            id: self.id,
+            direction: TransferDirection::Download,
+            username: self.username.clone(),
+            virtual_path: self.virtual_path.clone(),
+            size: self.size,
+            bytes_done: self.bytes_done,
+            status: self.phase.status(),
+            failure_reason: match &self.phase {
+                TransferPhase::Failed(reason) => Some(reason.clone()),
+                _ => None,
             },
-        )
-    }
-}
-
-fn event(id: TransferId, update: TransferUpdate) -> TransferEvent {
-    TransferEvent {
-        id,
-        direction: TransferDirection::Download,
-        update,
+            file_path: self.file_path.clone(),
+            queue_place: self.queue_place,
+            speed_bps: if self.phase == TransferPhase::Transferring {
+                self.speed_bps
+            } else {
+                0
+            },
+            attributes: self.attributes.clone(),
+        }
     }
 }
 
@@ -125,10 +136,7 @@ pub struct Downloads {
     net: NetworkHandle,
     download_dir: PathBuf,
     incomplete_dir: PathBuf,
-    transfers: HashMap<(String, String), Transfer>,
-    ids: HashMap<TransferId, (String, String)>,
-    active_tokens: HashMap<(String, u32), String>,
-    conn_tokens: HashMap<ConnId, (String, u32)>,
+    transfers: Registry<Transfer>,
 }
 
 impl Downloads {
@@ -137,10 +145,7 @@ impl Downloads {
             net,
             download_dir,
             incomplete_dir,
-            transfers: HashMap::new(),
-            ids: HashMap::new(),
-            active_tokens: HashMap::new(),
-            conn_tokens: HashMap::new(),
+            transfers: Registry::default(),
         }
     }
 
@@ -149,11 +154,11 @@ impl Downloads {
         self.incomplete_dir = incomplete_dir;
     }
 
-    pub fn seed(&mut self, seed: TransferSeed) {
+    pub fn seed(&mut self, seed: TransferSnapshot) {
         let phase = TransferPhase::from_seed(&seed);
         let key = (seed.username.clone(), seed.virtual_path.clone());
-        self.ids.insert(seed.id, key.clone());
         self.transfers.insert(
+            seed.id,
             key,
             Transfer {
                 id: seed.id,
@@ -162,9 +167,10 @@ impl Downloads {
                 size: seed.size,
                 attributes: seed.attributes,
                 phase,
-                token: None,
-                conn_id: None,
-                bytes_done: 0,
+                bytes_done: seed.bytes_done,
+                file_path: seed.file_path,
+                queue_place: 0,
+                speed_bps: 0,
                 retry_attempt: false,
                 size_changed: false,
                 activated_at: None,
@@ -180,7 +186,7 @@ impl Downloads {
         virtual_path: String,
         size: u64,
         attributes: FileAttributes,
-    ) -> (EnqueueResult, Vec<TransferEvent>) {
+    ) -> (EnqueueResult, Vec<TransferWork>) {
         let key = (username.clone(), virtual_path.clone());
         let id = match self.transfers.get(&key) {
             Some(existing) if existing.phase.is_active() => {
@@ -190,7 +196,6 @@ impl Downloads {
             Some(existing) => existing.id,
             None => ids.mint(),
         };
-        self.ids.insert(id, key.clone());
         let transfer = Transfer {
             id,
             username: username.clone(),
@@ -198,16 +203,17 @@ impl Downloads {
             size,
             attributes,
             phase: TransferPhase::Queued,
-            token: None,
-            conn_id: None,
             bytes_done: 0,
+            file_path: None,
+            queue_place: 0,
+            speed_bps: 0,
             retry_attempt: false,
             size_changed: false,
             activated_at: None,
             speed: SpeedMeter::default(),
         };
-        let queued = transfer.queued_event();
-        self.transfers.insert(key, transfer);
+        let queued = TransferWork::Update(transfer.snapshot());
+        self.transfers.insert(id, key, transfer);
         self.net.server(ServerRequest::WatchUser {
             user: username.clone(),
         });
@@ -221,8 +227,35 @@ impl Downloads {
         (EnqueueResult::Enqueued, vec![queued])
     }
 
-    pub fn abort(&mut self, id: TransferId) -> (AbortResult, Vec<TransferEvent>) {
-        let Some(key) = self.ids.get(&id).cloned() else {
+    pub fn retry(
+        &mut self,
+        ids: &mut TransferIds,
+        id: TransferId,
+    ) -> (RetryResult, Vec<TransferWork>) {
+        let Some(key) = self.transfers.key_of(id).cloned() else {
+            return (RetryResult::NotFound, Vec::new());
+        };
+        let transfer = self.transfers.get(&key).unwrap();
+        if transfer.phase.is_active() {
+            return (RetryResult::AlreadyActive, Vec::new());
+        }
+        let (username, virtual_path, size, attributes) = (
+            transfer.username.clone(),
+            transfer.virtual_path.clone(),
+            transfer.size,
+            transfer.attributes.clone(),
+        );
+        let (result, work) = self.enqueue(ids, username, virtual_path, size, attributes);
+        match result {
+            EnqueueResult::Enqueued => (RetryResult::Requeued, work),
+            EnqueueResult::AlreadyActive => {
+                unreachable!("inactive transfer cannot collide with an active one")
+            }
+        }
+    }
+
+    pub fn abort(&mut self, id: TransferId) -> (AbortResult, Vec<TransferWork>) {
+        let Some(key) = self.transfers.key_of(id).cloned() else {
             return (AbortResult::NotFound, Vec::new());
         };
         let transfer = self.transfers.get_mut(&key).unwrap();
@@ -230,18 +263,12 @@ impl Downloads {
             return (AbortResult::Aborted, Vec::new());
         }
         transfer.phase = TransferPhase::Aborted;
-        if let Some(token) = transfer.token.take() {
-            self.active_tokens
-                .remove(&(transfer.username.clone(), token));
-        }
-        if let Some(conn_id) = transfer.conn_id.take() {
-            self.conn_tokens.remove(&conn_id);
+        let aborted = TransferWork::Update(transfer.snapshot());
+        let detached = self.transfers.detach(&key);
+        if let Some(conn_id) = detached.conn_id {
             self.net.send(NetworkCommand::CloseConnection(conn_id));
         }
-        (
-            AbortResult::Aborted,
-            vec![event(id, TransferUpdate::Aborted)],
-        )
+        (AbortResult::Aborted, vec![aborted])
     }
 
     pub fn clear(&mut self, statuses: &[TransferStatus]) -> Vec<TransferId> {
@@ -252,25 +279,27 @@ impl Downloads {
             .map(|transfer| transfer.id)
             .collect();
         for id in &removed {
-            let key = self.ids.remove(id).unwrap();
-            self.transfers.remove(&key);
+            let (_, detached) = self.transfers.remove(*id).unwrap();
+            if let Some(conn_id) = detached.conn_id {
+                self.net.send(NetworkCommand::CloseConnection(conn_id));
+            }
         }
         removed
     }
 
     pub fn clear_all(&mut self) -> Vec<TransferId> {
-        for transfer in self.transfers.values_mut() {
-            if let Some(token) = transfer.token.take() {
-                self.active_tokens
-                    .remove(&(transfer.username.clone(), token));
-            }
-            if let Some(conn_id) = transfer.conn_id.take() {
-                self.conn_tokens.remove(&conn_id);
+        let removed: Vec<TransferId> = self
+            .transfers
+            .values()
+            .map(|transfer| transfer.id)
+            .collect();
+        for id in &removed {
+            let (_, detached) = self.transfers.remove(*id).unwrap();
+            if let Some(conn_id) = detached.conn_id {
                 self.net.send(NetworkCommand::CloseConnection(conn_id));
             }
         }
-        self.transfers.clear();
-        self.ids.drain().map(|(id, _)| id).collect()
+        removed
     }
 
     pub fn request_queued(&self) {
@@ -296,7 +325,7 @@ impl Downloads {
     }
 
     pub fn retry_offline(&mut self, username: &str) {
-        let keys: Vec<(String, String)> = self
+        let keys: Vec<TransferKey> = self
             .transfers
             .values()
             .filter(|transfer| {
@@ -323,20 +352,20 @@ impl Downloads {
     }
 
     pub fn queue_place(
-        &self,
+        &mut self,
         username: &str,
         virtual_path: &str,
         place: u32,
-    ) -> Option<TransferEvent> {
+    ) -> Option<TransferWork> {
         let transfer = self
             .transfers
-            .get(&(username.to_owned(), virtual_path.to_owned()))?;
-        Some(event(transfer.id, TransferUpdate::QueuePlace { place }))
+            .get_mut(&(username.to_owned(), virtual_path.to_owned()))?;
+        transfer.queue_place = place;
+        Some(TransferWork::Progress(transfer.snapshot()))
     }
 
     pub fn owns_token(&self, username: &str, token: u32) -> bool {
-        self.active_tokens
-            .contains_key(&(username.to_owned(), token))
+        self.transfers.owns_token(username, token)
     }
 
     pub fn handle_transfer_request(
@@ -347,13 +376,12 @@ impl Downloads {
         filesize: Option<u64>,
     ) {
         let key = (username.to_owned(), file.to_owned());
+        let mut accepted = false;
         let response = match self.transfers.get_mut(&key) {
             Some(transfer)
                 if matches!(
                     transfer.phase,
-                    TransferPhase::Queued
-                        | TransferPhase::GettingStatus
-                        | TransferPhase::Failed(_)
+                    TransferPhase::Queued | TransferPhase::GettingStatus | TransferPhase::Failed(_)
                 ) =>
             {
                 if let Some(size) = filesize
@@ -365,10 +393,8 @@ impl Downloads {
                     transfer.size = size;
                 }
                 transfer.phase = TransferPhase::GettingStatus;
-                transfer.token = Some(token);
                 transfer.activated_at = Some(Instant::now());
-                self.active_tokens
-                    .insert((username.to_owned(), token), file.to_owned());
+                accepted = true;
                 PeerMessage::TransferResponse {
                     token,
                     allowed: true,
@@ -391,6 +417,9 @@ impl Downloads {
                 filesize: None,
             },
         };
+        if accepted {
+            self.transfers.attach_token(&key, token);
+        }
         self.net.peer(username, response);
     }
 
@@ -399,12 +428,8 @@ impl Downloads {
         username: &str,
         token: u32,
         conn_id: ConnId,
-    ) -> Vec<TransferEvent> {
-        let Some(virtual_path) = self
-            .active_tokens
-            .get(&(username.to_owned(), token))
-            .cloned()
-        else {
+    ) -> Vec<TransferWork> {
+        let Some(key) = self.transfers.key_by_token(username, token).cloned() else {
             debug!(
                 username,
                 token, "file transfer init with unknown token, closing"
@@ -412,18 +437,15 @@ impl Downloads {
             self.net.send(NetworkCommand::CloseConnection(conn_id));
             return Vec::new();
         };
-        let key = (username.to_owned(), virtual_path.clone());
-        let incomplete_path = files::incomplete_file_path(&self.incomplete_dir, username, &virtual_path);
-        let incomplete_dir = self.incomplete_dir.clone();
-        let transfer = self.transfers.get_mut(&key).unwrap();
-        if transfer.conn_id.is_some() {
+        if self.transfers.conn_of(&key).is_some() {
             self.net.send(NetworkCommand::CloseConnection(conn_id));
             return Vec::new();
         }
-        transfer.conn_id = Some(conn_id);
+        self.transfers.attach_conn(&key, conn_id);
+        let incomplete_path = files::incomplete_file_path(&self.incomplete_dir, username, &key.1);
+        let incomplete_dir = self.incomplete_dir.clone();
+        let transfer = self.transfers.get_mut(&key).unwrap();
         transfer.activated_at = None;
-        self.conn_tokens
-            .insert(conn_id, (username.to_owned(), token));
 
         let size_changed = transfer.size_changed;
         match files::open_incomplete(&incomplete_dir, &incomplete_path, size_changed) {
@@ -431,17 +453,25 @@ impl Downloads {
                 if transfer.size > offset {
                     transfer.phase = TransferPhase::Transferring;
                     transfer.bytes_done = offset;
+                    transfer.queue_place = 0;
+                    transfer.speed_bps = 0;
                     transfer.speed.reset();
                     let size = transfer.size;
-                    let id = transfer.id;
-                    info!(username, virtual_path, offset, size, "download started");
+                    let started = TransferWork::Update(transfer.snapshot());
+                    info!(
+                        username,
+                        virtual_path = key.1,
+                        offset,
+                        size,
+                        "download started"
+                    );
                     self.net.send(NetworkCommand::DownloadFile {
                         conn_id,
                         file,
                         offset,
-                        bytes_left: transfer.size - offset,
+                        bytes_left: size - offset,
                     });
-                    vec![event(id, TransferUpdate::Started { file_path: None })]
+                    vec![started]
                 } else {
                     self.net.send(NetworkCommand::CloseConnection(conn_id));
                     self.finish(&key)
@@ -459,31 +489,17 @@ impl Downloads {
         username: &str,
         token: u32,
         bytes_left: u64,
-    ) -> Vec<TransferEvent> {
-        let Some(virtual_path) = self
-            .active_tokens
-            .get(&(username.to_owned(), token))
-            .cloned()
-        else {
+    ) -> Vec<TransferWork> {
+        let Some(key) = self.transfers.key_by_token(username, token).cloned() else {
             return Vec::new();
         };
-        let key = (username.to_owned(), virtual_path);
-        let Some(transfer) = self.transfers.get_mut(&key) else {
-            return Vec::new();
-        };
+        let transfer = self.transfers.get_mut(&key).unwrap();
         transfer.bytes_done = transfer.size.saturating_sub(bytes_left);
         if bytes_left == 0 {
             return self.finish(&key);
         }
-        let speed_bps = transfer.speed.sample(transfer.bytes_done);
-        vec![event(
-            transfer.id,
-            TransferUpdate::Progress {
-                bytes_done: transfer.bytes_done,
-                size: transfer.size,
-                speed_bps,
-            },
-        )]
+        transfer.speed_bps = transfer.speed.sample(transfer.bytes_done);
+        vec![TransferWork::Progress(transfer.snapshot())]
     }
 
     pub fn handle_file_connection_closed(
@@ -491,28 +507,19 @@ impl Downloads {
         username: &str,
         token: Option<u32>,
         conn_id: ConnId,
-    ) -> Vec<TransferEvent> {
-        let token = match token.or_else(|| self.conn_tokens.get(&conn_id).map(|(_, token)| *token))
-        {
-            Some(token) => token,
+    ) -> Vec<TransferWork> {
+        let key = match self.transfers.key_by_conn(conn_id).cloned().or_else(|| {
+            token.and_then(|token| self.transfers.key_by_token(username, token).cloned())
+        }) {
+            Some(key) => key,
             None => return Vec::new(),
         };
-        self.conn_tokens.remove(&conn_id);
-        let Some(virtual_path) = self
-            .active_tokens
-            .get(&(username.to_owned(), token))
-            .cloned()
-        else {
-            return Vec::new();
-        };
-        let key = (username.to_owned(), virtual_path);
-        let Some(transfer) = self.transfers.get(&key) else {
-            return Vec::new();
-        };
+        self.transfers.detach_conn(&key);
+        let transfer = self.transfers.get(&key).unwrap();
         match transfer.phase {
             TransferPhase::Transferring => self.fail(&key, "connection closed".into()),
             _ => {
-                self.active_tokens.remove(&(username.to_owned(), token));
+                self.transfers.detach_token(&key);
                 Vec::new()
             }
         }
@@ -523,7 +530,7 @@ impl Downloads {
         username: &str,
         file: &str,
         reason: &str,
-    ) -> Vec<TransferEvent> {
+    ) -> Vec<TransferWork> {
         let key = (username.to_owned(), file.to_owned());
         match self.transfers.get(&key) {
             Some(transfer) if transfer.phase != TransferPhase::Finished => {
@@ -533,9 +540,9 @@ impl Downloads {
         }
     }
 
-    pub fn handle_upload_failed(&mut self, username: &str, file: &str) -> Vec<TransferEvent> {
+    pub fn handle_upload_failed(&mut self, username: &str, file: &str) -> Vec<TransferWork> {
         let key = (username.to_owned(), file.to_owned());
-        let Some(transfer) = self.transfers.get_mut(&key) else {
+        let Some(transfer) = self.transfers.get(&key) else {
             return Vec::new();
         };
         if matches!(
@@ -545,10 +552,10 @@ impl Downloads {
             return Vec::new();
         }
         if !transfer.retry_attempt {
+            self.transfers.detach(&key);
+            let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.retry_attempt = true;
             transfer.phase = TransferPhase::Queued;
-            transfer.token = None;
-            transfer.conn_id = None;
             transfer.activated_at = None;
             let username = transfer.username.clone();
             let file = transfer.virtual_path.clone();
@@ -569,7 +576,7 @@ impl Downloads {
         username: &str,
         unsent: &[PeerMessage],
         is_offline: bool,
-    ) -> Vec<TransferEvent> {
+    ) -> Vec<TransferWork> {
         let mut updates = Vec::new();
         for message in unsent {
             if let PeerMessage::QueueUpload { file, .. } = message {
@@ -585,8 +592,8 @@ impl Downloads {
         updates
     }
 
-    pub fn sweep_request_timeouts(&mut self) -> Vec<TransferEvent> {
-        let expired: Vec<(String, String)> = self
+    pub fn sweep_request_timeouts(&mut self) -> Vec<TransferWork> {
+        let expired: Vec<TransferKey> = self
             .transfers
             .values()
             .filter(|transfer| {
@@ -604,26 +611,30 @@ impl Downloads {
         updates
     }
 
-    pub fn reset(&mut self) -> Vec<TransferEvent> {
-        self.active_tokens.clear();
-        self.conn_tokens.clear();
+    pub fn reset(&mut self) -> Vec<TransferWork> {
+        let active: Vec<TransferKey> = self
+            .transfers
+            .values()
+            .filter(|transfer| {
+                matches!(
+                    transfer.phase,
+                    TransferPhase::GettingStatus | TransferPhase::Transferring
+                )
+            })
+            .map(Transfer::key)
+            .collect();
         let mut updates = Vec::new();
-        for transfer in self.transfers.values_mut() {
-            if matches!(
-                transfer.phase,
-                TransferPhase::GettingStatus | TransferPhase::Transferring
-            ) {
-                transfer.phase = TransferPhase::Queued;
-                transfer.token = None;
-                transfer.conn_id = None;
-                transfer.activated_at = None;
-                updates.push(transfer.queued_event());
-            }
+        for key in active {
+            self.transfers.detach(&key);
+            let transfer = self.transfers.get_mut(&key).unwrap();
+            transfer.phase = TransferPhase::Queued;
+            transfer.activated_at = None;
+            updates.push(TransferWork::Update(transfer.snapshot()));
         }
         updates
     }
 
-    fn finish(&mut self, key: &(String, String)) -> Vec<TransferEvent> {
+    fn finish(&mut self, key: &TransferKey) -> Vec<TransferWork> {
         let transfer = self.transfers.get(key).unwrap();
         let username = transfer.username.clone();
         let virtual_path = transfer.virtual_path.clone();
@@ -633,28 +644,23 @@ impl Downloads {
 
         match files::place_download(&self.download_dir, &incomplete_path, &basename) {
             Ok(destination) => {
+                self.transfers.detach_token(key);
                 let transfer = self.transfers.get_mut(key).unwrap();
                 transfer.phase = TransferPhase::Finished;
-                if let Some(token) = transfer.token.take() {
-                    self.active_tokens
-                        .remove(&(transfer.username.clone(), token));
-                }
+                transfer.bytes_done = transfer.size;
+                transfer.file_path = Some(destination.display().to_string());
                 info!(username, virtual_path, ?destination, "download finished");
-                vec![event(
-                    transfer.id,
-                    TransferUpdate::Finished {
-                        file_path: Some(destination),
-                        size: transfer.size,
-                        speed_bps: None,
-                    },
-                )]
+                vec![TransferWork::Finished {
+                    snapshot: transfer.snapshot(),
+                    avg_speed_bps: None,
+                }]
             }
             Err(error) => self.fail(key, format!("cannot place finished download: {error}")),
         }
     }
 
-    fn fail(&mut self, key: &(String, String), reason: String) -> Vec<TransferEvent> {
-        let Some(transfer) = self.transfers.get_mut(key) else {
+    fn fail(&mut self, key: &TransferKey, reason: String) -> Vec<TransferWork> {
+        let Some(transfer) = self.transfers.get(key) else {
             return Vec::new();
         };
         if matches!(
@@ -663,15 +669,9 @@ impl Downloads {
         ) {
             return Vec::new();
         }
-        transfer.phase = TransferPhase::Failed(reason.clone());
-        if let Some(token) = transfer.token.take() {
-            self.active_tokens
-                .remove(&(transfer.username.clone(), token));
-        }
-        if let Some(conn_id) = transfer.conn_id.take() {
-            self.conn_tokens.remove(&conn_id);
-        }
-        vec![event(transfer.id, TransferUpdate::Failed { reason })]
+        self.transfers.detach(key);
+        let transfer = self.transfers.get_mut(key).unwrap();
+        transfer.phase = TransferPhase::Failed(reason);
+        vec![TransferWork::Update(transfer.snapshot())]
     }
-
 }

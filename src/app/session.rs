@@ -3,25 +3,12 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::Serialize;
 use serde_json::json;
+
+use crate::types::Status;
 
 use super::contract::AppEvent;
 use super::state::App;
-
-#[derive(Default, Clone, Serialize)]
-pub struct Status {
-    pub connected: bool,
-    pub logged_in: bool,
-    pub username: String,
-    pub server: String,
-    pub banner: String,
-    pub listen_port: u16,
-    pub shared_folders: u32,
-    pub shared_files: u32,
-    pub privileges_secs: u32,
-    pub peer_connections: usize,
-}
 
 pub struct Session {
     status: Status,
@@ -45,12 +32,12 @@ impl Session {
 }
 
 fn update_status(app: &App, apply: impl FnOnce(&mut Status)) {
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     apply(&mut data.session.status);
     let event = AppEvent::Status {
         status: data.session.status.clone(),
     };
-    app.broadcast(&mut data, event);
+    data.broadcast(event);
 }
 
 pub fn set_listen_port(app: &App, port: u16) {
@@ -78,8 +65,8 @@ pub fn logged_in(app: &App, username: String, banner: String) {
 
 pub fn login_failed(app: &App, reason: String, detail: Option<String>) {
     {
-        let mut data = app.data.write().unwrap();
-        app.broadcast(&mut data, AppEvent::LoginFailed { reason, detail });
+        let mut data = app.projection.write();
+        data.broadcast(AppEvent::LoginFailed { reason, detail });
     }
     update_status(app, |status| {
         status.connected = false;
@@ -95,16 +82,21 @@ pub fn disconnected(app: &App) {
 }
 
 pub fn connection_count(app: &App, count: usize) {
-    let mut data = app.data.write().unwrap();
+    let mut data = app.projection.write();
     data.session.status.peer_connections = count;
-    app.broadcast(&mut data, AppEvent::ConnCount { count });
+    data.broadcast(AppEvent::ConnCount { count });
 }
 
 pub fn shares_scanned(app: &App, folders: u32, files: u32) {
     update_status(app, |status| {
         status.shared_folders = folders;
         status.shared_files = files;
+        status.share_scan_error = None;
     });
+}
+
+pub fn share_scan_failed(app: &App, error: String) {
+    update_status(app, |status| status.share_scan_error = Some(error));
 }
 
 pub fn privileges(app: &App, seconds: u32) {
@@ -112,12 +104,12 @@ pub fn privileges(app: &App, seconds: u32) {
 }
 
 pub fn server_message(app: &App, message: String) {
-    let mut data = app.data.write().unwrap();
-    app.broadcast(&mut data, AppEvent::ServerMessage { message });
+    let mut data = app.projection.write();
+    data.broadcast(AppEvent::ServerMessage { message });
 }
 
 pub async fn status(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "status": data.session.status() }))
 }
 

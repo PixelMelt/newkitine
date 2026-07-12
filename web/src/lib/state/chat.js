@@ -53,7 +53,7 @@ export const handlers = {
 	room_message: (msg) => {
 		rooms.update((r) => {
 			const room = r.joined[msg.room];
-			if (room) room.messages = [...room.messages.slice(-199), msg.message];
+			room.messages = [...room.messages.slice(-199), msg.message];
 			return r;
 		});
 	},

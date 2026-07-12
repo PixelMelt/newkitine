@@ -24,17 +24,6 @@ export const handlers = {
 			return next;
 		});
 	},
-	user_status: (msg) => {
-		buddies.update((map) => {
-			const buddy = map[msg.username];
-			if (buddy) {
-				buddy.status = msg.status;
-				buddy.privileged = msg.privileged;
-				return { ...map };
-			}
-			return map;
-		});
-	},
 	banned: (msg) => banned.set(msg.users),
 	ignored: (msg) => ignored.set(msg.users),
 	user_info: (msg) => {

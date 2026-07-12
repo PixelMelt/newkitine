@@ -123,9 +123,9 @@ pub struct PeerTask {
 async fn connect(addr: SocketAddr) -> Result<TcpStream, String> {
     match timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
         Ok(Ok(stream)) => {
-            if let Err(error) = stream.set_nodelay(true) {
-                tracing::warn!(%error, %addr, "cannot set nodelay, continuing without it");
-            }
+            stream
+                .set_nodelay(true)
+                .map_err(|error| format!("cannot set nodelay: {error}"))?;
             Ok(stream)
         }
         Ok(Err(error)) => Err(error.to_string()),

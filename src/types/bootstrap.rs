@@ -1,4 +1,4 @@
-use crate::types::{RuntimeConfig, TransferSeed};
+use crate::types::{RuntimeConfig, TransferSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct ClientBootstrap {
@@ -10,5 +10,5 @@ pub struct ClientBootstrap {
     pub wishlist: Vec<String>,
     pub liked_interests: Vec<String>,
     pub hated_interests: Vec<String>,
-    pub transfers: Vec<TransferSeed>,
+    pub transfers: Vec<TransferSnapshot>,
 }

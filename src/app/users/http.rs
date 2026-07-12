@@ -8,7 +8,6 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::db::{last_ip, set_note};
-use super::{UserInfoView, buddy_view};
 use crate::app::api;
 use crate::app::behavior;
 use crate::app::contract::AppEvent;
@@ -37,7 +36,7 @@ pub async fn user_folders(
     Path(username): Path<String>,
     Query(query): Query<FoldersQuery>,
 ) -> impl IntoResponse {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     let Some(browse) = data.users.browse(&username) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -72,7 +71,7 @@ pub async fn user_tree(
     Path(username): Path<String>,
     Query(query): Query<TreeQuery>,
 ) -> impl IntoResponse {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     let Some(browse) = data.users.browse(&username) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -146,7 +145,7 @@ pub async fn user_files(
     Path(username): Path<String>,
     Query(query): Query<FilesQuery>,
 ) -> impl IntoResponse {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     let Some(browse) = data.users.browse(&username) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -170,17 +169,9 @@ pub async fn request_user_info(
     app.client.request_user_info(&username).await;
     app.client.request_user_stats(&username).await;
     app.client.request_user_interests(&username).await;
-    let mut data = app.data.write().unwrap();
-    let info = data
-        .users
-        .user_infos
-        .entry(username.clone())
-        .or_insert_with(|| UserInfoView {
-            username,
-            ..Default::default()
-        });
-    let event = AppEvent::UserInfo { info: info.clone() };
-    app.broadcast(&mut data, event);
+    let mut data = app.projection.write();
+    let info = data.users.ensure_info(&username);
+    data.broadcast(AppEvent::UserInfo { info });
     StatusCode::ACCEPTED
 }
 
@@ -188,8 +179,8 @@ pub async fn get_user_info(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
 ) -> impl IntoResponse {
-    let data = app.data.read().unwrap();
-    match data.users.user_infos.get(&username) {
+    let data = app.projection.read();
+    match data.users.info(&username) {
         Some(info) => Json(serde_json::to_value(info).unwrap()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
@@ -201,28 +192,21 @@ pub struct UserBody {
 }
 
 pub async fn list_buddies(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     let mut buddies: Vec<_> = data.users.buddies().collect();
     buddies.sort_by(|a, b| a.username.cmp(&b.username));
     Json(json!({ "buddies": buddies }))
 }
 
 pub async fn add_buddy(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
-    app.client.add_buddy(&body.username).await;
     if let Err(error) = db::add_to_list(&app.db, "buddy", &body.username).await {
         return api::db_failed(error);
     }
+    app.client.add_buddy(&body.username).await;
     {
-        let mut data = app.data.write().unwrap();
-        let buddy = data
-            .users
-            .buddies
-            .entry(body.username.clone())
-            .or_insert_with(|| buddy_view(&body.username));
-        let event = AppEvent::Buddy {
-            buddy: buddy.clone(),
-        };
-        app.broadcast(&mut data, event);
+        let mut data = app.projection.write();
+        let buddy = data.users.insert_buddy(&body.username);
+        data.broadcast(AppEvent::Buddy { buddy });
     }
     behavior::buddy_added(&app, &body.username).await;
     StatusCode::ACCEPTED
@@ -238,87 +222,74 @@ pub async fn set_buddy_note(
     Path(username): Path<String>,
     Json(body): Json<NoteBody>,
 ) -> StatusCode {
+    if !app.projection.read().users.is_buddy(&username) {
+        return StatusCode::NOT_FOUND;
+    }
     if let Err(error) = set_note(&app.db, &username, &body.note).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
-    let Some(buddy) = data.users.buddies.get_mut(&username) else {
+    let mut data = app.projection.write();
+    let Some(buddy) = data.users.set_note(&username, body.note) else {
         return StatusCode::NOT_FOUND;
     };
-    buddy.note = body.note;
-    let event = AppEvent::Buddy {
-        buddy: buddy.clone(),
-    };
-    app.broadcast(&mut data, event);
+    data.broadcast(AppEvent::Buddy { buddy });
     StatusCode::ACCEPTED
 }
 
 pub async fn remove_buddy(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
-    app.client.remove_buddy(&username).await;
     if let Err(error) = db::remove_from_list(&app.db, "buddy", &username).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
-    data.users.buddies.remove(&username);
-    app.broadcast(&mut data, AppEvent::BuddyRemoved { username });
+    if let Err(error) = set_note(&app.db, &username, "").await {
+        return api::db_failed(error);
+    }
+    app.client.remove_buddy(&username).await;
+    let mut data = app.projection.write();
+    data.users.remove_buddy(&username);
+    data.broadcast(AppEvent::BuddyRemoved { username });
     StatusCode::ACCEPTED
 }
 
 pub async fn list_banned(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "users": data.users.banned() }))
 }
 
 pub async fn ban_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
-    app.client.ban_user(&body.username).await;
     if let Err(error) = db::add_to_list(&app.db, "banned", &body.username).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
-    if !data.users.banned.contains(&body.username) {
-        data.users.banned.push(body.username);
-        data.users.banned.sort();
-    }
-    let event = AppEvent::Banned {
-        users: data.users.banned.clone(),
-    };
-    app.broadcast(&mut data, event);
+    app.client.ban_user(&body.username).await;
+    let mut data = app.projection.write();
+    let users = data.users.ban(body.username);
+    data.broadcast(AppEvent::Banned { users });
     StatusCode::ACCEPTED
 }
 
 pub async fn unban_user(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
-    app.client.unban_user(&username).await;
     if let Err(error) = db::remove_from_list(&app.db, "banned", &username).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
-    data.users.banned.retain(|user| user != &username);
-    let event = AppEvent::Banned {
-        users: data.users.banned.clone(),
-    };
-    app.broadcast(&mut data, event);
+    app.client.unban_user(&username).await;
+    let mut data = app.projection.write();
+    let users = data.users.unban(&username);
+    data.broadcast(AppEvent::Banned { users });
     StatusCode::ACCEPTED
 }
 
 pub async fn list_ignored(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.data.read().unwrap();
+    let data = app.projection.read();
     Json(json!({ "users": data.users.ignored() }))
 }
 
 pub async fn ignore_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
-    app.client.ignore_user(&body.username).await;
     if let Err(error) = db::add_to_list(&app.db, "ignored", &body.username).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
-    if !data.users.ignored.contains(&body.username) {
-        data.users.ignored.push(body.username);
-        data.users.ignored.sort();
-    }
-    let event = AppEvent::Ignored {
-        users: data.users.ignored.clone(),
-    };
-    app.broadcast(&mut data, event);
+    app.client.ignore_user(&body.username).await;
+    let mut data = app.projection.write();
+    let users = data.users.ignore(body.username);
+    data.broadcast(AppEvent::Ignored { users });
     StatusCode::ACCEPTED
 }
 
@@ -326,16 +297,13 @@ pub async fn unignore_user(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
 ) -> StatusCode {
-    app.client.unignore_user(&username).await;
     if let Err(error) = db::remove_from_list(&app.db, "ignored", &username).await {
         return api::db_failed(error);
     }
-    let mut data = app.data.write().unwrap();
-    data.users.ignored.retain(|user| user != &username);
-    let event = AppEvent::Ignored {
-        users: data.users.ignored.clone(),
-    };
-    app.broadcast(&mut data, event);
+    app.client.unignore_user(&username).await;
+    let mut data = app.projection.write();
+    let users = data.users.unignore(&username);
+    data.broadcast(AppEvent::Ignored { users });
     StatusCode::ACCEPTED
 }
 

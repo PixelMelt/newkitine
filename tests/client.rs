@@ -12,8 +12,8 @@ use newkitine::network::spawn as spawn_network;
 use newkitine::protocol::PeerMessage;
 use newkitine::types::{
     ClientEvent, ConnectionType, EnqueueResult, FileAttributes, NetworkCommand, NetworkEvent,
-    Observation, Restriction, SearchScope, SharedFolder, TransferDirection, TransferEvent,
-    TransferUpdate,
+    Observation, Restriction, RetryResult, SearchScope, SharedFolder, TransferDirection,
+    TransferId, TransferStatus, TransferWork,
 };
 
 async fn wait_client<T>(
@@ -30,6 +30,22 @@ async fn wait_client<T>(
     })
     .await
     .expect("timed out waiting for client event")
+}
+
+async fn wait_transfer<T>(
+    transfers: &mut Receiver<TransferWork>,
+    mut matcher: impl FnMut(TransferWork) -> Option<T>,
+) -> T {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let work = transfers.recv().await.expect("transfer channel closed");
+            if let Some(value) = matcher(work) {
+                return value;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for transfer event")
 }
 
 async fn wait_net<T>(
@@ -68,9 +84,9 @@ async fn client_downloads_file_from_peer() {
     let download_dir = temp_dir("downloads");
     let incomplete_dir = temp_dir("incomplete");
     let mut bob_config = client_config(server_addr, "bob", free_port(), download_dir.clone());
-    bob_config.runtime.incomplete_dir = incomplete_dir;
+    bob_config.runtime.transfers.incomplete_dir = incomplete_dir;
     bob_config.runtime.description = "test client".into();
-    let (bob, mut bob_events) = Client::spawn(bob_config);
+    let (bob, mut bob_events, mut bob_transfers) = Client::spawn(bob_config);
     wait_client(&mut bob_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
         _ => None,
@@ -148,48 +164,48 @@ async fn client_downloads_file_from_peer() {
         size: payload.len() as u64,
     });
 
-    let queued_id = wait_client(&mut bob_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            id,
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Queued { username, .. },
-        }) => {
-            assert_eq!(username, "alice");
-            Some(id)
+    let queued_id = wait_transfer(&mut bob_transfers, |work| match work {
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Download
+                && snapshot.status == TransferStatus::Queued =>
+        {
+            assert_eq!(snapshot.username, "alice");
+            Some(snapshot.id)
         }
         _ => None,
     })
     .await;
 
-    wait_client(&mut bob_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            id,
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Started { .. },
-        }) => {
-            assert_eq!(id, queued_id);
+    wait_transfer(&mut bob_transfers, |work| match work {
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Download
+                && snapshot.status == TransferStatus::Transferring =>
+        {
+            assert_eq!(snapshot.id, queued_id);
             Some(())
         }
         _ => None,
     })
     .await;
 
-    let file_path = wait_client(&mut bob_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Finished { file_path, .. },
-            ..
-        }) => Some(file_path.expect("finished download carries its placed path")),
-        ClientEvent::Transfer(TransferEvent {
-            update: TransferUpdate::Failed { reason },
-            ..
-        }) => {
-            panic!("download failed: {reason}")
+    let file_path = wait_transfer(&mut bob_transfers, |work| match work {
+        TransferWork::Finished { snapshot, .. }
+            if snapshot.direction == TransferDirection::Download =>
+        {
+            Some(
+                snapshot
+                    .file_path
+                    .expect("finished download carries its placed path"),
+            )
+        }
+        TransferWork::Update(snapshot) if snapshot.status == TransferStatus::Failed => {
+            panic!("download failed: {:?}", snapshot.failure_reason)
         }
         _ => None,
     })
     .await;
 
+    let file_path = std::path::PathBuf::from(file_path);
     assert!(file_path.starts_with(&download_dir));
     assert_eq!(file_path.file_name().unwrap().to_str().unwrap(), "song.mp3");
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
@@ -214,7 +230,7 @@ async fn client_shares_answers_search_and_uploads() {
         path: share_dir,
         buddy_only: false,
     }];
-    let (_eve, mut eve_events) = Client::spawn(eve_config);
+    let (_eve, mut eve_events, mut eve_transfers) = Client::spawn(eve_config);
     wait_client(&mut eve_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
         _ => None,
@@ -230,7 +246,7 @@ async fn client_shares_answers_search_and_uploads() {
 
     let download_dir = temp_dir("frank-downloads");
     let frank_config = client_config(server_addr, "frank", free_port(), download_dir.clone());
-    let (frank, mut frank_events) = Client::spawn(frank_config);
+    let (frank, mut frank_events, mut frank_transfers) = Client::spawn(frank_config);
     wait_client(&mut frank_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
         _ => None,
@@ -276,72 +292,68 @@ async fn client_shares_answers_search_and_uploads() {
         EnqueueResult::Enqueued
     );
 
-    let upload_id = wait_client(&mut eve_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            id,
-            direction: TransferDirection::Upload,
-            update:
-                TransferUpdate::Queued {
-                    username,
-                    virtual_path,
-                    ..
-                },
-        }) => {
-            assert_eq!(username, "frank");
-            assert_eq!(virtual_path, "Music\\Best Album\\unique melody.mp3");
-            Some(id)
+    let upload_id = wait_transfer(&mut eve_transfers, |work| match work {
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Upload
+                && snapshot.status == TransferStatus::Queued =>
+        {
+            assert_eq!(snapshot.username, "frank");
+            assert_eq!(
+                snapshot.virtual_path,
+                "Music\\Best Album\\unique melody.mp3"
+            );
+            Some(snapshot.id)
         }
         _ => None,
     })
     .await;
 
-    wait_client(&mut eve_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            id,
-            direction: TransferDirection::Upload,
-            update: TransferUpdate::Started { .. },
-        }) => {
-            assert_eq!(id, upload_id);
+    wait_transfer(&mut eve_transfers, |work| match work {
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Upload
+                && snapshot.status == TransferStatus::Transferring =>
+        {
+            assert_eq!(snapshot.id, upload_id);
             Some(())
         }
         _ => None,
     })
     .await;
 
-    let file_path = wait_client(&mut frank_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Finished { file_path, .. },
-            ..
-        }) => Some(file_path.expect("finished download carries its placed path")),
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Failed { reason },
-            ..
-        }) => {
-            panic!("download failed: {reason}")
+    let file_path = wait_transfer(&mut frank_transfers, |work| match work {
+        TransferWork::Finished { snapshot, .. }
+            if snapshot.direction == TransferDirection::Download =>
+        {
+            Some(
+                snapshot
+                    .file_path
+                    .expect("finished download carries its placed path"),
+            )
+        }
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Download
+                && snapshot.status == TransferStatus::Failed =>
+        {
+            panic!("download failed: {:?}", snapshot.failure_reason)
         }
         _ => None,
     })
     .await;
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
 
-    wait_client(&mut eve_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            id,
-            direction: TransferDirection::Upload,
-            update: TransferUpdate::Finished { size, .. },
-        }) => {
-            assert_eq!(id, upload_id);
-            assert_eq!(size, payload.len() as u64);
+    wait_transfer(&mut eve_transfers, |work| match work {
+        TransferWork::Finished { snapshot, .. }
+            if snapshot.direction == TransferDirection::Upload =>
+        {
+            assert_eq!(snapshot.id, upload_id);
+            assert_eq!(snapshot.size, payload.len() as u64);
             Some(())
         }
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Upload,
-            update: TransferUpdate::Failed { reason },
-            ..
-        }) => {
-            panic!("upload failed: {reason}")
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Upload
+                && snapshot.status == TransferStatus::Failed =>
+        {
+            panic!("upload failed: {:?}", snapshot.failure_reason)
         }
         _ => None,
     })
@@ -367,7 +379,7 @@ async fn wishlist_search_runs_on_interval() {
         path: share_dir,
         buddy_only: false,
     }];
-    let (_grace, mut grace_events) = Client::spawn(grace_config);
+    let (_grace, mut grace_events, _grace_transfers) = Client::spawn(grace_config);
     wait_client(&mut grace_events, |event| match event {
         ClientEvent::SharesScanned { .. } => Some(()),
         _ => None,
@@ -381,7 +393,7 @@ async fn wishlist_search_runs_on_interval() {
         temp_dir("heidi-downloads"),
     );
     heidi_config.wishlist = vec!["wishlist gem".into()];
-    let (_heidi, mut heidi_events) = Client::spawn(heidi_config);
+    let (_heidi, mut heidi_events, _heidi_transfers) = Client::spawn(heidi_config);
 
     let (username, results) = wait_client(&mut heidi_events, |event| match event {
         ClientEvent::SearchResults(result) => Some((result.username, result.results)),
@@ -410,8 +422,8 @@ async fn client_receives_search_results() {
     .await;
 
     let mut dave_config = client_config(server_addr, "dave", free_port(), temp_dir("downloads2"));
-    dave_config.runtime.incomplete_dir = temp_dir("incomplete2");
-    let (dave, mut dave_events) = Client::spawn(dave_config);
+    dave_config.runtime.transfers.incomplete_dir = temp_dir("incomplete2");
+    let (dave, mut dave_events, _dave_transfers) = Client::spawn(dave_config);
     wait_client(&mut dave_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
         _ => None,
@@ -473,7 +485,7 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
         path: share_dir,
         buddy_only: false,
     }];
-    let (eve, mut eve_events) = Client::spawn(eve_config);
+    let (eve, mut eve_events, mut eve_transfers) = Client::spawn(eve_config);
     wait_client(&mut eve_events, |event| match event {
         ClientEvent::SharesScanned { .. } => Some(()),
         _ => None,
@@ -481,7 +493,7 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     .await;
 
     let frank_config = client_config(server_addr, "frank", free_port(), temp_dir("frank-dl"));
-    let (frank, mut frank_events) = Client::spawn(frank_config);
+    let (frank, mut frank_events, mut frank_transfers) = Client::spawn(frank_config);
     wait_client(&mut frank_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
         _ => None,
@@ -557,13 +569,12 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
         _ => None,
     })
     .await;
-    wait_client(&mut frank_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Failed { reason },
-            ..
-        }) => {
-            assert_eq!(reason, "not welcome");
+    wait_transfer(&mut frank_transfers, |work| match work {
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Download
+                && snapshot.status == TransferStatus::Failed =>
+        {
+            assert_eq!(snapshot.failure_reason.as_deref(), Some("not welcome"));
             Some(())
         }
         _ => None,
@@ -589,44 +600,135 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
         _ => None,
     })
     .await;
-    wait_client(&mut eve_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Upload,
-            update: TransferUpdate::Queued { username, .. },
-            ..
-        }) if username == "frank" => Some(()),
+    wait_transfer(&mut eve_transfers, |work| match work {
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Upload
+                && snapshot.status == TransferStatus::Queued
+                && snapshot.username == "frank" =>
+        {
+            Some(())
+        }
         _ => None,
     })
     .await;
 
     tokio::time::sleep(Duration::from_millis(800)).await;
-    while let Ok(event) = eve_events.try_recv() {
-        if let ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Upload,
-            update: TransferUpdate::Started { .. },
-            ..
-        }) = event
+    while let Ok(work) = eve_transfers.try_recv() {
+        if let TransferWork::Update(snapshot) = &work
+            && snapshot.direction == TransferDirection::Upload
+            && snapshot.status == TransferStatus::Transferring
         {
             panic!("held upload was granted a slot");
         }
     }
 
     eve.set_user_restriction("frank", Restriction::None).await;
-    let file_path = wait_client(&mut frank_events, |event| match event {
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Finished { file_path, .. },
-            ..
-        }) => Some(file_path.expect("finished download carries its placed path")),
-        ClientEvent::Transfer(TransferEvent {
-            direction: TransferDirection::Download,
-            update: TransferUpdate::Failed { reason },
-            ..
-        }) => {
-            panic!("download failed: {reason}")
+    let file_path = wait_transfer(&mut frank_transfers, |work| match work {
+        TransferWork::Finished { snapshot, .. }
+            if snapshot.direction == TransferDirection::Download =>
+        {
+            Some(
+                snapshot
+                    .file_path
+                    .expect("finished download carries its placed path"),
+            )
+        }
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Download
+                && snapshot.status == TransferStatus::Failed =>
+        {
+            panic!("download failed: {:?}", snapshot.failure_reason)
         }
         _ => None,
     })
     .await;
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
+}
+
+#[tokio::test]
+async fn retry_download_is_resolved_by_the_client_actor() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let (uploader, mut uploader_events) = spawn_network();
+    uploader.send(NetworkCommand::ServerConnect {
+        address: server_addr,
+        username: "alice".into(),
+        password: "secret".into(),
+        listen_port: free_port(),
+    });
+    wait_net(&mut uploader_events, |event| match event {
+        NetworkEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let bob_config = client_config(server_addr, "bob", free_port(), temp_dir("retry-downloads"));
+    let (bob, mut bob_events, mut bob_transfers) = Client::spawn(bob_config);
+    wait_client(&mut bob_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(
+        bob.retry_download(TransferId(4242)).await,
+        RetryResult::NotFound
+    );
+
+    let virtual_path = "Music\\Album\\song.mp3";
+    assert_eq!(
+        bob.download("alice", virtual_path, 64, FileAttributes::default())
+            .await,
+        EnqueueResult::Enqueued
+    );
+    let id = wait_transfer(&mut bob_transfers, |work| match work {
+        TransferWork::Update(snapshot) if snapshot.status == TransferStatus::Queued => {
+            Some(snapshot.id)
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(bob.retry_download(id).await, RetryResult::AlreadyActive);
+
+    wait_net(&mut uploader_events, |event| match event {
+        NetworkEvent::PeerMessage {
+            message: PeerMessage::QueueUpload { file, .. },
+            ..
+        } if file == virtual_path => Some(()),
+        _ => None,
+    })
+    .await;
+    uploader.peer(
+        "bob",
+        PeerMessage::UploadDenied {
+            file: virtual_path.into(),
+            reason: "Cancelled".into(),
+        },
+    );
+    wait_transfer(&mut bob_transfers, |work| match work {
+        TransferWork::Update(snapshot) if snapshot.status == TransferStatus::Failed => {
+            assert_eq!(snapshot.id, id);
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(bob.retry_download(id).await, RetryResult::Requeued);
+    wait_transfer(&mut bob_transfers, |work| match work {
+        TransferWork::Update(snapshot) if snapshot.status == TransferStatus::Queued => {
+            assert_eq!(snapshot.id, id);
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    wait_net(&mut uploader_events, |event| match event {
+        NetworkEvent::PeerMessage {
+            message: PeerMessage::QueueUpload { file, .. },
+            ..
+        } if file == virtual_path => Some(()),
+        _ => None,
+    })
+    .await;
 }
