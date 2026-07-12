@@ -700,11 +700,14 @@ mod tests {
             std::env::temp_dir().join(format!("newkitine-uploads-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("song.mp3"), b"payload").unwrap();
-        let shares = shares::scan(&[SharedFolder {
-            virtual_name: "Music".into(),
-            path: dir,
-            buddy_only: false,
-        }])
+        let shares = shares::scan(
+            &[SharedFolder {
+                virtual_name: "Music".into(),
+                path: dir.clone(),
+                buddy_only: false,
+            }],
+            &dir.with_extension("slots.cache"),
+        )
         .expect("scan test shares");
 
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
@@ -751,11 +754,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("newkitine-deny-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("song.mp3"), b"payload").unwrap();
-        let shares = shares::scan(&[SharedFolder {
-            virtual_name: "Music".into(),
-            path: dir,
-            buddy_only: false,
-        }])
+        let shares = shares::scan(
+            &[SharedFolder {
+                virtual_name: "Music".into(),
+                path: dir.clone(),
+                buddy_only: false,
+            }],
+            &dir.with_extension("deny.cache"),
+        )
         .expect("scan test shares");
 
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());

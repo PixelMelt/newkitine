@@ -82,7 +82,7 @@ pub(crate) async fn run(
             config.ignored.into_iter().collect(),
             config.ip_bans,
         ),
-        sharing: Sharing::new(scan_tx),
+        sharing: Sharing::new(scan_tx, config.scan_cache),
         session: Session::new(),
         wishlist: Wishlist::new(config.wishlist),
         liked_interests: config.liked_interests,

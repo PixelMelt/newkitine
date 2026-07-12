@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 
 use super::ClientActor;
@@ -8,6 +10,7 @@ use crate::types::{ClientEvent, Observation, Restriction};
 pub(super) struct Sharing {
     pub(super) index: Option<SharesIndex>,
     scan_results: mpsc::UnboundedSender<(u64, Result<SharesIndex, ScanError>)>,
+    scan_cache: PathBuf,
     generation: u64,
     pub(super) excluded_phrases: Vec<String>,
 }
@@ -15,10 +18,12 @@ pub(super) struct Sharing {
 impl Sharing {
     pub(super) fn new(
         scan_results: mpsc::UnboundedSender<(u64, Result<SharesIndex, ScanError>)>,
+        scan_cache: PathBuf,
     ) -> Self {
         Self {
             index: None,
             scan_results,
+            scan_cache,
             generation: 0,
             excluded_phrases: Vec::new(),
         }
@@ -33,9 +38,10 @@ impl ClientActor {
         self.sharing.generation += 1;
         let generation = self.sharing.generation;
         let shared_folders = self.config.shared_folders.clone();
+        let cache_path = self.sharing.scan_cache.clone();
         let results = self.sharing.scan_results.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = results.send((generation, shares::scan(&shared_folders)));
+            let _ = results.send((generation, shares::scan(&shared_folders, &cache_path)));
         });
     }
 

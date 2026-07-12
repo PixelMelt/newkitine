@@ -211,6 +211,7 @@ pub fn client_config(
     download_dir: std::path::PathBuf,
 ) -> newkitine::types::ClientBootstrap {
     newkitine::types::ClientBootstrap {
+        scan_cache: download_dir.join("scan-cache.json.gz"),
         runtime: newkitine::types::RuntimeConfig {
             login: newkitine::types::LoginConfig {
                 server,

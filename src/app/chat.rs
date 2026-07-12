@@ -121,7 +121,7 @@ pub async fn private_message_received(
 
 pub async fn room_message_received(app: &App, room: String, username: String, message: String) {
     if !app.projection.read().chat.rooms.joined.contains_key(&room) {
-        tracing::warn!(
+        tracing::debug!(
             room,
             username,
             "message for a room we have not joined, dropping"
@@ -138,7 +138,7 @@ pub async fn room_message_received(app: &App, room: String, username: String, me
         .unwrap_or_else(|error| db::fatal(error));
     let mut data = app.projection.write();
     let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
-        tracing::warn!(room, "room left while persisting its message, dropping");
+        tracing::debug!(room, "room left while persisting its message, dropping");
         return;
     };
     view.messages.push(message.clone());
@@ -194,7 +194,7 @@ pub async fn room_left(app: &App, room: String) {
 pub fn room_user_joined(app: &App, room: String, username: String) {
     let mut data = app.projection.write();
     let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
-        tracing::warn!(
+        tracing::debug!(
             room,
             username,
             "user joined a room we have not joined, dropping"
@@ -211,7 +211,7 @@ pub fn room_user_joined(app: &App, room: String, username: String) {
 pub fn room_user_left(app: &App, room: String, username: String) {
     let mut data = app.projection.write();
     let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
-        tracing::warn!(
+        tracing::debug!(
             room,
             username,
             "user left a room we have not joined, dropping"

@@ -91,6 +91,7 @@ pub async fn run(config_path: PathBuf) {
     let transfer_views = transfers::bootstrap(&pool).await;
     let client_config = ClientBootstrap {
         runtime,
+        scan_cache: config_path.with_file_name("scan-cache.json.gz"),
         buddies: db::load_list(&pool, "buddy").await,
         banned: db::load_list(&pool, "banned").await,
         ignored: db::load_list(&pool, "ignored").await,
