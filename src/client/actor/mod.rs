@@ -72,9 +72,10 @@ pub(crate) async fn run(
             config.runtime.transfers.incomplete_dir.clone(),
         ),
         uploads: Uploads::new(
-            net,
+            net.clone(),
             config.runtime.transfers.upload_slots,
             config.runtime.transfers.queue_file_limit,
+            config.runtime.transfers.uploads_per_user,
         ),
         users: Users::new(
             config.buddies.into_iter().collect(),
@@ -82,7 +83,7 @@ pub(crate) async fn run(
             config.ignored.into_iter().collect(),
             config.ip_bans,
         ),
-        sharing: Sharing::new(scan_tx, config.scan_cache),
+        sharing: Sharing::new(scan_tx, config.scan_cache, net.clone()),
         session: Session::new(),
         wishlist: Wishlist::new(config.wishlist),
         liked_interests: config.liked_interests,

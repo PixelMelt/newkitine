@@ -25,10 +25,10 @@ pub use observation::Observation;
 pub use search::{SearchFileView, SearchResponseView, SearchResult, SearchScope, SearchView};
 pub use session::Status;
 pub use settings::{
-    DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, LoginConfig, PublicSettings,
-    RuntimeConfig, Settings, TransferConfig,
+    DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, DEFAULT_UPLOADS_PER_USER,
+    LoginConfig, PublicSettings, RuntimeConfig, Settings, TransferConfig,
 };
-pub use share::SharedFolder;
+pub use share::{ShareCatalog, ShareCatalogFile, ShareCatalogFolder, SharedFolder};
 pub use transfer::{
     TransferDirection, TransferId, TransferRejectReason, TransferSnapshot, TransferStatus,
     TransferView,

@@ -93,12 +93,8 @@ impl<'a> MessageReader<'a> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
 
-    pub fn read_u16_padded(&mut self) -> Result<u16, ProtocolError> {
-        let value = self.read_u32()?;
-        u16::try_from(value).map_err(|_| ProtocolError::InvalidValue {
-            field: "u16",
-            value: value as u64,
-        })
+    pub fn read_u16(&mut self) -> Result<u16, ProtocolError> {
+        Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
     }
 
     pub fn read_ip(&mut self) -> Result<Ipv4Addr, ProtocolError> {

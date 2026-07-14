@@ -1,18 +1,40 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::types::Restriction;
 
 use super::users::Users;
 
-#[derive(Default)]
 pub(super) struct UploadQueue {
     entries: Vec<(String, String)>,
-    active_users: HashMap<String, u32>,
+    active_users: HashMap<String, HashSet<u32>>,
     user_counters: HashMap<String, u64>,
     counter: u64,
+    max_per_user: usize,
 }
 
 impl UploadQueue {
+    pub(super) fn new(max_per_user: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            active_users: HashMap::new(),
+            user_counters: HashMap::new(),
+            counter: 0,
+            max_per_user,
+        }
+    }
+
+    pub(super) fn set_max_per_user(&mut self, max_per_user: usize) {
+        self.max_per_user = max_per_user;
+    }
+
+    pub(super) fn active_count(&self, username: &str) -> usize {
+        self.active_users.get(username).map_or(0, HashSet::len)
+    }
+
+    fn under_per_user_cap(&self, username: &str) -> bool {
+        self.max_per_user == 0 || self.active_count(username) < self.max_per_user
+    }
+
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -47,6 +69,7 @@ impl UploadQueue {
             .user_counters
             .keys()
             .filter(|username| !matches!(users.restriction(username), Some(Restriction::Hold)))
+            .filter(|username| self.under_per_user_cap(username))
             .collect();
         let privileged: Vec<&&String> = eligible
             .iter()
@@ -81,15 +104,21 @@ impl UploadQueue {
 
     pub(super) fn mark_active(&mut self, key: &(String, String), token: u32) {
         self.entries.retain(|queued| queued != key);
-        self.active_users.insert(key.0.clone(), token);
-        self.user_counters.remove(&key.0);
+        self.active_users
+            .entry(key.0.clone())
+            .or_default()
+            .insert(token);
+        self.record_user(&key.0);
     }
 
     pub(super) fn release(&mut self, key: &(String, String), token: Option<u32>) {
         if let Some(token) = token
-            && self.active_users.get(&key.0) == Some(&token)
+            && let Some(tokens) = self.active_users.get_mut(&key.0)
         {
-            self.active_users.remove(&key.0);
+            tokens.remove(&token);
+            if tokens.is_empty() {
+                self.active_users.remove(&key.0);
+            }
         }
         self.entries.retain(|queued| queued != key);
         self.record_user(&key.0);
@@ -103,7 +132,7 @@ impl UploadQueue {
 
     fn record_user(&mut self, username: &str) {
         let has_queued = self.entries.iter().any(|(user, _)| user == username);
-        if has_queued && !self.active_users.contains_key(username) {
+        if has_queued {
             self.counter += 1;
             self.user_counters.insert(username.to_owned(), self.counter);
         } else {

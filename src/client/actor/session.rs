@@ -62,8 +62,11 @@ impl ClientActor {
         let old = std::mem::replace(&mut self.config, config);
         if self.config.transfers != old.transfers {
             let transfers = self.config.transfers.clone();
-            self.uploads
-                .set_limits(transfers.upload_slots, transfers.queue_file_limit);
+            self.uploads.set_limits(
+                transfers.upload_slots,
+                transfers.queue_file_limit,
+                transfers.uploads_per_user,
+            );
             self.downloads
                 .set_dirs(transfers.download_dir, transfers.incomplete_dir);
             self.set_transfer_limits(transfers.upload_limit_kbps, transfers.download_limit_kbps);

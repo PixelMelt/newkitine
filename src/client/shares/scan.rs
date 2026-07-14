@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -7,10 +8,12 @@ use std::time::UNIX_EPOCH;
 use lofty::prelude::AudioFile;
 use tracing::{info, warn};
 
-use crate::types::{FileAttributes, FileInfo, SharedFolder, UINT32_LIMIT};
+use crate::types::{
+    FileAttributes, ShareCatalog, ShareCatalogFile, ShareCatalogFolder, SharedFolder, UINT32_LIMIT,
+};
 
 use super::cache::{self, CacheEntry};
-use super::{FileEntry, ScannedFolder, SharesIndex, split_words};
+use super::{SharesIndex, WordPostings, split_words};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
@@ -47,7 +50,7 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 
 struct RawFile {
     name: String,
-    real_path: PathBuf,
+    real_name: OsString,
     size: u64,
     mtime: u64,
     class: FileClass,
@@ -61,20 +64,21 @@ enum FileClass {
 
 struct RawFolder {
     virtual_path: String,
+    real_path: PathBuf,
     files: Vec<RawFile>,
 }
 
 struct Miss {
     file_index: u32,
-    folder_index: usize,
-    position: usize,
-    key: String,
+    path: PathBuf,
     size: u64,
     mtime: u64,
 }
 
 struct Merger {
-    index: SharesIndex,
+    catalog: ShareCatalog,
+    word_index: HashMap<Box<str>, WordPostings>,
+    virtual_paths: HashSet<String>,
     new_cache: HashMap<String, CacheEntry>,
     misses: Vec<Miss>,
 }
@@ -112,47 +116,54 @@ pub fn scan(
         count: AtomicU64::new(0),
         notify: progress,
     };
-    let roots: Vec<Vec<RawFolder>> = {
-        let cache = &cache;
-        let progress = &progress;
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = shared_folders
-                .iter()
-                .map(|shared| scope.spawn(move || walk_root(shared, cache, progress)))
-                .collect();
-            handles
-                .into_iter()
-                .map(join_scan_thread)
-                .collect::<Result<_, _>>()
-        })?
-    };
-
     let mut merger = Merger {
-        index: SharesIndex::default(),
+        catalog: ShareCatalog {
+            folders: Vec::new(),
+            files: Vec::new(),
+            folders_by_path: Vec::new(),
+        },
+        word_index: HashMap::new(),
+        virtual_paths: HashSet::new(),
         new_cache: HashMap::new(),
         misses: Vec::new(),
     };
-    for (shared, folders) in shared_folders.iter().zip(roots) {
-        for folder in folders {
-            merger.add_folder(shared.buddy_only, folder)?;
-        }
+    for shared in shared_folders {
+        walk_root(shared, &cache, &progress, |folder| {
+            merger.add_folder(shared.buddy_only, folder)
+        })?;
     }
     let Merger {
-        mut index,
+        mut catalog,
+        word_index,
+        virtual_paths: _,
         mut new_cache,
         misses,
     } = merger;
 
     let cache_hits = new_cache.len();
     let attribute_reads = misses.len();
-    read_missing_attributes(&mut index, &mut new_cache, misses, &progress);
+    read_missing_attributes(&mut catalog, &mut new_cache, misses, &progress);
     cache::save(cache_path, &new_cache);
 
+    let total_files = catalog.files.len();
+    let unique_words = word_index.len();
+    let file_postings = word_index
+        .values()
+        .map(|entry| entry.files.len())
+        .sum::<usize>();
+    let folder_postings = word_index
+        .values()
+        .map(|entry| entry.folders.len())
+        .sum::<usize>();
+    let index = SharesIndex::new(catalog, word_index);
     let (folders, files) = index.counts();
     info!(
         folders,
         files,
-        total_files = index.files.len(),
+        total_files,
+        unique_words,
+        file_postings,
+        folder_postings,
         cache_hits,
         attribute_reads,
         "share scan complete"
@@ -164,12 +175,12 @@ fn walk_root(
     shared: &SharedFolder,
     cache: &HashMap<String, CacheEntry>,
     progress: &Progress,
-) -> Result<Vec<RawFolder>, ScanError> {
+    mut add_folder: impl FnMut(RawFolder) -> Result<(), ScanError>,
+) -> Result<(), ScanError> {
     let root = fs::canonicalize(&shared.path).map_err(|error| ScanError::Root {
         path: shared.path.clone(),
         error,
     })?;
-    let mut folders = Vec::new();
     let mut stack = vec![(root, shared.virtual_name.clone())];
     while let Some((real_dir, virtual_dir)) = stack.pop() {
         let entries = fs::read_dir(&real_dir).map_err(|error| ScanError::Folder {
@@ -182,7 +193,8 @@ fn walk_root(
                 path: real_dir.clone(),
                 error,
             })?;
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let real_name = entry.file_name();
+            let name = real_name.to_string_lossy().into_owned();
             if name.starts_with('.') {
                 continue;
             }
@@ -224,60 +236,61 @@ fn walk_root(
             }
             files.push(RawFile {
                 name,
-                real_path,
+                real_name,
                 size,
                 mtime,
                 class,
             });
         }
-        folders.push(RawFolder {
+        add_folder(RawFolder {
             virtual_path: virtual_dir,
+            real_path: real_dir,
             files,
-        });
+        })?;
     }
-    Ok(folders)
+    Ok(())
 }
 
 impl Merger {
     fn add_folder(&mut self, buddy_only: bool, folder: RawFolder) -> Result<(), ScanError> {
         let RawFolder {
             virtual_path: virtual_dir,
+            real_path,
             mut files,
         } = folder;
-        if self.index.folder_lookup.contains_key(&virtual_dir) {
+        if !self.virtual_paths.insert(virtual_dir.clone()) {
             return Err(ScanError::DuplicateVirtualPath { path: virtual_dir });
         }
         files.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let folder_index = self.index.folders.len();
+        let folder_index = self.catalog.folders.len() as u32;
         let virtual_dir_lower = virtual_dir.to_lowercase();
-        let folder_words: Vec<&str> = split_words(&virtual_dir_lower).collect();
-        let mut infos = Vec::with_capacity(files.len());
+        for word in split_words(&virtual_dir_lower).collect::<HashSet<_>>() {
+            self.word_index
+                .entry(word.to_owned().into_boxed_str())
+                .or_default()
+                .folders
+                .push(folder_index);
+        }
+        let file_start = self.catalog.files.len() as u32;
 
-        for (position, file) in files.into_iter().enumerate() {
-            let virtual_path = format!("{virtual_dir}\\{}", file.name);
-            let virtual_path_lower = virtual_path.to_lowercase();
-            let file_index = self.index.files.len() as u32;
-
+        for file in files {
+            let file_index = self.catalog.files.len() as u32;
             let basename_lower = file.name.to_lowercase();
-            let words: HashSet<&str> = folder_words
-                .iter()
-                .copied()
-                .chain(split_words(&basename_lower))
-                .collect();
-            for word in words {
-                self.index
-                    .word_index
-                    .entry(word.to_owned())
+            for word in split_words(&basename_lower).collect::<HashSet<_>>() {
+                self.word_index
+                    .entry(word.to_owned().into_boxed_str())
                     .or_default()
+                    .files
                     .push(file_index);
             }
 
+            let file_path = real_path.join(&file.real_name);
             let attributes = match file.class {
                 FileClass::Ready(attributes) => attributes,
                 FileClass::CacheHit(attributes) => {
                     self.new_cache.insert(
-                        file.real_path.to_string_lossy().into_owned(),
+                        file_path.to_string_lossy().into_owned(),
                         CacheEntry {
                             size: file.size,
                             mtime: file.mtime,
@@ -289,42 +302,27 @@ impl Merger {
                 FileClass::NeedsRead => {
                     self.misses.push(Miss {
                         file_index,
-                        folder_index,
-                        position,
-                        key: file.real_path.to_string_lossy().into_owned(),
+                        path: file_path,
                         size: file.size,
                         mtime: file.mtime,
                     });
                     FileAttributes::default()
                 }
             };
-
-            let candidates = self.index.paths_lower.entry(virtual_path_lower).or_default();
-            if !candidates.is_empty() {
-                warn!(path = %virtual_path, "shared file path differs only by case from another");
-            }
-            candidates.push(file_index);
-            infos.push(FileInfo {
-                code: 1,
-                name: file.name,
-                size: file.size,
-                attributes: attributes.clone(),
-            });
-            self.index.files.push(FileEntry {
-                virtual_path,
-                real_path: file.real_path,
+            self.catalog.files.push(ShareCatalogFile {
+                name: file.name.into_boxed_str(),
+                name_lower: basename_lower.into_boxed_str(),
+                real_name: file.real_name,
                 size: file.size,
                 attributes,
-                buddy_only,
             });
         }
 
-        self.index
-            .folder_lookup
-            .insert(virtual_dir.clone(), folder_index);
-        self.index.folders.push(ScannedFolder {
-            virtual_path: virtual_dir,
-            files: infos,
+        self.catalog.folders.push(ShareCatalogFolder {
+            virtual_path: virtual_dir.into_boxed_str(),
+            virtual_path_lower: virtual_dir_lower.into_boxed_str(),
+            real_path,
+            files: file_start..self.catalog.files.len() as u32,
             buddy_only,
         });
         Ok(())
@@ -332,9 +330,9 @@ impl Merger {
 }
 
 fn read_missing_attributes(
-    index: &mut SharesIndex,
+    catalog: &mut ShareCatalog,
     new_cache: &mut HashMap<String, CacheEntry>,
-    mut misses: Vec<Miss>,
+    misses: Vec<Miss>,
     progress: &Progress,
 ) {
     if misses.is_empty() {
@@ -345,50 +343,38 @@ fn read_missing_attributes(
         .min(ATTRIBUTE_WORKER_CAP)
         .min(misses.len());
     let cursor = AtomicUsize::new(0);
-    let results: Vec<(usize, FileAttributes)> = {
-        let files = &index.files;
+    std::thread::scope(|scope| {
         let misses = &misses;
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..workers)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut done = Vec::new();
-                        loop {
-                            let position = cursor.fetch_add(1, Ordering::Relaxed);
-                            let Some(miss) = misses.get(position) else {
-                                break done;
-                            };
-                            done.push((
-                                position,
-                                audio_attributes(&files[miss.file_index as usize].real_path),
-                            ));
-                            progress.add();
-                        }
-                    })
-                })
-                .collect();
-            handles.into_iter().flat_map(join_scan_thread).collect()
-        })
-    };
-    for (position, attributes) in results {
-        let miss = &mut misses[position];
-        index.files[miss.file_index as usize].attributes = attributes.clone();
-        index.folders[miss.folder_index].files[miss.position].attributes = attributes.clone();
-        new_cache.insert(
-            std::mem::take(&mut miss.key),
-            CacheEntry {
-                size: miss.size,
-                mtime: miss.mtime,
-                attributes,
-            },
-        );
-    }
-}
-
-fn join_scan_thread<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
-    handle
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        let cursor = &cursor;
+        let (results, received) = std::sync::mpsc::sync_channel(workers * 2);
+        for _ in 0..workers {
+            let results = results.clone();
+            scope.spawn(move || {
+                loop {
+                    let position = cursor.fetch_add(1, Ordering::Relaxed);
+                    let Some(miss) = misses.get(position) else {
+                        break;
+                    };
+                    let attributes = audio_attributes(&miss.path);
+                    progress.add();
+                    results.send((position, attributes)).unwrap();
+                }
+            });
+        }
+        drop(results);
+        for (position, attributes) in received {
+            let miss = &misses[position];
+            catalog.files[miss.file_index as usize].attributes = attributes.clone();
+            new_cache.insert(
+                miss.path.to_string_lossy().into_owned(),
+                CacheEntry {
+                    size: miss.size,
+                    mtime: miss.mtime,
+                    attributes,
+                },
+            );
+        }
+    });
 }
 
 fn unix_mtime(metadata: &fs::Metadata) -> u64 {
@@ -604,6 +590,22 @@ mod tests {
     }
 
     #[test]
+    fn streaming_browse_matches_peer_message_encoding() {
+        let index = test_index();
+        for is_buddy in [false, true] {
+            let expected = crate::protocol::PeerMessage::SharedFileListResponse {
+                shares: index.browse(is_buddy),
+                unknown: 0,
+                private_shares: Vec::new(),
+            };
+            let bytes = crate::protocol::encode_shared_file_list(&index.catalog(), is_buddy);
+            assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 5);
+            let parsed = crate::protocol::PeerMessage::parse(5, &bytes[8..]).unwrap();
+            assert_eq!(parsed, expected);
+        }
+    }
+
+    #[test]
     fn attributes_are_read_cached_and_patched_into_folders() {
         let base = temp_base();
         let dir = base.join("music");
@@ -798,9 +800,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            index
-                .folder_contents("Music\\a@@BACKSLASH@@b", false)
-                .len(),
+            index.folder_contents("Music\\a@@BACKSLASH@@b", false).len(),
             1
         );
         assert!(

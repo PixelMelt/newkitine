@@ -8,6 +8,7 @@ use crate::types::SharedFolder;
 pub const DEFAULT_SERVER: &str = "server.slsknet.org:2242";
 pub const DEFAULT_UPLOAD_SLOTS: usize = 2;
 pub const DEFAULT_QUEUE_FILE_LIMIT: usize = 500;
+pub const DEFAULT_UPLOADS_PER_USER: usize = 1;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeConfig {
@@ -32,6 +33,7 @@ pub struct TransferConfig {
     pub incomplete_dir: PathBuf,
     pub upload_slots: usize,
     pub queue_file_limit: usize,
+    pub uploads_per_user: usize,
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
 }
@@ -49,6 +51,7 @@ pub struct Settings {
     pub shares: Vec<SharedFolder>,
     pub upload_slots: usize,
     pub queue_file_limit: usize,
+    pub uploads_per_user: usize,
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
     pub auto_reconnect: bool,
@@ -70,6 +73,7 @@ impl Default for Settings {
             shares: Vec::new(),
             upload_slots: DEFAULT_UPLOAD_SLOTS,
             queue_file_limit: DEFAULT_QUEUE_FILE_LIMIT,
+            uploads_per_user: DEFAULT_UPLOADS_PER_USER,
             upload_limit_kbps: 0,
             download_limit_kbps: 0,
             auto_reconnect: true,
@@ -92,6 +96,7 @@ pub struct PublicSettings {
     pub shares: Vec<SharedFolder>,
     pub upload_slots: usize,
     pub queue_file_limit: usize,
+    pub uploads_per_user: usize,
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
     pub auto_reconnect: bool,
@@ -113,6 +118,7 @@ impl From<&Settings> for PublicSettings {
             shares: settings.shares.clone(),
             upload_slots: settings.upload_slots,
             queue_file_limit: settings.queue_file_limit,
+            uploads_per_user: settings.uploads_per_user,
             upload_limit_kbps: settings.upload_limit_kbps,
             download_limit_kbps: settings.download_limit_kbps,
             auto_reconnect: settings.auto_reconnect,
@@ -175,6 +181,7 @@ impl Settings {
                 incomplete_dir: self.incomplete_dir(),
                 upload_slots: self.upload_slots,
                 queue_file_limit: self.queue_file_limit,
+                uploads_per_user: self.uploads_per_user,
                 upload_limit_kbps: self.upload_limit_kbps,
                 download_limit_kbps: self.download_limit_kbps,
             },

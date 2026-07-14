@@ -35,6 +35,13 @@ impl NetworkHandle {
             message,
         });
     }
+
+    pub fn peer_frame(&self, username: impl Into<String>, bytes: Vec<u8>) {
+        self.send(NetworkCommand::SendPeerFrame {
+            username: username.into(),
+            bytes,
+        });
+    }
 }
 
 pub fn spawn() -> (NetworkHandle, mpsc::Receiver<NetworkEvent>) {

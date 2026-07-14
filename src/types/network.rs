@@ -20,6 +20,10 @@ pub enum NetworkCommand {
         username: String,
         message: PeerMessage,
     },
+    SendPeerFrame {
+        username: String,
+        bytes: Vec<u8>,
+    },
     RequestFileConnection {
         username: String,
         token: u32,

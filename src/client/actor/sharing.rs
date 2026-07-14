@@ -1,11 +1,21 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
 use super::ClientActor;
 use crate::client::shares::{self, ScanError, SharesIndex};
-use crate::protocol::{PeerMessage, ServerRequest};
-use crate::types::{ClientEvent, Observation, Restriction};
+use crate::network::NetworkHandle;
+use crate::protocol::{PeerMessage, ServerRequest, encode_shared_file_list};
+use crate::types::{ClientEvent, Observation, Restriction, ShareCatalog};
+
+const BROWSE_QUEUE_CAPACITY: usize = 32;
+
+struct BrowseJob {
+    username: String,
+    catalog: Arc<ShareCatalog>,
+    is_buddy: bool,
+}
 
 pub(super) enum ScanUpdate {
     Progress(u64),
@@ -13,8 +23,9 @@ pub(super) enum ScanUpdate {
 }
 
 pub(super) struct Sharing {
-    pub(super) index: Option<SharesIndex>,
+    pub(super) index: Option<Arc<SharesIndex>>,
     scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
+    browse_jobs: mpsc::Sender<BrowseJob>,
     scan_cache: PathBuf,
     generation: u64,
     last_progress: u64,
@@ -25,10 +36,24 @@ impl Sharing {
     pub(super) fn new(
         scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
         scan_cache: PathBuf,
+        net: NetworkHandle,
     ) -> Self {
+        let (browse_jobs, mut jobs) = mpsc::channel::<BrowseJob>(BROWSE_QUEUE_CAPACITY);
+        tokio::spawn(async move {
+            while let Some(job) = jobs.recv().await {
+                let username = job.username;
+                let bytes = tokio::task::spawn_blocking(move || {
+                    encode_shared_file_list(&job.catalog, job.is_buddy)
+                })
+                .await
+                .expect("browse encoder panicked");
+                net.peer_frame(username, bytes);
+            }
+        });
         Self {
             index: None,
             scan_results,
+            browse_jobs,
             scan_cache,
             generation: 0,
             last_progress: 0,
@@ -90,7 +115,7 @@ impl ClientActor {
             }
         };
         let (folders, files) = index.counts();
-        self.sharing.index = Some(index);
+        self.sharing.index = Some(Arc::new(index));
         if self.session.logged_in {
             self.net
                 .server(ServerRequest::SharedFoldersFiles { folders, files });
@@ -161,18 +186,23 @@ impl ClientActor {
         self.emit(ClientEvent::Observed(Observation::BrowseRequest {
             username: username.clone(),
         }));
-        let shares = match (&self.sharing.index, self.users.is_banned(&username)) {
-            (Some(index), false) => index.browse(self.users.is_buddy(&username)),
-            _ => Vec::new(),
+        let is_buddy = self.users.is_buddy(&username);
+        let catalog = match (&self.sharing.index, self.users.is_banned(&username)) {
+            (Some(index), false) => index.catalog(),
+            _ => Arc::new(ShareCatalog {
+                folders: Vec::new(),
+                files: Vec::new(),
+                folders_by_path: Vec::new(),
+            }),
         };
-        self.net.peer(
-            username,
-            PeerMessage::SharedFileListResponse {
-                shares,
-                unknown: 0,
-                private_shares: Vec::new(),
-            },
-        );
+        self.sharing
+            .browse_jobs
+            .try_send(BrowseJob {
+                username,
+                catalog,
+                is_buddy,
+            })
+            .expect("browse response queue overflowed");
     }
 
     pub(super) fn handle_folder_contents_request(

@@ -42,7 +42,7 @@ impl ClientActor {
                         &username,
                         token,
                         &file,
-                        self.sharing.index.as_ref(),
+                        self.sharing.index.as_deref(),
                         &self.users,
                     );
                     self.emit(ClientEvent::Observed(Observation::QueueRequest {
@@ -140,7 +140,7 @@ impl ClientActor {
                     &mut self.transfer_ids,
                     &username,
                     &file,
-                    self.sharing.index.as_ref(),
+                    self.sharing.index.as_deref(),
                     &self.users,
                 );
                 self.emit(ClientEvent::Observed(Observation::QueueRequest {

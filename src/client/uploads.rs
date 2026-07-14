@@ -80,13 +80,18 @@ pub struct Uploads {
 }
 
 impl Uploads {
-    pub fn new(net: NetworkHandle, upload_slots: usize, queue_file_limit: usize) -> Self {
+    pub fn new(
+        net: NetworkHandle,
+        upload_slots: usize,
+        queue_file_limit: usize,
+        uploads_per_user: usize,
+    ) -> Self {
         Self {
             net,
             upload_slots,
             queue_file_limit,
             transfers: Registry::default(),
-            queue: UploadQueue::default(),
+            queue: UploadQueue::new(uploads_per_user),
             token: initial_token(),
             upload_speed: 0,
         }
@@ -96,9 +101,15 @@ impl Uploads {
         self.upload_slots as u32
     }
 
-    pub fn set_limits(&mut self, upload_slots: usize, queue_file_limit: usize) {
+    pub fn set_limits(
+        &mut self,
+        upload_slots: usize,
+        queue_file_limit: usize,
+        uploads_per_user: usize,
+    ) {
         self.upload_slots = upload_slots;
         self.queue_file_limit = queue_file_limit;
+        self.queue.set_max_per_user(uploads_per_user);
     }
 
     pub fn is_new_upload_accepted(&self) -> bool {
@@ -693,7 +704,7 @@ mod tests {
     #[tokio::test]
     async fn restriction_tiers_control_slot_grants() {
         let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500);
+        let mut uploads = Uploads::new(net, 0, 500, 1);
         let mut ids = TransferIds::new(&[]);
 
         let dir =
@@ -731,13 +742,13 @@ mod tests {
         );
         assert!(accepted);
 
-        uploads.set_limits(1, 500);
+        uploads.set_limits(1, 500, 1);
         uploads.check_queue(&users);
         assert!(uploads.queue.has_active("human"));
         assert!(!uploads.queue.has_active("leech"));
 
         users.set_restriction("leech".into(), Restriction::Hold);
-        uploads.set_limits(2, 500);
+        uploads.set_limits(2, 500, 1);
         uploads.check_queue(&users);
         assert!(!uploads.queue.has_active("leech"));
 
@@ -749,7 +760,7 @@ mod tests {
     #[tokio::test]
     async fn denied_restriction_rejects_queue_requests() {
         let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 2, 500);
+        let mut uploads = Uploads::new(net, 2, 500, 1);
         let mut ids = TransferIds::new(&[]);
 
         let dir = std::env::temp_dir().join(format!("newkitine-deny-test-{}", std::process::id()));
@@ -782,5 +793,46 @@ mod tests {
         );
         assert!(!accepted);
         assert!(updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_user_cap_limits_concurrent_uploads() {
+        let (net, _events) = spawn_network();
+        let mut uploads = Uploads::new(net, 0, 500, 2);
+        let mut ids = TransferIds::new(&[]);
+
+        let dir =
+            std::env::temp_dir().join(format!("newkitine-peruser-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["a.mp3", "b.mp3", "c.mp3"] {
+            std::fs::write(dir.join(name), b"payload").unwrap();
+        }
+        let shares = shares::scan(
+            &[SharedFolder {
+                virtual_name: "Music".into(),
+                path: dir.clone(),
+                buddy_only: false,
+            }],
+            &dir.with_extension("peruser.cache"),
+            &|_| {},
+        )
+        .expect("scan test shares");
+
+        let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        for name in ["Music\\a.mp3", "Music\\b.mp3", "Music\\c.mp3"] {
+            let (_, accepted) =
+                uploads.handle_queue_upload(&mut ids, "fan", name, Some(&shares), &users);
+            assert!(accepted);
+        }
+
+        uploads.set_limits(999, 500, 2);
+        uploads.check_queue(&users);
+        assert_eq!(uploads.queue.active_count("fan"), 2);
+        assert_eq!(uploads.queue.len(), 1);
+
+        uploads.set_limits(999, 500, 0);
+        uploads.check_queue(&users);
+        assert_eq!(uploads.queue.active_count("fan"), 3);
+        assert_eq!(uploads.queue.len(), 0);
     }
 }

@@ -6,3 +6,5 @@
 /web/node_modules
 /web/dist
 /.env
+web/src/tabs/Settings.svelte
+docker-compose.yml

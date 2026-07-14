@@ -21,6 +21,7 @@ pub(super) type InitId = u64;
 #[derive(Debug)]
 pub(super) enum QueuedItem {
     Peer(PeerMessage),
+    Frame(Vec<u8>),
     FileInit(u32),
 }
 
@@ -321,7 +322,7 @@ impl Indirect {
 impl Actor {
     pub(super) fn send_to_peer(&mut self, username: String, item: QueuedItem) {
         let conn_type = match &item {
-            QueuedItem::Peer(_) => ConnectionType::Peer,
+            QueuedItem::Peer(_) | QueuedItem::Frame(_) => ConnectionType::Peer,
             QueuedItem::FileInit(_) => ConnectionType::File,
         };
         if let Some(init_id) = self.indirect.existing_attempt(&username, conn_type) {
@@ -395,6 +396,7 @@ impl Actor {
         for item in queued {
             controls.push(match item {
                 QueuedItem::Peer(message) => ConnControl::Send(message.to_bytes()),
+                QueuedItem::Frame(bytes) => ConnControl::Send(bytes),
                 QueuedItem::FileInit(token) => {
                     conn.file_token = Some(token);
                     sent_file_init = Some(token);

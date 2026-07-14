@@ -452,7 +452,7 @@ impl ServerResponse {
                 ip_address: r.read_ip()?,
                 port: r.read_u32()?,
                 obfuscation_type: r.read_u32()?,
-                obfuscated_port: r.read_u16_padded()?,
+                obfuscated_port: r.read_u16()?,
             },
             5 => {
                 let user = r.read_string()?;

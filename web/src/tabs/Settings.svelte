@@ -198,6 +198,11 @@
             <input id="set-slots" type="number" min="1" bind:value={draft.upload_slots} />
           </div>
           <div class="form-row">
+            <label for="set-peruser">Uploads per user</label>
+            <input id="set-peruser" type="number" min="0" bind:value={draft.uploads_per_user} />
+            <span class="hint">0 = unlimited</span>
+          </div>
+          <div class="form-row">
             <label for="set-queuelimit">Queue limit per user (files)</label>
             <input id="set-queuelimit" type="number" min="1" bind:value={draft.queue_file_limit} />
           </div>

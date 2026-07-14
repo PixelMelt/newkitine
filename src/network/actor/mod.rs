@@ -134,6 +134,9 @@ impl Actor {
             NetworkCommand::SendPeerMessage { username, message } => {
                 self.send_to_peer(username, QueuedItem::Peer(message));
             }
+            NetworkCommand::SendPeerFrame { username, bytes } => {
+                self.send_to_peer(username, QueuedItem::Frame(bytes));
+            }
             NetworkCommand::RequestFileConnection { username, token } => {
                 self.send_to_peer(username, QueuedItem::FileInit(token));
             }

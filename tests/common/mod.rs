@@ -226,6 +226,7 @@ pub fn client_config(
                 download_dir,
                 upload_slots: newkitine::types::DEFAULT_UPLOAD_SLOTS,
                 queue_file_limit: newkitine::types::DEFAULT_QUEUE_FILE_LIMIT,
+                uploads_per_user: newkitine::types::DEFAULT_UPLOADS_PER_USER,
                 upload_limit_kbps: 0,
                 download_limit_kbps: 0,
             },

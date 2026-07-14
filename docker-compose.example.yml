@@ -1,0 +1,80 @@
+services:
+    gluetun-newkitine:
+        image: ghcr.io/qdm12/gluetun:latest
+        container_name: gluetun-newkitine
+        restart: unless-stopped
+        cap_add:
+            - NET_ADMIN
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ./gluetun-config:/gluetun
+        environment:
+            - PUID=1000
+            - PGID=1000
+            - TZ=America/Los_Angeles
+
+            - VPN_SERVICE_PROVIDER=protonvpn
+            - VPN_TYPE=wireguard
+            - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+            - SERVER_COUNTRIES='United States'
+            - VPN_PORT_FORWARDING=on
+            - PORT_FORWARD_ONLY=on
+            - UPDATER_PERIOD=24h
+            - VPN_PORT_FORWARDING_STATUS_FILE=/gluetun/forwarded_port
+
+            # let newkitine reach the mysql container from inside the vpn namespace
+            - FIREWALL_OUTBOUND_SUBNETS=172.28.0.0/24
+
+            - HTTPPROXY=on
+            - HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE={"auth":"none"}
+        ports:
+            # newkitine web interface
+            - 6081:8080
+        networks:
+            - default
+
+    newkitine-db:
+        image: mysql:8
+        container_name: newkitine-db
+        restart: unless-stopped
+        environment:
+            - MYSQL_DATABASE=newkitine
+            - MYSQL_USER=newkitine
+            - MYSQL_PASSWORD=${MYSQL_PASSWORD:-newkitine}
+            - MYSQL_RANDOM_ROOT_PASSWORD=yes
+        volumes:
+            - ./mysql-data:/var/lib/mysql
+        networks:
+            default:
+                ipv4_address: 172.28.0.3
+
+    newkitine:
+        build: .
+        container_name: newkitine
+        restart: unless-stopped
+        network_mode: 'service:gluetun-newkitine'
+        environment:
+            - NEWKITINE_USERNAME=${SLSK_USERNAME}
+            - NEWKITINE_PASSWORD=${SLSK_PASSWORD}
+            - NEWKITINE_DB_URL=mysql://newkitine:${MYSQL_PASSWORD:-newkitine}@172.28.0.3:3306/newkitine
+            - NEWKITINE_WEB_BIND=0.0.0.0:8080
+            - NEWKITINE_DOWNLOAD_DIR=/data/downloads
+            - NEWKITINE_ALLOW_PUBLIC_BIND=1
+            - GLUETUN_HOST=localhost
+            - GLUETUN_PORT=8000
+        volumes:
+            - ./config:/config
+            - ./data/downloads:/data/downloads
+            - ./data/shared:/data/shared:ro
+        depends_on:
+            newkitine-db:
+                condition: service_started
+            gluetun-newkitine:
+                condition: service_healthy
+
+networks:
+    default:
+        ipam:
+            config:
+                - subnet: 172.28.0.0/24

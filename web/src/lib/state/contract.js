@@ -177,6 +177,7 @@ const publicSettings = shape({
 	shares: list(shape({ virtual_name: str, path: str, buddy_only: bool })),
 	upload_slots: num,
 	queue_file_limit: num,
+	uploads_per_user: num,
 	upload_limit_kbps: num,
 	download_limit_kbps: num,
 	auto_reconnect: bool,
