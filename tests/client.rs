@@ -732,3 +732,83 @@ async fn retry_download_is_resolved_by_the_client_actor() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn queue_requests_during_scan_are_deferred_until_index_ready() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("deferred-shared");
+    let payload: Vec<u8> = (0u32..50_000)
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let album_dir = share_dir.join("Album");
+    std::fs::create_dir_all(&album_dir).unwrap();
+    std::fs::write(album_dir.join("song.mp3"), &payload).unwrap();
+    for folder in 0..4000 {
+        let dir = share_dir.join(format!("filler-{folder}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tune.mp3"), b"tiny").unwrap();
+    }
+
+    let eve_config = client_config(
+        server_addr,
+        "eve",
+        free_port(),
+        temp_dir("deferred-eve-downloads"),
+    );
+    let mut shared_runtime = eve_config.runtime.clone();
+    shared_runtime.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    let (eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config);
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let download_dir = temp_dir("deferred-frank-downloads");
+    let frank_config = client_config(server_addr, "frank", free_port(), download_dir.clone());
+    let (frank, mut frank_events, mut frank_transfers) = Client::spawn(frank_config);
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    eve.apply_config(shared_runtime).await;
+    assert_eq!(
+        frank
+            .download(
+                "eve",
+                "Music\\Album\\song.mp3",
+                payload.len() as u64,
+                FileAttributes::default()
+            )
+            .await,
+        EnqueueResult::Enqueued
+    );
+
+    let file_path = wait_transfer(&mut frank_transfers, |work| match work {
+        TransferWork::Finished { snapshot, .. }
+            if snapshot.direction == TransferDirection::Download =>
+        {
+            Some(
+                snapshot
+                    .file_path
+                    .expect("finished download carries its placed path"),
+            )
+        }
+        TransferWork::Update(snapshot)
+            if snapshot.direction == TransferDirection::Download
+                && snapshot.status == TransferStatus::Failed =>
+        {
+            panic!("download failed: {:?}", snapshot.failure_reason)
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(std::fs::read(&file_path).unwrap(), payload);
+}

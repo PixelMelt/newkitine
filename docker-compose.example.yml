@@ -3,6 +3,16 @@ services:
         image: ghcr.io/qdm12/gluetun:latest
         container_name: gluetun-newkitine
         restart: unless-stopped
+        labels:
+            - autoheal=true
+        healthcheck:
+            # unhealthy when the tunnel is down OR the forwarded port is lost;
+            # autoheal restarts the container on unhealthy
+            test: /gluetun-entrypoint healthcheck && [ -s /gluetun/forwarded_port ]
+            interval: 60s
+            timeout: 10s
+            retries: 5
+            start_period: 120s
         cap_add:
             - NET_ADMIN
         devices:
@@ -72,6 +82,16 @@ services:
                 condition: service_started
             gluetun-newkitine:
                 condition: service_healthy
+
+    autoheal:
+        image: willfarrell/autoheal
+        container_name: newkitine-autoheal
+        restart: unless-stopped
+        environment:
+            - AUTOHEAL_CONTAINER_LABEL=autoheal
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+        network_mode: none
 
 networks:
     default:

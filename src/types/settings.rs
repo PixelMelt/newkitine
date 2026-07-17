@@ -167,6 +167,15 @@ impl Settings {
     }
 
     pub fn runtime_config(&self) -> Result<RuntimeConfig, String> {
+        for share in &self.shares {
+            if share.virtual_name.is_empty() || share.virtual_name.contains(['/', '\\']) {
+                return Err(format!(
+                    "share name {:?} is invalid: remote clients rewrite slashes in \
+                     virtual paths and their download requests would no longer match",
+                    share.virtual_name
+                ));
+            }
+        }
         Ok(RuntimeConfig {
             login: LoginConfig {
                 server: self.resolve_server()?,

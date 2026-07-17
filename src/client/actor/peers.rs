@@ -6,6 +6,20 @@ use crate::types::{
 
 impl ClientActor {
     pub(super) fn handle_peer_message(&mut self, username: String, message: PeerMessage) {
+        if self.sharing.index.is_none()
+            && self.sharing.scanning
+            && matches!(
+                message,
+                PeerMessage::QueueUpload { .. }
+                    | PeerMessage::TransferRequest {
+                        direction: TransferDirection::Download,
+                        ..
+                    }
+            )
+        {
+            self.sharing.pending_requests.push((username, message));
+            return;
+        }
         match message {
             PeerMessage::FileSearchResponse {
                 token,

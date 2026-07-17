@@ -24,6 +24,8 @@ pub(super) enum ScanUpdate {
 
 pub(super) struct Sharing {
     pub(super) index: Option<Arc<SharesIndex>>,
+    pub(super) scanning: bool,
+    pub(super) pending_requests: Vec<(String, PeerMessage)>,
     scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
     browse_jobs: mpsc::Sender<BrowseJob>,
     scan_cache: PathBuf,
@@ -52,6 +54,8 @@ impl Sharing {
         });
         Self {
             index: None,
+            scanning: false,
+            pending_requests: Vec::new(),
             scan_results,
             browse_jobs,
             scan_cache,
@@ -69,6 +73,7 @@ impl ClientActor {
         }
         self.sharing.generation += 1;
         self.sharing.last_progress = 0;
+        self.sharing.scanning = true;
         let generation = self.sharing.generation;
         self.emit(ClientEvent::ShareScanStarted);
         let shared_folders = self.config.shared_folders.clone();
@@ -104,29 +109,46 @@ impl ClientActor {
             );
             return;
         }
-        let index = match result {
-            Ok(index) => index,
+        self.sharing.scanning = false;
+        match result {
+            Ok(index) => {
+                let (folders, files) = index.counts();
+                self.sharing.index = Some(Arc::new(index));
+                if self.session.logged_in {
+                    self.net
+                        .server(ServerRequest::SharedFoldersFiles { folders, files });
+                }
+                self.emit(ClientEvent::SharesScanned { folders, files });
+            }
             Err(error) => {
                 tracing::error!(%error, "share scan failed, keeping previous index");
                 self.emit(ClientEvent::ShareScanFailed {
                     error: error.to_string(),
                 });
-                return;
             }
-        };
-        let (folders, files) = index.counts();
-        self.sharing.index = Some(Arc::new(index));
-        if self.session.logged_in {
-            self.net
-                .server(ServerRequest::SharedFoldersFiles { folders, files });
         }
-        self.emit(ClientEvent::SharesScanned { folders, files });
+        self.replay_pending_requests();
+    }
+
+    fn replay_pending_requests(&mut self) {
+        let pending = std::mem::take(&mut self.sharing.pending_requests);
+        if pending.is_empty() {
+            return;
+        }
+        tracing::info!(
+            count = pending.len(),
+            "replaying upload requests deferred during share scan"
+        );
+        for (username, message) in pending {
+            self.handle_peer_message(username, message);
+        }
     }
 
     pub(super) fn apply_shared_folders(&mut self) {
         if self.config.shared_folders.is_empty() {
             self.sharing.generation += 1;
             self.sharing.index = None;
+            self.sharing.scanning = false;
             if self.session.logged_in {
                 self.net.server(ServerRequest::SharedFoldersFiles {
                     folders: 0,
@@ -137,6 +159,7 @@ impl ClientActor {
                 folders: 0,
                 files: 0,
             });
+            self.replay_pending_requests();
         } else {
             self.start_scan();
         }

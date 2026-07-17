@@ -300,6 +300,26 @@ mod tests {
     }
 
     #[test]
+    fn share_names_with_slashes_are_rejected() {
+        let with_share = |name: &str| Settings {
+            server: "127.0.0.1:2242".into(),
+            shares: vec![SharedFolder {
+                virtual_name: name.into(),
+                path: PathBuf::from("/data/shared"),
+                buddy_only: false,
+            }],
+            ..Default::default()
+        };
+        for name in ["/", "a/b", "a\\b", ""] {
+            assert!(
+                with_share(name).runtime_config().is_err(),
+                "{name:?} must be rejected"
+            );
+        }
+        assert!(with_share("Music").runtime_config().is_ok());
+    }
+
+    #[test]
     fn partial_update_is_rejected() {
         let result: Result<SettingsUpdate, _> =
             serde_json::from_value(serde_json::json!({ "server": "server.slsknet.org:2242" }));
