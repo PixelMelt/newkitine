@@ -25,4 +25,5 @@ pub struct App {
     pub geo: Option<Geo>,
     pub stats: StatsSink,
     pub behavior: Behavior,
+    pub list_mutation: tokio::sync::Mutex<()>,
 }

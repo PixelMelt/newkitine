@@ -1,40 +1,20 @@
-mod bootstrap;
-mod chat;
-mod client_event;
 mod connection;
 mod file;
 mod interests;
-mod network;
-mod observation;
-mod search;
-mod session;
 mod settings;
 mod share;
 mod transfer;
-mod transfer_ops;
 mod user;
 
-pub use bootstrap::ClientBootstrap;
-pub use chat::{ChatMessage, RoomEntry, RoomView, RoomsView};
-pub use client_event::ClientEvent;
 pub use connection::ConnectionType;
-pub use file::{FileAttributeType, FileAttributes, FileInfo, FolderContents, UINT32_LIMIT};
-pub use interests::{InterestsView, Recommendations};
-pub use network::{ConnId, NetworkCommand, NetworkEvent};
-pub use observation::Observation;
-pub use search::{SearchFileView, SearchResponseView, SearchResult, SearchScope, SearchView};
-pub use session::Status;
+pub use file::{FileAttributes, FileInfo, FolderContents, UINT32_LIMIT};
+pub use interests::Recommendations;
 pub use settings::{
-    DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, DEFAULT_UPLOADS_PER_USER,
-    LoginConfig, PublicSettings, RuntimeConfig, Settings, TransferConfig,
+    DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESPONSES, DEFAULT_MAX_SEARCH_RESULTS,
+    DEFAULT_MIN_SEARCH_CHARS, DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS,
+    DEFAULT_UPLOADS_PER_USER, FilterLevel, LoginConfig, RuntimeConfig, SearchConfig,
+    TransferConfig,
 };
-pub use share::{ShareCatalog, ShareCatalogFile, ShareCatalogFolder, SharedFolder};
-pub use transfer::{
-    TransferDirection, TransferId, TransferRejectReason, TransferSnapshot, TransferStatus,
-    TransferView,
-};
-pub use transfer_ops::{AbortResult, EnqueueResult, RetryResult, TransferWork};
-pub use user::{
-    BrowseView, BuddyView, Restriction, SimilarUser, UserData, UserInfoReceived, UserInfoView,
-    UserStats, UserStatus,
-};
+pub use share::SharedFolder;
+pub use transfer::{TransferDirection, TransferId, TransferSnapshot, TransferStatus};
+pub use user::{Restriction, SimilarUser, UserStats, UserStatus};

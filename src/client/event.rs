@@ -1,10 +1,30 @@
-use crate::types::{
-    FolderContents, Observation, Recommendations, SearchResult, SimilarUser, UserInfoReceived,
-    UserStats, UserStatus,
-};
+use crate::types::{FileInfo, FolderContents, Recommendations, SimilarUser, UserStats, UserStatus};
+
+use super::observation::Observation;
+
+#[derive(Debug)]
+pub struct SearchResult {
+    pub token: u32,
+    pub username: String,
+    pub results: Vec<FileInfo>,
+    pub free_upload_slots: bool,
+    pub upload_speed: u32,
+    pub queue_size: u32,
+}
+
+#[derive(Debug)]
+pub struct UserInfoReceived {
+    pub username: String,
+    pub description: String,
+    pub picture: Option<Vec<u8>>,
+    pub total_uploads: u32,
+    pub queue_size: u32,
+    pub slots_available: bool,
+}
 
 #[derive(Debug)]
 pub enum ClientEvent {
+    Connecting,
     LoggedIn {
         username: String,
         banner: String,

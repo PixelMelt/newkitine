@@ -2,104 +2,50 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use super::files;
 use super::registry::{Registry, TransferKey};
 use super::speed::SpeedMeter;
-use crate::network::NetworkHandle;
+use super::{TransferIds, TransferPhase, TransferRejectReason};
+use crate::client::{AbortResult, EnqueueResult, RetryResult, TransferWork};
+use crate::network::ConnId;
+use crate::network::{NetworkCommand, NetworkHandle};
 use crate::protocol::{PeerMessage, ServerRequest};
 use crate::types::{
-    AbortResult, ConnId, EnqueueResult, FileAttributes, NetworkCommand, RetryResult,
-    TransferDirection, TransferId, TransferRejectReason, TransferSnapshot, TransferStatus,
-    TransferWork,
+    FileAttributes, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
 };
 
 const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
-
-pub struct TransferIds {
-    next: u64,
-}
-
-impl TransferIds {
-    pub fn new(seeds: &[TransferSnapshot]) -> Self {
-        Self {
-            next: seeds.iter().map(|seed| seed.id.0).max().unwrap_or(0) + 1,
-        }
-    }
-
-    pub fn mint(&mut self) -> TransferId {
-        let id = TransferId(self.next);
-        self.next += 1;
-        id
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransferPhase {
-    Queued,
-    GettingStatus,
-    Transferring,
-    Finished,
-    Aborted,
-    Failed(String),
-}
-
-impl TransferPhase {
-    pub fn status(&self) -> TransferStatus {
-        match self {
-            Self::Queued | Self::GettingStatus => TransferStatus::Queued,
-            Self::Transferring => TransferStatus::Transferring,
-            Self::Finished => TransferStatus::Finished,
-            Self::Aborted => TransferStatus::Aborted,
-            Self::Failed(_) => TransferStatus::Failed,
-        }
-    }
-
-    pub fn is_active(&self) -> bool {
-        matches!(
-            self,
-            Self::Queued | Self::GettingStatus | Self::Transferring
-        )
-    }
-
-    pub fn from_seed(seed: &TransferSnapshot) -> Self {
-        match seed.status {
-            TransferStatus::Queued => Self::Queued,
-            TransferStatus::Transferring => {
-                unreachable!("bootstrap normalizes transferring transfers before seeding")
-            }
-            TransferStatus::Finished => Self::Finished,
-            TransferStatus::Aborted => Self::Aborted,
-            TransferStatus::Failed => Self::Failed(seed.failure_reason.clone().unwrap_or_default()),
-        }
-    }
-}
+const QUEUE_POSITION_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
-pub struct Transfer {
-    pub id: TransferId,
-    pub username: String,
-    pub virtual_path: String,
-    pub size: u64,
-    pub attributes: FileAttributes,
-    pub phase: TransferPhase,
-    pub bytes_done: u64,
-    pub file_path: Option<String>,
-    pub queue_place: u32,
-    pub speed_bps: u32,
-    pub retry_attempt: bool,
-    pub size_changed: bool,
-    pub activated_at: Option<Instant>,
-    pub(crate) speed: SpeedMeter,
+struct Transfer {
+    id: TransferId,
+    username: String,
+    virtual_path: String,
+    size: u64,
+    attributes: FileAttributes,
+    phase: TransferPhase,
+    bytes_done: u64,
+    file_path: Option<String>,
+    queue_place: u32,
+    speed_bps: u32,
+    retry_attempt: bool,
+    legacy_attempt: bool,
+    size_changed: bool,
+    incomplete_path: Option<PathBuf>,
+    activated_at: Option<Instant>,
+    speed: SpeedMeter,
 }
 
 impl Transfer {
-    pub fn key(&self) -> TransferKey {
+    fn key(&self) -> TransferKey {
         (self.username.clone(), self.virtual_path.clone())
     }
 
-    pub fn basename(&self) -> String {
+    fn basename(&self) -> String {
         self.virtual_path
             .rsplit('\\')
             .next()
@@ -132,26 +78,48 @@ impl Transfer {
     }
 }
 
-pub struct Downloads {
+pub(super) type PlacementDone = (TransferKey, std::io::Result<PathBuf>);
+
+pub(in crate::client) struct Downloads {
     net: NetworkHandle,
     download_dir: PathBuf,
     incomplete_dir: PathBuf,
+    username_subfolders: bool,
+    placements: mpsc::UnboundedSender<PlacementDone>,
     transfers: Registry<Transfer>,
+    pending_queue_requests: Vec<TransferKey>,
+    queue_positions_at: Instant,
 }
 
 impl Downloads {
-    pub fn new(net: NetworkHandle, download_dir: PathBuf, incomplete_dir: PathBuf) -> Self {
+    pub fn new(
+        net: NetworkHandle,
+        download_dir: PathBuf,
+        incomplete_dir: PathBuf,
+        username_subfolders: bool,
+        placements: mpsc::UnboundedSender<PlacementDone>,
+    ) -> Self {
         Self {
             net,
             download_dir,
             incomplete_dir,
+            username_subfolders,
+            placements,
             transfers: Registry::default(),
+            pending_queue_requests: Vec::new(),
+            queue_positions_at: Instant::now(),
         }
     }
 
-    pub fn set_dirs(&mut self, download_dir: PathBuf, incomplete_dir: PathBuf) {
+    pub fn set_dirs(
+        &mut self,
+        download_dir: PathBuf,
+        incomplete_dir: PathBuf,
+        username_subfolders: bool,
+    ) {
         self.download_dir = download_dir;
         self.incomplete_dir = incomplete_dir;
+        self.username_subfolders = username_subfolders;
     }
 
     pub fn seed(&mut self, seed: TransferSnapshot) {
@@ -172,7 +140,9 @@ impl Downloads {
                 queue_place: 0,
                 speed_bps: 0,
                 retry_attempt: false,
+                legacy_attempt: false,
                 size_changed: false,
+                incomplete_path: None,
                 activated_at: None,
                 speed: SpeedMeter::default(),
             },
@@ -186,6 +156,7 @@ impl Downloads {
         virtual_path: String,
         size: u64,
         attributes: FileAttributes,
+        defer_requests: bool,
     ) -> (EnqueueResult, Vec<TransferWork>) {
         let key = (username.clone(), virtual_path.clone());
         let id = match self.transfers.get(&key) {
@@ -208,22 +179,18 @@ impl Downloads {
             queue_place: 0,
             speed_bps: 0,
             retry_attempt: false,
+            legacy_attempt: false,
             size_changed: false,
+            incomplete_path: None,
             activated_at: None,
             speed: SpeedMeter::default(),
         };
         let queued = TransferWork::Update(transfer.snapshot());
-        self.transfers.insert(id, key, transfer);
+        self.transfers.insert(id, key.clone(), transfer);
         self.net.server(ServerRequest::WatchUser {
             user: username.clone(),
         });
-        self.net.peer(
-            username,
-            PeerMessage::QueueUpload {
-                file: virtual_path,
-                legacy_client: false,
-            },
-        );
+        self.send_queue_request(key, defer_requests);
         (EnqueueResult::Enqueued, vec![queued])
     }
 
@@ -231,6 +198,7 @@ impl Downloads {
         &mut self,
         ids: &mut TransferIds,
         id: TransferId,
+        defer_requests: bool,
     ) -> (RetryResult, Vec<TransferWork>) {
         let Some(key) = self.transfers.key_of(id).cloned() else {
             return (RetryResult::NotFound, Vec::new());
@@ -245,7 +213,14 @@ impl Downloads {
             transfer.size,
             transfer.attributes.clone(),
         );
-        let (result, work) = self.enqueue(ids, username, virtual_path, size, attributes);
+        let (result, work) = self.enqueue(
+            ids,
+            username,
+            virtual_path,
+            size,
+            attributes,
+            defer_requests,
+        );
         match result {
             EnqueueResult::Enqueued => (RetryResult::Requeued, work),
             EnqueueResult::AlreadyActive => {
@@ -302,29 +277,81 @@ impl Downloads {
         removed
     }
 
-    pub fn request_queued(&self) {
+    pub fn request_queued(&mut self, defer_requests: bool) {
         let mut watched = HashSet::new();
-        for transfer in self
+        let keys: Vec<TransferKey> = self
             .transfers
             .values()
             .filter(|transfer| transfer.phase == TransferPhase::Queued)
-        {
-            if watched.insert(transfer.username.clone()) {
+            .map(Transfer::key)
+            .collect();
+        for key in keys {
+            if watched.insert(key.0.clone()) {
                 self.net.server(ServerRequest::WatchUser {
-                    user: transfer.username.clone(),
+                    user: key.0.clone(),
                 });
             }
+            self.send_queue_request(key, defer_requests);
+        }
+    }
+
+    fn send_queue_request(&mut self, key: TransferKey, defer_requests: bool) {
+        if defer_requests {
+            if !self.pending_queue_requests.contains(&key) {
+                self.pending_queue_requests.push(key);
+            }
+            return;
+        }
+        let transfer = self.transfers.get(&key).unwrap();
+        let legacy_client = transfer.legacy_attempt;
+        self.net.peer(
+            key.0,
+            PeerMessage::QueueUpload {
+                file: key.1,
+                legacy_client,
+            },
+        );
+    }
+
+    pub fn flush_queued_requests(&mut self) {
+        for key in std::mem::take(&mut self.pending_queue_requests) {
+            let Some(transfer) = self.transfers.get(&key) else {
+                continue;
+            };
+            if transfer.phase != TransferPhase::Queued {
+                continue;
+            }
             self.net.peer(
-                transfer.username.clone(),
+                key.0,
                 PeerMessage::QueueUpload {
-                    file: transfer.virtual_path.clone(),
-                    legacy_client: false,
+                    file: key.1,
+                    legacy_client: transfer.legacy_attempt,
                 },
             );
         }
     }
 
-    pub fn retry_offline(&mut self, username: &str) {
+    pub fn request_queue_positions(&mut self) {
+        if self.queue_positions_at.elapsed() < QUEUE_POSITION_INTERVAL {
+            return;
+        }
+        self.queue_positions_at = Instant::now();
+        for transfer in self
+            .transfers
+            .values()
+            .filter(|transfer| transfer.phase == TransferPhase::Queued)
+        {
+            self.net.peer(
+                transfer.username.clone(),
+                PeerMessage::PlaceInQueueRequest {
+                    file: transfer.virtual_path.clone(),
+                    legacy_client: transfer.legacy_attempt,
+                },
+            );
+        }
+    }
+
+    pub fn retry_offline(&mut self, username: &str, defer_requests: bool) {
         let keys: Vec<TransferKey> = self
             .transfers
             .values()
@@ -341,13 +368,7 @@ impl Downloads {
             let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.phase = TransferPhase::Queued;
             transfer.retry_attempt = false;
-            self.net.peer(
-                key.0,
-                PeerMessage::QueueUpload {
-                    file: key.1,
-                    legacy_client: false,
-                },
-            );
+            self.send_queue_request(key, defer_requests);
         }
     }
 
@@ -446,6 +467,7 @@ impl Downloads {
         let incomplete_dir = self.incomplete_dir.clone();
         let transfer = self.transfers.get_mut(&key).unwrap();
         transfer.activated_at = None;
+        transfer.incomplete_path = Some(incomplete_path.clone());
 
         let size_changed = transfer.size_changed;
         match files::open_incomplete(&incomplete_dir, &incomplete_path, size_changed) {
@@ -502,6 +524,18 @@ impl Downloads {
         vec![TransferWork::Progress(transfer.snapshot())]
     }
 
+    pub fn handle_transfer_error(
+        &mut self,
+        username: &str,
+        token: u32,
+        error: &str,
+    ) -> Vec<TransferWork> {
+        let Some(key) = self.transfers.key_by_token(username, token).cloned() else {
+            return Vec::new();
+        };
+        self.fail(&key, error.to_owned())
+    }
+
     pub fn handle_file_connection_closed(
         &mut self,
         username: &str,
@@ -530,17 +564,40 @@ impl Downloads {
         username: &str,
         file: &str,
         reason: &str,
+        defer_requests: bool,
     ) -> Vec<TransferWork> {
         let key = (username.to_owned(), file.to_owned());
-        match self.transfers.get(&key) {
-            Some(transfer) if transfer.phase != TransferPhase::Finished => {
-                self.fail(&key, reason.to_owned())
-            }
-            _ => Vec::new(),
+        let Some(transfer) = self.transfers.get(&key) else {
+            return Vec::new();
+        };
+        if transfer.phase == TransferPhase::Finished {
+            return Vec::new();
         }
+        if reason == TransferRejectReason::FILE_NOT_SHARED
+            && transfer.phase == TransferPhase::Queued
+            && !transfer.legacy_attempt
+        {
+            info!(
+                username,
+                virtual_path = file,
+                "file not shared, retrying with latin-1 encoded path"
+            );
+            self.transfers.detach(&key);
+            let transfer = self.transfers.get_mut(&key).unwrap();
+            transfer.legacy_attempt = true;
+            transfer.activated_at = None;
+            self.send_queue_request(key, defer_requests);
+            return Vec::new();
+        }
+        self.fail(&key, reason.to_owned())
     }
 
-    pub fn handle_upload_failed(&mut self, username: &str, file: &str) -> Vec<TransferWork> {
+    pub fn handle_upload_failed(
+        &mut self,
+        username: &str,
+        file: &str,
+        defer_requests: bool,
+    ) -> Vec<TransferWork> {
         let key = (username.to_owned(), file.to_owned());
         let Some(transfer) = self.transfers.get(&key) else {
             return Vec::new();
@@ -555,17 +612,10 @@ impl Downloads {
             self.transfers.detach(&key);
             let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.retry_attempt = true;
+            transfer.legacy_attempt = true;
             transfer.phase = TransferPhase::Queued;
             transfer.activated_at = None;
-            let username = transfer.username.clone();
-            let file = transfer.virtual_path.clone();
-            self.net.peer(
-                username,
-                PeerMessage::QueueUpload {
-                    file,
-                    legacy_client: false,
-                },
-            );
+            self.send_queue_request(key, defer_requests);
             return Vec::new();
         }
         self.fail(&key, "upload failed".into())
@@ -635,21 +685,68 @@ impl Downloads {
     }
 
     fn finish(&mut self, key: &TransferKey) -> Vec<TransferWork> {
-        let transfer = self.transfers.get(key).unwrap();
+        let transfer = self.transfers.get_mut(key).unwrap();
+        transfer.phase = TransferPhase::Placing;
+        transfer.bytes_done = transfer.size;
+        transfer.speed_bps = 0;
+        let update = TransferWork::Update(transfer.snapshot());
         let username = transfer.username.clone();
-        let virtual_path = transfer.virtual_path.clone();
         let basename = transfer.basename();
-        let incomplete_path =
-            files::incomplete_file_path(&self.incomplete_dir, &username, &virtual_path);
+        let incomplete_path = transfer
+            .incomplete_path
+            .clone()
+            .expect("finishing a download that never opened its incomplete file");
+        let download_dir = if self.username_subfolders {
+            self.download_dir.join(files::clean_file_name(&username))
+        } else {
+            self.download_dir.clone()
+        };
+        let placements = self.placements.clone();
+        let key = key.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            files::place_download(&download_dir, &incomplete_path, &basename)
+        });
+        tokio::spawn(async move {
+            let result = match task.await {
+                Ok(result) => result,
+                Err(error) => Err(std::io::Error::other(format!(
+                    "placement task panicked: {error}"
+                ))),
+            };
+            let _ = placements.send((key, result));
+        });
+        vec![update]
+    }
 
-        match files::place_download(&self.download_dir, &incomplete_path, &basename) {
+    pub fn handle_placement_done(
+        &mut self,
+        key: &TransferKey,
+        result: std::io::Result<PathBuf>,
+    ) -> Vec<TransferWork> {
+        let Some(transfer) = self.transfers.get(key) else {
+            return Vec::new();
+        };
+        if transfer.phase != TransferPhase::Placing {
+            debug!(
+                username = key.0,
+                virtual_path = key.1,
+                phase = ?transfer.phase,
+                "placement completed for a transfer that moved on"
+            );
+            return Vec::new();
+        }
+        match result {
             Ok(destination) => {
                 self.transfers.detach_token(key);
                 let transfer = self.transfers.get_mut(key).unwrap();
                 transfer.phase = TransferPhase::Finished;
-                transfer.bytes_done = transfer.size;
                 transfer.file_path = Some(destination.display().to_string());
-                info!(username, virtual_path, ?destination, "download finished");
+                info!(
+                    username = key.0,
+                    virtual_path = key.1,
+                    ?destination,
+                    "download finished"
+                );
                 vec![TransferWork::Finished {
                     snapshot: transfer.snapshot(),
                     avg_speed_bps: None,
@@ -673,5 +770,119 @@ impl Downloads {
         let transfer = self.transfers.get_mut(key).unwrap();
         transfer.phase = TransferPhase::Failed(reason);
         vec![TransferWork::Update(transfer.snapshot())]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::spawn as spawn_network;
+
+    fn queued_download(downloads: &mut Downloads, ids: &mut TransferIds) -> TransferKey {
+        let (result, _) = downloads.enqueue(
+            ids,
+            "uploader".into(),
+            "Music\\song.mp3".into(),
+            100,
+            FileAttributes::default(),
+            false,
+        );
+        assert_eq!(result, EnqueueResult::Enqueued);
+        ("uploader".into(), "Music\\song.mp3".into())
+    }
+
+    #[tokio::test]
+    async fn late_denial_does_not_revive_aborted_transfer() {
+        let (net, _events) = spawn_network();
+        let mut downloads = Downloads::new(
+            net,
+            "/tmp".into(),
+            "/tmp".into(),
+            false,
+            mpsc::unbounded_channel().0,
+        );
+        let mut ids = TransferIds::new(&[]);
+        let key = queued_download(&mut downloads, &mut ids);
+        let id = downloads.transfers.get(&key).unwrap().id;
+        let (aborted, _) = downloads.abort(id);
+        assert_eq!(aborted, AbortResult::Aborted);
+        let updates = downloads.handle_upload_denied(
+            "uploader",
+            "Music\\song.mp3",
+            TransferRejectReason::FILE_NOT_SHARED,
+            false,
+        );
+        assert!(updates.is_empty());
+        let transfer = downloads.transfers.get(&key).unwrap();
+        assert_eq!(transfer.phase, TransferPhase::Aborted);
+        assert!(!transfer.legacy_attempt);
+    }
+
+    #[tokio::test]
+    async fn legacy_retry_defers_while_awaiting_share_index() {
+        let (net, _events) = spawn_network();
+        let mut downloads = Downloads::new(
+            net,
+            "/tmp".into(),
+            "/tmp".into(),
+            false,
+            mpsc::unbounded_channel().0,
+        );
+        let mut ids = TransferIds::new(&[]);
+        let key = queued_download(&mut downloads, &mut ids);
+        let updates = downloads.handle_upload_denied(
+            "uploader",
+            "Music\\song.mp3",
+            TransferRejectReason::FILE_NOT_SHARED,
+            true,
+        );
+        assert!(updates.is_empty());
+        assert!(downloads.pending_queue_requests.contains(&key));
+        let transfer = downloads.transfers.get(&key).unwrap();
+        assert!(transfer.legacy_attempt);
+        assert_eq!(transfer.phase, TransferPhase::Queued);
+    }
+
+    #[tokio::test]
+    async fn flush_skips_transfers_no_longer_queued() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut downloads = Downloads::new(
+            net,
+            "/tmp".into(),
+            "/tmp".into(),
+            false,
+            mpsc::unbounded_channel().0,
+        );
+        let mut ids = TransferIds::new(&[]);
+        let (result, _) = downloads.enqueue(
+            &mut ids,
+            "uploader".into(),
+            "Music\\song.mp3".into(),
+            100,
+            FileAttributes::default(),
+            true,
+        );
+        assert_eq!(result, EnqueueResult::Enqueued);
+        let key = ("uploader".to_owned(), "Music\\song.mp3".to_owned());
+        assert!(downloads.pending_queue_requests.contains(&key));
+        let id = downloads.transfers.get(&key).unwrap().id;
+        let (aborted, _) = downloads.abort(id);
+        assert_eq!(aborted, AbortResult::Aborted);
+        downloads.flush_queued_requests();
+        assert!(downloads.pending_queue_requests.is_empty());
+        let transfer = downloads.transfers.get(&key).unwrap();
+        assert_eq!(transfer.phase, TransferPhase::Aborted);
+        while let Ok(command) = commands.try_recv() {
+            assert!(
+                !matches!(
+                    command,
+                    NetworkCommand::SendPeerMessage {
+                        message: PeerMessage::QueueUpload { .. },
+                        ..
+                    }
+                ),
+                "flush must not send a queue request for a non-queued transfer"
+            );
+        }
     }
 }

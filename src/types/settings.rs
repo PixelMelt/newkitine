@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,10 @@ pub const DEFAULT_SERVER: &str = "server.slsknet.org:2242";
 pub const DEFAULT_UPLOAD_SLOTS: usize = 2;
 pub const DEFAULT_QUEUE_FILE_LIMIT: usize = 500;
 pub const DEFAULT_UPLOADS_PER_USER: usize = 1;
+pub const DEFAULT_MAX_SEARCH_RESULTS: usize = 300;
+pub const DEFAULT_MIN_SEARCH_CHARS: usize = 3;
+pub const DEFAULT_MAX_SEARCH_RESPONSES: usize = 500;
+pub const DEFAULT_BANNED_MESSAGE: &str = "Banned";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeConfig {
@@ -16,7 +20,9 @@ pub struct RuntimeConfig {
     pub description: String,
     pub auto_reconnect: bool,
     pub transfers: TransferConfig,
+    pub search: SearchConfig,
     pub shared_folders: Vec<SharedFolder>,
+    pub share_filters: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,165 +42,32 @@ pub struct TransferConfig {
     pub uploads_per_user: usize,
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
+    pub queue_size_limit_mb: u64,
+    pub banned_message: String,
+    pub download_username_subfolders: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub server: String,
-    pub username: String,
-    pub password: String,
-    pub listen_port: u16,
-    pub description: String,
-    pub download_dir: PathBuf,
-    pub incomplete_dir: Option<PathBuf>,
-    pub shares: Vec<SharedFolder>,
-    pub upload_slots: usize,
-    pub queue_file_limit: usize,
-    pub uploads_per_user: usize,
-    pub upload_limit_kbps: u32,
-    pub download_limit_kbps: u32,
-    pub auto_reconnect: bool,
-    pub theme: String,
-    pub filter_level: String,
-    pub denied_message: String,
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchConfig {
+    pub max_search_results: usize,
+    pub min_search_chars: usize,
+    pub respond_to_searches: bool,
 }
 
-impl Default for Settings {
+impl Default for SearchConfig {
     fn default() -> Self {
         Self {
-            server: DEFAULT_SERVER.into(),
-            username: String::new(),
-            password: String::new(),
-            listen_port: 2234,
-            description: String::new(),
-            download_dir: PathBuf::from("downloads"),
-            incomplete_dir: None,
-            shares: Vec::new(),
-            upload_slots: DEFAULT_UPLOAD_SLOTS,
-            queue_file_limit: DEFAULT_QUEUE_FILE_LIMIT,
-            uploads_per_user: DEFAULT_UPLOADS_PER_USER,
-            upload_limit_kbps: 0,
-            download_limit_kbps: 0,
-            auto_reconnect: true,
-            theme: "dark".into(),
-            filter_level: "open".into(),
-            denied_message: "You need to share files to download from me.".into(),
+            max_search_results: DEFAULT_MAX_SEARCH_RESULTS,
+            min_search_chars: DEFAULT_MIN_SEARCH_CHARS,
+            respond_to_searches: true,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PublicSettings {
-    pub server: String,
-    pub username: String,
-    pub password_set: bool,
-    pub listen_port: u16,
-    pub description: String,
-    pub download_dir: PathBuf,
-    pub incomplete_dir: Option<PathBuf>,
-    pub shares: Vec<SharedFolder>,
-    pub upload_slots: usize,
-    pub queue_file_limit: usize,
-    pub uploads_per_user: usize,
-    pub upload_limit_kbps: u32,
-    pub download_limit_kbps: u32,
-    pub auto_reconnect: bool,
-    pub theme: String,
-    pub filter_level: String,
-    pub denied_message: String,
-}
-
-impl From<&Settings> for PublicSettings {
-    fn from(settings: &Settings) -> Self {
-        Self {
-            server: settings.server.clone(),
-            username: settings.username.clone(),
-            password_set: !settings.password.is_empty(),
-            listen_port: settings.listen_port,
-            description: settings.description.clone(),
-            download_dir: settings.download_dir.clone(),
-            incomplete_dir: settings.incomplete_dir.clone(),
-            shares: settings.shares.clone(),
-            upload_slots: settings.upload_slots,
-            queue_file_limit: settings.queue_file_limit,
-            uploads_per_user: settings.uploads_per_user,
-            upload_limit_kbps: settings.upload_limit_kbps,
-            download_limit_kbps: settings.download_limit_kbps,
-            auto_reconnect: settings.auto_reconnect,
-            theme: settings.theme.clone(),
-            filter_level: settings.filter_level.clone(),
-            denied_message: settings.denied_message.clone(),
-        }
-    }
-}
-
-impl Settings {
-    pub fn locked_differs(&self, other: &Settings, key: &'static str) -> bool {
-        match key {
-            "server" => self.server != other.server,
-            "username" => self.username != other.username,
-            "password" => self.password != other.password,
-            "listen_port" => self.listen_port != other.listen_port,
-            "download_dir" => self.download_dir != other.download_dir,
-            key => unreachable!("unknown locked settings key {key}"),
-        }
-    }
-
-    pub fn copy_locked_from(&mut self, source: &Settings, key: &'static str) {
-        match key {
-            "server" => self.server = source.server.clone(),
-            "username" => self.username = source.username.clone(),
-            "password" => self.password = source.password.clone(),
-            "listen_port" => self.listen_port = source.listen_port,
-            "download_dir" => self.download_dir = source.download_dir.clone(),
-            key => unreachable!("unknown locked settings key {key}"),
-        }
-    }
-
-    pub fn resolve_server(&self) -> Result<std::net::SocketAddr, String> {
-        self.server
-            .to_socket_addrs()
-            .map_err(|error| format!("cannot resolve server address {}: {error}", self.server))?
-            .next()
-            .ok_or_else(|| format!("cannot resolve server address {}", self.server))
-    }
-
-    pub fn incomplete_dir(&self) -> PathBuf {
-        self.incomplete_dir
-            .clone()
-            .unwrap_or_else(|| self.download_dir.join("incomplete"))
-    }
-
-    pub fn runtime_config(&self) -> Result<RuntimeConfig, String> {
-        for share in &self.shares {
-            if share.virtual_name.is_empty() || share.virtual_name.contains(['/', '\\']) {
-                return Err(format!(
-                    "share name {:?} is invalid: remote clients rewrite slashes in \
-                     virtual paths and their download requests would no longer match",
-                    share.virtual_name
-                ));
-            }
-        }
-        Ok(RuntimeConfig {
-            login: LoginConfig {
-                server: self.resolve_server()?,
-                username: self.username.clone(),
-                password: self.password.clone(),
-                listen_port: self.listen_port,
-            },
-            description: self.description.clone(),
-            auto_reconnect: self.auto_reconnect,
-            transfers: TransferConfig {
-                download_dir: self.download_dir.clone(),
-                incomplete_dir: self.incomplete_dir(),
-                upload_slots: self.upload_slots,
-                queue_file_limit: self.queue_file_limit,
-                uploads_per_user: self.uploads_per_user,
-                upload_limit_kbps: self.upload_limit_kbps,
-                download_limit_kbps: self.download_limit_kbps,
-            },
-            shared_folders: self.shares.clone(),
-        })
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterLevel {
+    Open,
+    Guarded,
+    Strict,
 }

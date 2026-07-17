@@ -1,6 +1,7 @@
 use super::ClientActor;
+use crate::client::ClientEvent;
 use crate::protocol::{ServerRequest, ServerResponse};
-use crate::types::{ClientEvent, UserStatus};
+use crate::types::UserStatus;
 
 impl ClientActor {
     pub(super) fn handle_server_message(&mut self, message: ServerResponse) {
@@ -12,7 +13,8 @@ impl ClientActor {
             } => {
                 self.users.handle_user_status(&user, status, privileged);
                 if status == UserStatus::Online.as_u32() {
-                    self.downloads.retry_offline(&user);
+                    let defer_requests = self.awaiting_share_index();
+                    self.downloads.retry_offline(&user, defer_requests);
                 }
                 self.emit(ClientEvent::UserStatus {
                     username: user,

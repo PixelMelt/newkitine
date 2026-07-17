@@ -5,20 +5,38 @@ export const rooms = writable({ available: [], joined: {} });
 export const privateChats = writable({});
 export const chatPartners = writable([]);
 
+function messageKey(m) {
+	return m.id != null ? `#${m.id}` : `${m.timestamp}\u0000${m.sender}\u0000${m.message}`;
+}
+
+function mergeHistory(history, live) {
+	const seen = new Set(history.map(messageKey));
+	const raced = live.filter((m) => m.status || !seen.has(messageKey(m)));
+	return [...history, ...raced];
+}
+
 async function loadRoomHistory(room) {
 	const data = await apiGet(`/rooms/${encodeURIComponent(room)}/messages?limit=100`);
 	rooms.update((r) => {
-		if (r.joined[room]) r.joined[room].messages = data.messages;
+		if (r.joined[room]) {
+			r.joined[room].messages = mergeHistory(data.messages, r.joined[room].messages);
+		}
 		return r;
 	});
 }
 
 export async function loadChatHistory(username) {
 	const data = await apiGet(`/chats/${encodeURIComponent(username)}?limit=200`);
-	privateChats.update((chats) => ({ ...chats, [username]: data.messages }));
+	privateChats.update((chats) => ({
+		...chats,
+		[username]: mergeHistory(data.messages, chats[username] ?? []),
+	}));
 }
 
 export function applySnapshot(msg) {
+	for (const room of Object.keys(msg.rooms.joined)) {
+		msg.rooms.joined[room].messages = [];
+	}
 	rooms.set(msg.rooms);
 	chatPartners.set(msg.chat_partners);
 	for (const room of Object.keys(msg.rooms.joined)) {

@@ -9,10 +9,9 @@ use crate::types::{Restriction, UserStats, UserStatus};
 pub struct WatchedUser {
     pub status: Option<UserStatus>,
     pub stats: Option<UserStats>,
-    pub privileged: bool,
 }
 
-pub struct Users {
+pub(super) struct Users {
     pub buddies: HashSet<String>,
     pub banned: HashSet<String>,
     pub ignored: HashSet<String>,
@@ -86,10 +85,6 @@ impl Users {
 
     pub fn is_privileged(&self, username: &str) -> bool {
         self.privileged.contains(username)
-            || self
-                .watched
-                .get(username)
-                .is_some_and(|user| user.privileged)
     }
 
     pub fn watch_buddies(&self, net: &NetworkHandle) {
@@ -137,10 +132,11 @@ impl Users {
     pub fn handle_user_status(&mut self, username: &str, status: u32, privileged: bool) {
         if let Some(user) = self.watched.get_mut(username) {
             user.status = UserStatus::from_u32(status);
-            user.privileged = privileged;
         }
         if privileged {
             self.privileged.insert(username.to_owned());
+        } else {
+            self.privileged.remove(username);
         }
     }
 
@@ -177,5 +173,18 @@ mod tests {
         assert!(!users.is_ip_banned(Ipv4Addr::new(1, 2, 3, 5)));
         assert!(!users.is_ip_banned(Ipv4Addr::new(10, 1, 0, 0)));
         assert!(!users.is_ip_banned(Ipv4Addr::new(192, 168, 1, 1)));
+    }
+
+    #[test]
+    fn privilege_revokes_on_false_status() {
+        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        users.handle_user_status("peer", 2, true);
+        assert!(users.is_privileged("peer"));
+        users.handle_user_status("peer", 2, false);
+        assert!(!users.is_privileged("peer"));
+        users.handle_privileged_users(vec!["peer".into()]);
+        assert!(users.is_privileged("peer"));
+        users.handle_privileged_users(Vec::new());
+        assert!(!users.is_privileged("peer"));
     }
 }

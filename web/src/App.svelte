@@ -3,7 +3,7 @@
   import {
     connectWebSocket, status, notices, speedTotals,
   } from './lib/stores.js';
-  import { formatSize } from './lib/api.js';
+  import { formatSize } from './lib/format.js';
   import { activeTab } from './lib/ui.js';
   import { post } from './lib/api.js';
   import ContextMenu from './lib/ContextMenu.svelte';

@@ -1,6 +1,7 @@
 <script>
   import { downloads, isCleared, notice } from '../lib/stores.js';
-  import { post, formatSize, formatDuration, formatQuality, baseName } from '../lib/api.js';
+  import { post } from '../lib/api.js';
+  import { formatSize, formatDuration, formatQuality, baseName } from '../lib/format.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import { sortRows } from '../lib/sort.js';

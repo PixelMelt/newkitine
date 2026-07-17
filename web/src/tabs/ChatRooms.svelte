@@ -1,7 +1,8 @@
 <script>
   import { rooms, status } from '../lib/stores.js';
   import { activeTab } from '../lib/ui.js';
-  import { post, formatTime } from '../lib/api.js';
+  import { post } from '../lib/api.js';
+  import { formatTime } from '../lib/format.js';
   import { autoscroll } from '../lib/autoscroll.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';

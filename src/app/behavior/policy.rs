@@ -1,4 +1,4 @@
-use crate::types::Restriction;
+use crate::types::{FilterLevel, Restriction};
 
 pub const SEARCH_FLOOD: usize = 30;
 pub const QUEUE_FLOOD: usize = 100;
@@ -42,23 +42,22 @@ impl Verdict {
     }
 }
 
-pub fn restriction_for(level: &str, verdict: Verdict, denied_message: &str) -> Restriction {
+pub fn restriction_for(level: FilterLevel, verdict: Verdict, denied_message: &str) -> Restriction {
     match level {
-        "open" => Restriction::None,
-        "guarded" => match verdict {
+        FilterLevel::Open => Restriction::None,
+        FilterLevel::Guarded => match verdict {
             Verdict::Leech => Restriction::Denied {
                 reason: denied_message.to_owned(),
             },
             Verdict::Suspect => Restriction::Deprioritized,
             Verdict::Clean | Verdict::Verified => Restriction::None,
         },
-        "strict" => match verdict {
+        FilterLevel::Strict => match verdict {
             Verdict::Leech | Verdict::Suspect => Restriction::Denied {
                 reason: denied_message.to_owned(),
             },
             Verdict::Clean | Verdict::Verified => Restriction::None,
         },
-        other => panic!("unknown filter level {other}"),
     }
 }
 
@@ -81,23 +80,23 @@ mod tests {
         assert!(Verdict::Verified < Verdict::Suspect);
         assert!(Verdict::Suspect < Verdict::Leech);
         assert_eq!(
-            restriction_for("open", Verdict::Leech, "m"),
+            restriction_for(FilterLevel::Open, Verdict::Leech, "m"),
             Restriction::None
         );
         assert_eq!(
-            restriction_for("guarded", Verdict::Suspect, "m"),
+            restriction_for(FilterLevel::Guarded, Verdict::Suspect, "m"),
             Restriction::Deprioritized
         );
         assert_eq!(
-            restriction_for("guarded", Verdict::Leech, "m"),
+            restriction_for(FilterLevel::Guarded, Verdict::Leech, "m"),
             Restriction::Denied { reason: "m".into() }
         );
         assert_eq!(
-            restriction_for("strict", Verdict::Suspect, "m"),
+            restriction_for(FilterLevel::Strict, Verdict::Suspect, "m"),
             Restriction::Denied { reason: "m".into() }
         );
         assert_eq!(
-            restriction_for("strict", Verdict::Verified, "m"),
+            restriction_for(FilterLevel::Strict, Verdict::Verified, "m"),
             Restriction::None
         );
     }

@@ -2,14 +2,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::{Query, State};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
 use serde::Deserialize;
 use sqlx::MySqlPool;
 use sqlx::Row;
 
-use crate::types::Observation;
+use crate::client::Observation;
 
+use super::api;
 use super::db;
 use super::geo::Geo;
 use super::state::{App, now};
@@ -92,53 +95,11 @@ pub async fn flush_loop(app: Arc<App>) {
         }
         let timestamp = now();
         for (username, activity) in drained {
-            flush_activity(&app.db, &username, &activity, timestamp)
+            super::peer_history::flush_activity(&app.db, &username, &activity, timestamp)
                 .await
                 .unwrap_or_else(|error| db::fatal(error));
         }
     }
-}
-
-async fn flush_activity(
-    pool: &MySqlPool,
-    username: &str,
-    activity: &PeerActivity,
-    timestamp: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO users_seen
-            (username, first_seen, last_seen, searches, searches_matched, queue_requests,
-             queue_rejected, browses, info_requests, folder_requests, connections, last_ip, country)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-            last_seen = VALUES(last_seen),
-            searches = searches + VALUES(searches),
-            searches_matched = searches_matched + VALUES(searches_matched),
-            queue_requests = queue_requests + VALUES(queue_requests),
-            queue_rejected = queue_rejected + VALUES(queue_rejected),
-            browses = browses + VALUES(browses),
-            info_requests = info_requests + VALUES(info_requests),
-            folder_requests = folder_requests + VALUES(folder_requests),
-            connections = connections + VALUES(connections),
-            last_ip = COALESCE(VALUES(last_ip), last_ip),
-            country = COALESCE(VALUES(country), country)",
-    )
-    .bind(username)
-    .bind(timestamp)
-    .bind(timestamp)
-    .bind(activity.searches)
-    .bind(activity.searches_matched)
-    .bind(activity.queue_requests)
-    .bind(activity.queue_rejected)
-    .bind(activity.browses)
-    .bind(activity.info_requests)
-    .bind(activity.folder_requests)
-    .bind(activity.connections)
-    .bind(&activity.last_ip)
-    .bind(&activity.country)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 async fn transfer_stats(pool: &MySqlPool) -> serde_json::Value {
@@ -321,12 +282,19 @@ async fn verdict_users(pool: &MySqlPool) -> serde_json::Value {
     serde_json::json!({ "users": users })
 }
 
-pub async fn stats_transfers(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+pub(super) fn router() -> Router<Arc<App>> {
+    Router::new()
+        .route("/api/stats/transfers", get(stats_transfers))
+        .route("/api/stats/peers", get(stats_peers))
+        .route("/api/stats/verdicts", get(stats_verdicts))
+}
+
+async fn stats_transfers(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(transfer_stats(&app.db).await)
 }
 
 #[derive(Deserialize)]
-pub struct PeersQuery {
+struct PeersQuery {
     #[serde(default = "default_peers_limit")]
     limit: u32,
 }
@@ -335,13 +303,18 @@ fn default_peers_limit() -> u32 {
     100
 }
 
-pub async fn stats_peers(
+const PEERS_LIMIT_MAX: u32 = 1000;
+
+async fn stats_peers(
     State(app): State<Arc<App>>,
     Query(query): Query<PeersQuery>,
-) -> Json<serde_json::Value> {
-    Json(peers_seen(&app.db, query.limit).await)
+) -> axum::response::Response {
+    if query.limit > PEERS_LIMIT_MAX {
+        return api::limit_rejected(query.limit, PEERS_LIMIT_MAX);
+    }
+    Json(peers_seen(&app.db, query.limit).await).into_response()
 }
 
-pub async fn stats_verdicts(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+async fn stats_verdicts(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(verdict_users(&app.db).await)
 }

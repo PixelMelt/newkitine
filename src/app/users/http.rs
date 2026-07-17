@@ -1,26 +1,66 @@
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::routing::{delete, get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::db::{last_ip, set_note};
+use super::db::set_note;
 use crate::app::api;
 use crate::app::behavior;
 use crate::app::contract::AppEvent;
 use crate::app::db;
+use crate::app::peer_history::last_ip;
 use crate::app::state::App;
+use crate::types::FolderContents;
 
-pub async fn browse_user(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+pub(in crate::app) fn router() -> Router<Arc<App>> {
+    Router::new()
+        .route("/api/users/{username}/browse", post(browse_user))
+        .route("/api/users/{username}/folders", get(user_folders))
+        .route("/api/users/{username}/tree", get(user_tree))
+        .route("/api/users/{username}/files", get(user_files))
+        .route(
+            "/api/users/{username}/info",
+            get(get_user_info).post(request_user_info),
+        )
+        .route("/api/users/{username}/ban_ip", post(ban_user_ip))
+        .route("/api/buddies", get(list_buddies).post(add_buddy))
+        .route("/api/buddies/{username}", delete(remove_buddy))
+        .route("/api/buddies/{username}/note", post(set_buddy_note))
+        .route("/api/banned", get(list_banned).post(ban_user))
+        .route("/api/banned/{username}", delete(unban_user))
+        .route("/api/ignored", get(list_ignored).post(ignore_user))
+        .route("/api/ignored/{username}", delete(unignore_user))
+        .route("/api/ip_bans", get(list_ip_bans).post(add_ip_ban))
+        .route("/api/ip_bans/remove", post(remove_ip_ban))
+}
+
+async fn browse_user(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+    if let Err(status) = api::require_login(&app) {
+        return status;
+    }
     app.client.browse_user(&username).await;
     StatusCode::ACCEPTED
 }
 
+type BrowsePayload = (Arc<Vec<FolderContents>>, Arc<Vec<FolderContents>>, i64);
+
+fn browse_payload(app: &App, username: &str) -> Option<BrowsePayload> {
+    let data = app.projection.read();
+    let browse = data.users.browse(username)?;
+    Some((
+        browse.folders.clone(),
+        browse.private_folders.clone(),
+        browse.received_at,
+    ))
+}
+
 #[derive(Deserialize)]
-pub struct FoldersQuery {
+struct FoldersQuery {
     #[serde(default)]
     filter: String,
     #[serde(default = "default_folder_limit")]
@@ -31,20 +71,23 @@ fn default_folder_limit() -> usize {
     500
 }
 
-pub async fn user_folders(
+const FOLDER_LIMIT_MAX: usize = 5000;
+
+async fn user_folders(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
     Query(query): Query<FoldersQuery>,
 ) -> impl IntoResponse {
-    let data = app.projection.read();
-    let Some(browse) = data.users.browse(&username) else {
+    if query.limit > FOLDER_LIMIT_MAX {
+        return api::limit_rejected(query.limit as u32, FOLDER_LIMIT_MAX as u32);
+    }
+    let Some((folders, private_folders, received_at)) = browse_payload(&app, &username) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let filter = query.filter.to_lowercase();
-    let matching = browse
-        .folders
+    let matching = folders
         .iter()
-        .chain(browse.private_folders.iter())
+        .chain(private_folders.iter())
         .filter(|folder| filter.is_empty() || folder.directory.to_lowercase().contains(&filter));
     let total = matching.clone().count();
     let folders: Vec<serde_json::Value> = matching
@@ -55,24 +98,23 @@ pub async fn user_folders(
         "username": username,
         "folders": folders,
         "total": total,
-        "received_at": browse.received_at,
+        "received_at": received_at,
     }))
     .into_response()
 }
 
 #[derive(Deserialize)]
-pub struct TreeQuery {
+struct TreeQuery {
     #[serde(default)]
     dir: String,
 }
 
-pub async fn user_tree(
+async fn user_tree(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
     Query(query): Query<TreeQuery>,
 ) -> impl IntoResponse {
-    let data = app.projection.read();
-    let Some(browse) = data.users.browse(&username) else {
+    let Some((folders, private_folders, _)) = browse_payload(&app, &username) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let prefix = if query.dir.is_empty() {
@@ -82,11 +124,10 @@ pub async fn user_tree(
     };
     let mut children: std::collections::BTreeMap<&str, (usize, bool, bool)> =
         std::collections::BTreeMap::new();
-    for (folder, private) in browse
-        .folders
+    for (folder, private) in folders
         .iter()
         .map(|folder| (folder, false))
-        .chain(browse.private_folders.iter().map(|folder| (folder, true)))
+        .chain(private_folders.iter().map(|folder| (folder, true)))
     {
         let Some(rest) = folder.directory.strip_prefix(&prefix) else {
             continue;
@@ -120,14 +161,14 @@ pub async fn user_tree(
         .collect();
     let mut response = json!({ "dir": query.dir, "children": children });
     if query.dir.is_empty() {
-        let all = browse.folders.iter().chain(browse.private_folders.iter());
+        let all = folders.iter().chain(private_folders.iter());
         let (mut files, mut size) = (0u64, 0u64);
         for folder in all {
             files += folder.files.len() as u64;
             size += folder.files.iter().map(|file| file.size).sum::<u64>();
         }
         response["summary"] = json!({
-            "folders": browse.folders.len() + browse.private_folders.len(),
+            "folders": folders.len() + private_folders.len(),
             "files": files,
             "size": size,
         });
@@ -136,23 +177,21 @@ pub async fn user_tree(
 }
 
 #[derive(Deserialize)]
-pub struct FilesQuery {
+struct FilesQuery {
     dir: String,
 }
 
-pub async fn user_files(
+async fn user_files(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
     Query(query): Query<FilesQuery>,
 ) -> impl IntoResponse {
-    let data = app.projection.read();
-    let Some(browse) = data.users.browse(&username) else {
+    let Some((folders, private_folders, _)) = browse_payload(&app, &username) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    match browse
-        .folders
+    match folders
         .iter()
-        .chain(browse.private_folders.iter())
+        .chain(private_folders.iter())
         .find(|folder| folder.directory == query.dir)
     {
         Some(folder) => {
@@ -162,20 +201,26 @@ pub async fn user_files(
     }
 }
 
-pub async fn request_user_info(
+async fn request_user_info(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
 ) -> StatusCode {
+    if let Err(status) = api::require_login(&app) {
+        return status;
+    }
     app.client.request_user_info(&username).await;
     app.client.request_user_stats(&username).await;
     app.client.request_user_interests(&username).await;
     let mut data = app.projection.write();
-    let info = data.users.ensure_info(&username);
+    let (info, evicted) = data.users.ensure_info(&username);
+    for username in evicted {
+        data.broadcast(AppEvent::UserInfoRemoved { username });
+    }
     data.broadcast(AppEvent::UserInfo { info });
     StatusCode::ACCEPTED
 }
 
-pub async fn get_user_info(
+async fn get_user_info(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
 ) -> impl IntoResponse {
@@ -187,18 +232,19 @@ pub async fn get_user_info(
 }
 
 #[derive(Deserialize)]
-pub struct UserBody {
+struct UserBody {
     username: String,
 }
 
-pub async fn list_buddies(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+async fn list_buddies(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
     let mut buddies: Vec<_> = data.users.buddies().collect();
     buddies.sort_by(|a, b| a.username.cmp(&b.username));
     Json(json!({ "buddies": buddies }))
 }
 
-pub async fn add_buddy(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
+async fn add_buddy(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if let Err(error) = db::add_to_list(&app.db, "buddy", &body.username).await {
         return api::db_failed(error);
     }
@@ -213,15 +259,16 @@ pub async fn add_buddy(State(app): State<Arc<App>>, Json(body): Json<UserBody>) 
 }
 
 #[derive(Deserialize)]
-pub struct NoteBody {
+struct NoteBody {
     note: String,
 }
 
-pub async fn set_buddy_note(
+async fn set_buddy_note(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
     Json(body): Json<NoteBody>,
 ) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if !app.projection.read().users.is_buddy(&username) {
         return StatusCode::NOT_FOUND;
     }
@@ -229,18 +276,27 @@ pub async fn set_buddy_note(
         return api::db_failed(error);
     }
     let mut data = app.projection.write();
-    let Some(buddy) = data.users.set_note(&username, body.note) else {
-        return StatusCode::NOT_FOUND;
-    };
+    let buddy = data
+        .users
+        .set_note(&username, body.note)
+        .expect("buddy removed while holding the list mutation lock");
     data.broadcast(AppEvent::Buddy { buddy });
     StatusCode::ACCEPTED
 }
 
-pub async fn remove_buddy(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
-    if let Err(error) = db::remove_from_list(&app.db, "buddy", &username).await {
+async fn remove_buddy(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
+    let mut tx = match app.db.begin().await {
+        Ok(tx) => tx,
+        Err(error) => return api::db_failed(error),
+    };
+    if let Err(error) = db::remove_from_list(&mut *tx, "buddy", &username).await {
         return api::db_failed(error);
     }
-    if let Err(error) = set_note(&app.db, &username, "").await {
+    if let Err(error) = set_note(&mut *tx, &username, "").await {
+        return api::db_failed(error);
+    }
+    if let Err(error) = tx.commit().await {
         return api::db_failed(error);
     }
     app.client.remove_buddy(&username).await;
@@ -250,12 +306,13 @@ pub async fn remove_buddy(State(app): State<Arc<App>>, Path(username): Path<Stri
     StatusCode::ACCEPTED
 }
 
-pub async fn list_banned(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+async fn list_banned(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
     Json(json!({ "users": data.users.banned() }))
 }
 
-pub async fn ban_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
+async fn ban_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if let Err(error) = db::add_to_list(&app.db, "banned", &body.username).await {
         return api::db_failed(error);
     }
@@ -266,7 +323,8 @@ pub async fn ban_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -
     StatusCode::ACCEPTED
 }
 
-pub async fn unban_user(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+async fn unban_user(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if let Err(error) = db::remove_from_list(&app.db, "banned", &username).await {
         return api::db_failed(error);
     }
@@ -277,12 +335,13 @@ pub async fn unban_user(State(app): State<Arc<App>>, Path(username): Path<String
     StatusCode::ACCEPTED
 }
 
-pub async fn list_ignored(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+async fn list_ignored(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
     Json(json!({ "users": data.users.ignored() }))
 }
 
-pub async fn ignore_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
+async fn ignore_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if let Err(error) = db::add_to_list(&app.db, "ignored", &body.username).await {
         return api::db_failed(error);
     }
@@ -293,10 +352,8 @@ pub async fn ignore_user(State(app): State<Arc<App>>, Json(body): Json<UserBody>
     StatusCode::ACCEPTED
 }
 
-pub async fn unignore_user(
-    State(app): State<Arc<App>>,
-    Path(username): Path<String>,
-) -> StatusCode {
+async fn unignore_user(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if let Err(error) = db::remove_from_list(&app.db, "ignored", &username).await {
         return api::db_failed(error);
     }
@@ -307,7 +364,8 @@ pub async fn unignore_user(
     StatusCode::ACCEPTED
 }
 
-pub async fn ban_user_ip(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+async fn ban_user_ip(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     let Some(ip) = last_ip(&app.db, &username).await else {
         return StatusCode::NOT_FOUND;
     };
@@ -319,7 +377,7 @@ pub async fn ban_user_ip(State(app): State<Arc<App>>, Path(username): Path<Strin
 }
 
 #[derive(Deserialize)]
-pub struct IpBanBody {
+struct IpBanBody {
     pattern: String,
 }
 
@@ -344,11 +402,12 @@ async fn push_ip_bans(app: &App) {
     app.client.set_ip_bans(patterns).await;
 }
 
-pub async fn list_ip_bans(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+async fn list_ip_bans(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(json!({ "patterns": db::load_list(&app.db, "ip_ban").await }))
 }
 
-pub async fn add_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) -> StatusCode {
+async fn add_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     let Some(pattern) = canonical_ip_pattern(&body.pattern) else {
         return StatusCode::BAD_REQUEST;
     };
@@ -359,7 +418,8 @@ pub async fn add_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>
     StatusCode::ACCEPTED
 }
 
-pub async fn remove_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) -> StatusCode {
+async fn remove_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if let Err(error) = db::remove_from_list(&app.db, "ip_ban", &body.pattern).await {
         return api::db_failed(error);
     }

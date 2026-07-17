@@ -32,61 +32,10 @@ pub struct UserStats {
     pub files: u32,
     pub dirs: u32,
 }
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
-pub struct UserData {
-    pub username: String,
-    pub status: u32,
-    pub stats: UserStats,
-    pub slotsfull: u32,
-    pub country: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SimilarUser {
     pub username: String,
     pub rating: u32,
-}
-
-#[derive(Default, Clone, serde::Serialize)]
-pub struct BuddyView {
-    pub username: String,
-    pub status: String,
-    pub privileged: bool,
-    pub stats: UserStats,
-    pub note: String,
-}
-
-#[derive(Default, Clone, serde::Serialize)]
-pub struct UserInfoView {
-    pub username: String,
-    pub received: bool,
-    pub description: String,
-    pub picture_base64: Option<String>,
-    pub upload_slots: u32,
-    pub queue_size: u32,
-    pub slots_available: bool,
-    pub stats: Option<UserStats>,
-    pub interests_liked: Vec<String>,
-    pub interests_hated: Vec<String>,
-}
-
-#[derive(Debug)]
-pub struct UserInfoReceived {
-    pub username: String,
-    pub description: String,
-    pub picture: Option<Vec<u8>>,
-    pub total_uploads: u32,
-    pub queue_size: u32,
-    pub slots_available: bool,
-}
-
-#[derive(serde::Serialize)]
-pub struct BrowseView {
-    pub username: String,
-    pub folders: Vec<crate::types::FolderContents>,
-    pub private_folders: Vec<crate::types::FolderContents>,
-    pub received_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

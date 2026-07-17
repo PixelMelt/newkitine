@@ -209,8 +209,8 @@ pub fn client_config(
     username: &str,
     listen_port: u16,
     download_dir: std::path::PathBuf,
-) -> newkitine::types::ClientBootstrap {
-    newkitine::types::ClientBootstrap {
+) -> newkitine::client::ClientBootstrap {
+    newkitine::client::ClientBootstrap {
         scan_cache: download_dir.join("scan-cache.json.gz"),
         runtime: newkitine::types::RuntimeConfig {
             login: newkitine::types::LoginConfig {
@@ -229,8 +229,13 @@ pub fn client_config(
                 uploads_per_user: newkitine::types::DEFAULT_UPLOADS_PER_USER,
                 upload_limit_kbps: 0,
                 download_limit_kbps: 0,
+                queue_size_limit_mb: 0,
+                banned_message: newkitine::types::DEFAULT_BANNED_MESSAGE.into(),
+                download_username_subfolders: false,
             },
+            search: newkitine::types::SearchConfig::default(),
             shared_folders: Vec::new(),
+            share_filters: Vec::new(),
         },
         buddies: Vec::new(),
         banned: Vec::new(),

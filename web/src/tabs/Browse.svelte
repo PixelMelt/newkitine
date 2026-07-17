@@ -1,7 +1,8 @@
 <script>
   import { browses, notice } from '../lib/stores.js';
   import { browseTarget } from '../lib/ui.js';
-  import { get, post, formatSize, formatAttributes } from '../lib/api.js';
+  import { get, post } from '../lib/api.js';
+  import { formatSize, formatAttributes } from '../lib/format.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import { sortRows } from '../lib/sort.js';
@@ -31,6 +32,17 @@
   $: if (viewing && $browses[viewing] && $browses[viewing] !== loadedAt) {
     loadedAt = $browses[viewing];
     loadTree();
+  }
+
+  $: if (viewing && loadedAt && !$browses[viewing]) {
+    loadedAt = 0;
+    tree = {};
+    expanded = {};
+    treeLoaded = false;
+    flatFolders = null;
+    currentDir = null;
+    files = null;
+    summary = null;
   }
 
   $: visible = flatten(tree, expanded, '', 0);
@@ -141,7 +153,9 @@
   }
 
   function downloadFolder(dir, recursive) {
-    post('/downloads/folder', { username: viewing, dir, recursive });
+    post('/downloads/folder', { username: viewing, dir, recursive }).catch((error) =>
+      notice(error.message),
+    );
   }
 
   function folderMenu(event, dir) {

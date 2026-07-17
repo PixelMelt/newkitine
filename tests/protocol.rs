@@ -219,7 +219,6 @@ fn peer_init_round_trip() {
 fn sample_files() -> Vec<FileInfo> {
     vec![
         FileInfo {
-            code: 1,
             name: "Album\\01 - Track.mp3".into(),
             size: 9876543,
             attributes: FileAttributes {
@@ -230,7 +229,6 @@ fn sample_files() -> Vec<FileInfo> {
             },
         },
         FileInfo {
-            code: 1,
             name: "Album\\02 - Track.flac".into(),
             size: 33445566,
             attributes: FileAttributes {

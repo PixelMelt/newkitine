@@ -133,6 +133,7 @@ const userInfoView = shape({
 });
 
 const chatMessage = shape({
+	id: nullable(num),
 	sender: str,
 	message: str,
 	timestamp: num,
@@ -145,7 +146,6 @@ const roomEntry = shape({
 
 const roomView = shape({
 	users: list(str),
-	messages: list(chatMessage),
 });
 
 const roomsView = shape({
@@ -184,6 +184,18 @@ const publicSettings = shape({
 	theme: str,
 	filter_level: str,
 	denied_message: str,
+	max_search_results: num,
+	min_search_chars: num,
+	respond_to_searches: bool,
+	max_search_responses: num,
+	rescan_daily: bool,
+	rescan_hour_utc: num,
+	autoclear_downloads: bool,
+	autoclear_uploads: bool,
+	queue_size_limit_mb: num,
+	banned_message: str,
+	download_username_subfolders: bool,
+	share_filters: list(str),
 });
 
 const settingsPayload = {
@@ -210,7 +222,9 @@ const events = {
 	banned: shape({ rev: num, users: list(str) }),
 	ignored: shape({ rev: num, users: list(str) }),
 	user_info: shape({ rev: num, info: userInfoView }),
+	user_info_removed: shape({ rev: num, username: str }),
 	browse_loaded: shape({ rev: num, username: str, received_at: num }),
+	browse_removed: shape({ rev: num, username: str }),
 	private_message: shape({ rev: num, username: str, message: chatMessage }),
 	chat_opened: shape({ rev: num, username: str }),
 	chat_closed: shape({ rev: num, username: str }),
@@ -234,6 +248,7 @@ const events = {
 		rooms: roomsView,
 		chat_partners: list(str),
 		browses: record(num),
+		user_infos: list(userInfoView),
 		settings: shape(settingsPayload),
 	}),
 };

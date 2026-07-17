@@ -1,6 +1,7 @@
 <script>
   import { buddies, banned, ignored } from '../lib/stores.js';
-  import { post, del, formatSize } from '../lib/api.js';
+  import { post, del } from '../lib/api.js';
+  import { formatSize } from '../lib/format.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import { sortRows } from '../lib/sort.js';

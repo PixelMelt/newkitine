@@ -92,6 +92,9 @@ pub async fn init_schema(pool: &MySqlPool) {
         .expect("read schema version")
         .get(0);
     let applied = applied.unwrap_or(0);
+    if applied > 3 {
+        panic!("database schema version {applied} is newer than this binary supports");
+    }
 
     if applied < 1 {
         for statement in BASELINE {
@@ -116,8 +119,40 @@ async fn migrate_transfer_identity(pool: &MySqlPool) {
         "ALTER TABLE transfers MODIFY id BIGINT UNSIGNED NOT NULL",
     )
     .await;
-    migration_statement(pool, 3, "ALTER TABLE transfers DROP INDEX uniq_transfer").await;
-    migration_statement(pool, 3, "ALTER TABLE transfers DROP COLUMN path_hash").await;
+    if index_exists(pool, "transfers", "uniq_transfer").await {
+        migration_statement(pool, 3, "ALTER TABLE transfers DROP INDEX uniq_transfer").await;
+    }
+    if column_exists(pool, "transfers", "path_hash").await {
+        migration_statement(pool, 3, "ALTER TABLE transfers DROP COLUMN path_hash").await;
+    }
+}
+
+async fn column_exists(pool: &MySqlPool, table: &str, column: &str) -> bool {
+    let count: i64 = sqlx::query(
+        "SELECT COUNT(*) FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_one(pool)
+    .await
+    .expect("schema introspection")
+    .get(0);
+    count > 0
+}
+
+async fn index_exists(pool: &MySqlPool, table: &str, index: &str) -> bool {
+    let count: i64 = sqlx::query(
+        "SELECT COUNT(*) FROM information_schema.statistics
+         WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?",
+    )
+    .bind(table)
+    .bind(index)
+    .fetch_one(pool)
+    .await
+    .expect("schema introspection")
+    .get(0);
+    count > 0
 }
 
 async fn migration_statement(pool: &MySqlPool, version: i32, statement: &str) {
@@ -143,16 +178,7 @@ async fn migrate_transfer_status(pool: &MySqlPool) {
         "ALTER TABLE user_lists MODIFY list ENUM('buddy','banned','ignored','chat','room','ip_ban') NOT NULL",
     )
     .await;
-    let column_exists: i64 = sqlx::query(
-        "SELECT COUNT(*) FROM information_schema.columns
-         WHERE table_schema = DATABASE() AND table_name = 'transfers'
-           AND column_name = 'failure_reason'",
-    )
-    .fetch_one(pool)
-    .await
-    .expect("schema introspection")
-    .get(0);
-    if column_exists == 0 {
+    if !column_exists(pool, "transfers", "failure_reason").await {
         migration_statement(
             pool,
             2,

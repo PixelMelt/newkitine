@@ -1,14 +1,32 @@
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde_json::json;
 
-use crate::types::Status;
-
+use super::chat;
 use super::contract::AppEvent;
 use super::state::App;
+use super::users;
+
+#[derive(Default, Clone, serde::Serialize)]
+pub struct Status {
+    pub connected: bool,
+    pub logged_in: bool,
+    pub username: String,
+    pub server: String,
+    pub banner: String,
+    pub listen_port: u16,
+    pub shared_folders: u32,
+    pub shared_files: u32,
+    pub scanning: bool,
+    pub scan_progress: u64,
+    pub share_scan_error: Option<String>,
+    pub privileges_secs: u32,
+    pub peer_connections: usize,
+}
 
 pub struct Session {
     status: Status,
@@ -54,6 +72,13 @@ pub fn apply_settings(app: &App, server: String, listen_port: u16, username: &st
     });
 }
 
+pub fn connecting(app: &App) {
+    update_status(app, |status| {
+        status.connected = true;
+        status.logged_in = false;
+    });
+}
+
 pub fn logged_in(app: &App, username: String, banner: String) {
     update_status(app, |status| {
         status.connected = true;
@@ -75,10 +100,17 @@ pub fn login_failed(app: &App, reason: String, detail: Option<String>) {
 }
 
 pub fn disconnected(app: &App) {
-    update_status(app, |status| {
-        status.connected = false;
-        status.logged_in = false;
-    });
+    let mut data = app.projection.write();
+    chat::server_disconnected(&mut data);
+    users::server_disconnected(&mut data);
+    data.session.status.peer_connections = 0;
+    data.broadcast(AppEvent::ConnCount { count: 0 });
+    data.session.status.connected = false;
+    data.session.status.logged_in = false;
+    let event = AppEvent::Status {
+        status: data.session.status.clone(),
+    };
+    data.broadcast(event);
 }
 
 pub fn connection_count(app: &App, count: usize) {
@@ -125,27 +157,36 @@ pub fn server_message(app: &App, message: String) {
     data.broadcast(AppEvent::ServerMessage { message });
 }
 
-pub async fn status(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+pub(super) fn router() -> Router<Arc<App>> {
+    Router::new()
+        .route("/api/status", get(status))
+        .route("/api/connect", post(connect))
+        .route("/api/disconnect", post(disconnect))
+        .route("/api/reconnect", post(reconnect))
+        .route("/api/shares/rescan", post(rescan_shares))
+}
+
+async fn status(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
     Json(json!({ "status": data.session.status() }))
 }
 
-pub async fn connect(State(app): State<Arc<App>>) -> StatusCode {
+async fn connect(State(app): State<Arc<App>>) -> StatusCode {
     app.client.connect().await;
     StatusCode::ACCEPTED
 }
 
-pub async fn disconnect(State(app): State<Arc<App>>) -> StatusCode {
+async fn disconnect(State(app): State<Arc<App>>) -> StatusCode {
     app.client.disconnect().await;
     StatusCode::ACCEPTED
 }
 
-pub async fn reconnect(State(app): State<Arc<App>>) -> StatusCode {
+async fn reconnect(State(app): State<Arc<App>>) -> StatusCode {
     app.client.reconnect().await;
     StatusCode::ACCEPTED
 }
 
-pub async fn rescan_shares(State(app): State<Arc<App>>) -> StatusCode {
+async fn rescan_shares(State(app): State<Arc<App>>) -> StatusCode {
     app.client.rescan_shares().await;
     StatusCode::ACCEPTED
 }

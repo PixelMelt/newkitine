@@ -6,19 +6,21 @@ pub use state::Behavior;
 
 use std::sync::Arc;
 
-use crate::types::Restriction;
+use crate::types::{FilterLevel, Restriction};
 
-use db::{has_downloaded_from, load_verdicts, set_user_verdict};
+use db::has_downloaded_from;
+
+use super::peer_history::{load_verdicts, set_user_verdict};
 use policy::{
     CONTRADICTION_MIN_FILES, PRESET_STATS, QUEUE_FLOOD, SEARCH_FLOOD, Verdict, restriction_for,
     restriction_str,
 };
-use state::{Check, Peer, prune};
+use state::{Check, Peer, prune, touch};
 
 use super::db::fatal;
 use super::state::{App, now};
 
-fn policy(app: &App) -> (String, String) {
+fn policy(app: &App) -> (FilterLevel, String) {
     app.settings.behavior_policy()
 }
 
@@ -40,9 +42,8 @@ async fn sync(app: &Arc<App>, username: &str) {
         let peer = &peers[username];
         (peer.verdict, peer.evidence.clone())
     };
-    let restriction = restriction_for(&level, verdict, &denied_message);
+    let restriction = restriction_for(level, verdict, &denied_message);
     let restriction_label = restriction_str(&restriction);
-    app.client.set_user_restriction(username, restriction).await;
     set_user_verdict(
         &app.db,
         username,
@@ -53,23 +54,30 @@ async fn sync(app: &Arc<App>, username: &str) {
     )
     .await
     .unwrap_or_else(|error| fatal(error));
+    app.client.set_user_restriction(username, restriction).await;
+}
+
+fn mark_verified(app: &App, username: &str) {
+    let mut peers = app.behavior.peers.lock().unwrap();
+    let peer = touch(&mut peers, username, now());
+    peer.verdict = Verdict::Verified;
+    peer.evidence.clear();
+    peer.searches.clear();
+    peer.queue_requests.clear();
+    peer.check = Check::Idle;
 }
 
 async fn convict(app: &Arc<App>, username: &str, verdict: Verdict, evidence: &str) {
     if exempt(app, username).await {
-        let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = peers.entry(username.to_owned()).or_default();
-        if peer.verdict < Verdict::Verified {
-            peer.verdict = Verdict::Verified;
-        }
-        peer.searches.clear();
-        peer.queue_requests.clear();
-        peer.check = Check::Idle;
+        mark_verified(app, username);
+        sync(app, username).await;
         return;
     }
-    {
+    if app.projection.read().users.is_buddy(username) {
+        mark_verified(app, username);
+    } else {
         let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = peers.entry(username.to_owned()).or_default();
+        let peer = touch(&mut peers, username, now());
         if peer.verdict < verdict {
             peer.verdict = verdict;
         }
@@ -82,13 +90,14 @@ async fn convict(app: &Arc<App>, username: &str, verdict: Verdict, evidence: &st
 }
 
 pub async fn search_seen(app: &Arc<App>, username: &str) {
+    let _transition = app.behavior.transition.lock().await;
     if is_self(app, username) {
         return;
     }
     let flooded = {
         let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = peers.entry(username.to_owned()).or_default();
         let timestamp = now();
+        let peer = touch(&mut peers, username, timestamp);
         peer.searches.push_back(timestamp);
         prune(&mut peer.searches, timestamp);
         peer.searches.len() > SEARCH_FLOOD && peer.verdict < Verdict::Suspect
@@ -99,6 +108,7 @@ pub async fn search_seen(app: &Arc<App>, username: &str) {
 }
 
 pub async fn queue_request(app: &Arc<App>, username: &str) {
+    let _transition = app.behavior.transition.lock().await;
     if is_self(app, username) {
         return;
     }
@@ -110,8 +120,8 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
     }
     let action = {
         let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = peers.entry(username.to_owned()).or_default();
         let timestamp = now();
+        let peer = touch(&mut peers, username, timestamp);
         peer.queue_requests.push_back(timestamp);
         prune(&mut peer.queue_requests, timestamp);
         if peer.queue_requests.len() > QUEUE_FLOOD && peer.verdict < Verdict::Suspect {
@@ -119,11 +129,11 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
         } else if peer.verdict == Verdict::Clean
             && peer.check == Check::Idle
             && peer.stats.is_none()
-            && level != "open"
+            && level != FilterLevel::Open
         {
             peer.check = Check::AwaitingStats;
             Action::Probe {
-                hold: level == "strict",
+                hold: level == FilterLevel::Strict,
             }
         } else {
             Action::None
@@ -134,7 +144,7 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
         Action::Probe { hold } => {
             if exempt(app, username).await {
                 let mut peers = app.behavior.peers.lock().unwrap();
-                let peer = peers.entry(username.to_owned()).or_default();
+                let peer = touch(&mut peers, username, now());
                 peer.check = Check::Idle;
                 peer.verdict = Verdict::Verified;
                 return;
@@ -151,6 +161,7 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
 }
 
 pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u32) {
+    let _transition = app.behavior.transition.lock().await;
     if is_self(app, username) {
         return;
     }
@@ -162,7 +173,7 @@ pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u3
     }
     let action = {
         let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = peers.entry(username.to_owned()).or_default();
+        let peer = touch(&mut peers, username, now());
         peer.stats = Some((files, dirs));
         if PRESET_STATS.contains(&(files, dirs)) && peer.verdict != Verdict::Leech {
             peer.check = Check::Idle;
@@ -197,6 +208,7 @@ pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u3
 }
 
 pub async fn browse_received(app: &Arc<App>, username: &str, file_count: u32) {
+    let _transition = app.behavior.transition.lock().await;
     if is_self(app, username) {
         return;
     }
@@ -208,7 +220,7 @@ pub async fn browse_received(app: &Arc<App>, username: &str, file_count: u32) {
     }
     let action = {
         let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = peers.entry(username.to_owned()).or_default();
+        let peer = touch(&mut peers, username, now());
         let checking = peer.check == Check::AwaitingBrowse;
         peer.check = Check::Idle;
         let stats_files = peer.stats.map(|(files, _)| files);
@@ -249,6 +261,7 @@ pub async fn browse_received(app: &Arc<App>, username: &str, file_count: u32) {
 }
 
 pub async fn apply_level(app: &Arc<App>) {
+    let _transition = app.behavior.transition.lock().await;
     let usernames: Vec<String> = {
         let peers = app.behavior.peers.lock().unwrap();
         peers
@@ -263,30 +276,37 @@ pub async fn apply_level(app: &Arc<App>) {
 }
 
 pub async fn buddy_added(app: &Arc<App>, username: &str) {
+    let _transition = app.behavior.transition.lock().await;
     {
-        let mut peers = app.behavior.peers.lock().unwrap();
-        let Some(peer) = peers.get_mut(username) else {
+        let peers = app.behavior.peers.lock().unwrap();
+        let Some(peer) = peers.get(username) else {
             return;
         };
         if peer.verdict < Verdict::Suspect {
             return;
         }
-        peer.verdict = Verdict::Verified;
-        peer.evidence.clear();
-        peer.check = Check::Idle;
     }
+    mark_verified(app, username);
     sync(app, username).await;
 }
 
 pub async fn load(app: &Arc<App>) {
+    let _transition = app.behavior.transition.lock().await;
     let (level, denied_message) = policy(app);
     for (username, verdict, evidence) in load_verdicts(&app.db).await {
-        let verdict = Verdict::from_str(&verdict);
-        let evidence: Vec<String> = evidence
+        let mut verdict = Verdict::from_str(&verdict);
+        let mut evidence: Vec<String> = evidence
             .split(',')
             .filter(|entry| !entry.is_empty())
             .map(str::to_owned)
             .collect();
+        if verdict >= Verdict::Suspect && exempt(app, &username).await {
+            verdict = Verdict::Verified;
+            evidence.clear();
+            set_user_verdict(&app.db, &username, verdict.as_str(), "", "none", now())
+                .await
+                .unwrap_or_else(|error| fatal(error));
+        }
         {
             let mut peers = app.behavior.peers.lock().unwrap();
             peers.insert(
@@ -294,11 +314,12 @@ pub async fn load(app: &Arc<App>) {
                 Peer {
                     verdict,
                     evidence,
+                    last_activity: now(),
                     ..Default::default()
                 },
             );
         }
-        let restriction = restriction_for(&level, verdict, &denied_message);
+        let restriction = restriction_for(level, verdict, &denied_message);
         if restriction != Restriction::None {
             app.client
                 .set_user_restriction(&username, restriction)

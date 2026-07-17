@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use super::{ConnControl, ConnEvent, SharedLimits, write_all};
+use crate::network::ConnId;
 use crate::protocol::{FileOffset, FileTransferInit};
-use crate::types::ConnId;
 
 struct Throttle {
     window_start: Instant,

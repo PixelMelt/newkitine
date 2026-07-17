@@ -63,13 +63,16 @@ pub enum NetworkEvent {
         reason: String,
         detail: Option<String>,
     },
+    ListenFailed {
+        port: u16,
+        error: String,
+    },
     ServerDisconnected {
         manual: bool,
     },
     ServerMessage(ServerResponse),
     PeerMessage {
         username: String,
-        conn_id: ConnId,
         message: PeerMessage,
     },
     PeerConnected {
@@ -81,7 +84,6 @@ pub enum NetworkEvent {
     ConnectionCount(usize),
     PeerConnectionError {
         username: String,
-        conn_type: ConnectionType,
         unsent: Vec<PeerMessage>,
         is_offline: bool,
     },

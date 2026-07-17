@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use super::ConnectionType;
+use crate::types::ConnectionType;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

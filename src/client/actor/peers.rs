@@ -1,24 +1,40 @@
 use super::ClientActor;
+use super::sharing::PENDING_REQUEST_LIMIT;
+use crate::client::{ClientEvent, Observation, SearchResult, UserInfoReceived};
+use crate::network::NetworkCommand;
 use crate::protocol::PeerMessage;
-use crate::types::{
-    ClientEvent, NetworkCommand, Observation, SearchResult, TransferDirection, UserInfoReceived,
-};
+use crate::types::TransferDirection;
+
+fn deferrable_path(message: &PeerMessage) -> Option<&str> {
+    match message {
+        PeerMessage::QueueUpload { file, .. } => Some(file),
+        PeerMessage::TransferRequest {
+            direction: TransferDirection::Download,
+            file,
+            ..
+        } => Some(file),
+        _ => None,
+    }
+}
 
 impl ClientActor {
     pub(super) fn handle_peer_message(&mut self, username: String, message: PeerMessage) {
-        if self.sharing.index.is_none()
-            && self.sharing.scanning
-            && matches!(
-                message,
-                PeerMessage::QueueUpload { .. }
-                    | PeerMessage::TransferRequest {
-                        direction: TransferDirection::Download,
-                        ..
-                    }
-            )
+        if self.awaiting_share_index()
+            && let Some(path) = deferrable_path(&message)
         {
-            self.sharing.pending_requests.push((username, message));
-            return;
+            if let Some(pending) = self
+                .sharing
+                .pending_requests
+                .iter_mut()
+                .find(|(user, pending)| user == &username && deferrable_path(pending) == Some(path))
+            {
+                pending.1 = message;
+                return;
+            }
+            if self.sharing.pending_requests.len() < PENDING_REQUEST_LIMIT {
+                self.sharing.pending_requests.push((username, message));
+                return;
+            }
         }
         match message {
             PeerMessage::FileSearchResponse {
@@ -29,7 +45,7 @@ impl ClientActor {
                 queue_size,
                 ..
             } => {
-                if self.searches.contains(token) && !self.users.is_ignored(&username) {
+                if self.search_tokens.contains(&token) && !self.users.is_ignored(&username) {
                     self.emit(ClientEvent::SearchResults(SearchResult {
                         token,
                         username,
@@ -67,29 +83,27 @@ impl ClientActor {
                     self.emit_transfers(updates);
                 }
             },
-            PeerMessage::TransferResponse {
-                token,
-                allowed,
-                reason,
-                ..
-            } => {
+            PeerMessage::TransferResponse { token, reason, .. } => {
                 let updates = self.uploads.handle_transfer_response(
                     &username,
                     token,
-                    allowed,
                     reason.as_deref(),
                     &self.users,
                 );
                 self.emit_transfers(updates);
             }
             PeerMessage::UploadDenied { file, reason } => {
-                let updates = self
-                    .downloads
-                    .handle_upload_denied(&username, &file, &reason);
+                let defer_requests = self.awaiting_share_index();
+                let updates =
+                    self.downloads
+                        .handle_upload_denied(&username, &file, &reason, defer_requests);
                 self.emit_transfers(updates);
             }
             PeerMessage::UploadFailed { file } => {
-                let updates = self.downloads.handle_upload_failed(&username, &file);
+                let defer_requests = self.awaiting_share_index();
+                let updates = self
+                    .downloads
+                    .handle_upload_failed(&username, &file, defer_requests);
                 self.emit_transfers(updates);
             }
             PeerMessage::PlaceInQueueResponse { filename, place } => {

@@ -1,5 +1,6 @@
 <script>
-  import { get, post, formatSize, formatTime, baseName } from '../lib/api.js';
+  import { get, post } from '../lib/api.js';
+  import { formatSize, formatTime, baseName } from '../lib/format.js';
   import { activeTab } from '../lib/ui.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';

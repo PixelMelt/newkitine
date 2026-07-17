@@ -1,6 +1,25 @@
 use super::wire::{MessageReader, MessageWriter, ProtocolError};
 use crate::types::ConnectionType;
 
+impl ConnectionType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Peer => "P",
+            Self::File => "F",
+            Self::Distributed => "D",
+        }
+    }
+
+    pub fn from_str_value(value: &str) -> Option<Self> {
+        match value {
+            "P" => Some(Self::Peer),
+            "F" => Some(Self::File),
+            "D" => Some(Self::Distributed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerInitMessage {
     PierceFireWall {

@@ -11,7 +11,7 @@ use tracing::{error, warn};
 use crate::types::FileAttributes;
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(super) struct CacheEntry {
+pub(crate) struct CacheEntry {
     pub(super) size: u64,
     pub(super) mtime: u64,
     pub(super) attributes: FileAttributes,
@@ -35,8 +35,12 @@ pub(super) fn load(path: &Path) -> HashMap<String, CacheEntry> {
     }
 }
 
-pub(super) fn save(path: &Path, entries: &HashMap<String, CacheEntry>) {
-    let tmp = path.with_extension("tmp");
+pub(crate) fn save(path: &Path, entries: &HashMap<String, CacheEntry>) {
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp{}",
+        TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let result = write(&tmp, entries).and_then(|()| fs::rename(&tmp, path));
     if let Err(error) = result {
         error!(path = %path.display(), %error, "cannot persist attribute cache");

@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::Restriction;
 
-use super::users::Users;
+use super::registry::TransferKey;
+use crate::client::users::Users;
 
 pub(super) struct UploadQueue {
-    entries: Vec<(String, String)>,
+    entries: Vec<TransferKey>,
     active_users: HashMap<String, HashSet<u32>>,
     user_counters: HashMap<String, u64>,
     counter: u64,
@@ -58,13 +59,13 @@ impl UploadQueue {
         self.active_users.contains_key(username)
     }
 
-    pub(super) fn push(&mut self, key: (String, String)) {
+    pub(super) fn push(&mut self, key: TransferKey) {
         let username = key.0.clone();
         self.entries.push(key);
         self.record_user(&username);
     }
 
-    pub(super) fn select_next(&self, users: &Users) -> Option<(String, String)> {
+    pub(super) fn select_next(&self, users: &Users) -> Option<TransferKey> {
         let eligible: Vec<&String> = self
             .user_counters
             .keys()
@@ -102,7 +103,7 @@ impl UploadQueue {
             })
     }
 
-    pub(super) fn mark_active(&mut self, key: &(String, String), token: u32) {
+    pub(super) fn mark_active(&mut self, key: &TransferKey, token: u32) {
         self.entries.retain(|queued| queued != key);
         self.active_users
             .entry(key.0.clone())
@@ -111,7 +112,7 @@ impl UploadQueue {
         self.record_user(&key.0);
     }
 
-    pub(super) fn release(&mut self, key: &(String, String), token: Option<u32>) {
+    pub(super) fn release(&mut self, key: &TransferKey, token: Option<u32>) {
         if let Some(token) = token
             && let Some(tokens) = self.active_users.get_mut(&key.0)
         {

@@ -1,7 +1,8 @@
 <script>
   import { userInfos, interests } from '../lib/stores.js';
   import { userInfoTarget, openSearch } from '../lib/ui.js';
-  import { post, formatSize } from '../lib/api.js';
+  import { post } from '../lib/api.js';
+  import { formatSize } from '../lib/format.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
 

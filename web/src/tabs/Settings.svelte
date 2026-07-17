@@ -8,6 +8,7 @@
     ['shares', 'Shares'],
     ['downloads', 'Downloads'],
     ['uploads', 'Uploads'],
+    ['searches', 'Searches'],
     ['filtering', 'Filtering'],
     ['profile', 'User Profile'],
     ['ui', 'User Interface'],
@@ -25,6 +26,7 @@
 
   let page = 'network';
   let draft = null;
+  let shareFiltersText = '';
   let newShare = { virtual_name: '', path: '', buddy_only: false };
   let saveError = '';
   let saved = false;
@@ -42,7 +44,8 @@
     try {
       await post('/ip_bans', { pattern: newIpBan.trim() });
       newIpBan = '';
-    } catch {
+    } catch (error) {
+      if (error.status !== 400) throw error;
       ipBanError = 'Invalid pattern: use four dot-separated octets, * as wildcard.';
       return;
     }
@@ -54,9 +57,15 @@
     ipBans = (await get('/ip_bans')).patterns;
   }
 
-  $: if (!draft && $settings.settings) draft = { ...structuredClone($settings.settings), password: '' };
+  $: if (!draft && $settings.settings) {
+    draft = { ...structuredClone($settings.settings), password: '' };
+    shareFiltersText = draft.share_filters.join('\n');
+  }
   $: locked = new Set($settings.locked);
   $: portManaged = $settings.gluetun || locked.has('listen_port');
+  $: if (draft && portManaged && $settings.settings) {
+    draft.listen_port = $settings.settings.listen_port;
+  }
 
   function addShare() {
     if (!newShare.virtual_name.trim() || !newShare.path.trim()) return;
@@ -74,6 +83,7 @@
 
   function revert() {
     draft = { ...structuredClone($settings.settings), password: '' };
+    shareFiltersText = draft.share_filters.join('\n');
     applyTheme(draft.theme);
     saveError = '';
     saved = false;
@@ -82,7 +92,11 @@
   async function save() {
     saveError = '';
     saved = false;
-    const payload = { ...draft, incomplete_dir: draft.incomplete_dir || null };
+    const payload = {
+      ...draft,
+      incomplete_dir: draft.incomplete_dir || null,
+      share_filters: shareFiltersText.split('\n').map((line) => line.trim()).filter(Boolean),
+    };
     if (!payload.password) delete payload.password;
     try {
       await put('/settings', payload);
@@ -171,6 +185,23 @@
             </button>
             <span class="hint">Saved share changes are rescanned automatically.</span>
           </div>
+          <div class="form-row">
+            <label for="set-share-filters">Excluded names</label>
+            <textarea id="set-share-filters" rows="4" bind:value={shareFiltersText}
+              placeholder="Thumbs.db&#10;desktop.ini"></textarea>
+            <span class="hint">One exact file or folder name per line, skipped when scanning.</span>
+          </div>
+          <div class="form-row">
+            <label for="set-rescan-daily">
+              <input id="set-rescan-daily" type="checkbox" bind:checked={draft.rescan_daily} />
+              Rescan shares automatically every day
+            </label>
+          </div>
+          <div class="form-row">
+            <label for="set-rescan-hour">Daily rescan hour (UTC)</label>
+            <input id="set-rescan-hour" type="number" min="0" max="23"
+              bind:value={draft.rescan_hour_utc} />
+          </div>
 
         {:else if page === 'downloads'}
           <h3>Downloads</h3>
@@ -189,6 +220,20 @@
             <label for="set-downlimit">Download speed limit (KiB/s)</label>
             <input id="set-downlimit" type="number" min="0" bind:value={draft.download_limit_kbps} />
             <span class="hint">0 = unlimited</span>
+          </div>
+          <div class="form-row">
+            <label for="set-userdirs">
+              <input id="set-userdirs" type="checkbox"
+                bind:checked={draft.download_username_subfolders} />
+              Place finished downloads in subfolders named after the uploader
+            </label>
+          </div>
+          <div class="form-row">
+            <label for="set-autoclear-down">
+              <input id="set-autoclear-down" type="checkbox"
+                bind:checked={draft.autoclear_downloads} />
+              Clear finished downloads from the list automatically
+            </label>
           </div>
 
         {:else if page === 'uploads'}
@@ -210,6 +255,46 @@
             <label for="set-uplimit">Upload speed limit (KiB/s)</label>
             <input id="set-uplimit" type="number" min="0" bind:value={draft.upload_limit_kbps} />
             <span class="hint">0 = unlimited</span>
+          </div>
+          <div class="form-row">
+            <label for="set-queuemb">Queue limit per user (MiB)</label>
+            <input id="set-queuemb" type="number" min="0" bind:value={draft.queue_size_limit_mb} />
+            <span class="hint">0 = unlimited</span>
+          </div>
+          <div class="form-row">
+            <label for="set-banned">Ban message</label>
+            <input id="set-banned" style="width: 100%" bind:value={draft.banned_message} />
+            <span class="hint">Sent to banned users when they try to queue a download.</span>
+          </div>
+          <div class="form-row">
+            <label for="set-autoclear-up">
+              <input id="set-autoclear-up" type="checkbox"
+                bind:checked={draft.autoclear_uploads} />
+              Clear finished uploads from the list automatically
+            </label>
+          </div>
+
+        {:else if page === 'searches'}
+          <h3>Searches</h3>
+          <div class="form-row">
+            <label for="set-respond">
+              <input id="set-respond" type="checkbox" bind:checked={draft.respond_to_searches} />
+              Respond to search requests from other users
+            </label>
+          </div>
+          <div class="form-row">
+            <label for="set-maxresults">Maximum results sent per search</label>
+            <input id="set-maxresults" type="number" min="1"
+              bind:value={draft.max_search_results} />
+          </div>
+          <div class="form-row">
+            <label for="set-minchars">Minimum search term length</label>
+            <input id="set-minchars" type="number" min="1" bind:value={draft.min_search_chars} />
+          </div>
+          <div class="form-row">
+            <label for="set-maxresponses">Maximum responses kept per own search</label>
+            <input id="set-maxresponses" type="number" min="1"
+              bind:value={draft.max_search_responses} />
           </div>
 
         {:else if page === 'filtering'}

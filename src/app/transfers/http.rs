@@ -1,31 +1,46 @@
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::types::{
-    AbortResult, EnqueueResult, FileAttributes, RetryResult, TransferDirection, TransferId,
-    TransferStatus,
-};
+use crate::client::{AbortResult, EnqueueResult, RetryResult};
+use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus};
 
 use crate::app::state::App;
 
-pub async fn list_downloads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+const FOLDER_DOWNLOAD_FILE_LIMIT: usize = 1000;
+
+pub(in crate::app) fn router() -> Router<Arc<App>> {
+    Router::new()
+        .route("/api/downloads", get(list_downloads).post(enqueue_download))
+        .route("/api/downloads/folder", post(enqueue_folder_download))
+        .route("/api/downloads/abort", post(abort_download))
+        .route("/api/downloads/retry", post(retry_download))
+        .route("/api/downloads/clear", post(clear_downloads))
+        .route("/api/downloads/clear_all", post(clear_all_downloads))
+        .route("/api/uploads", get(list_uploads))
+        .route("/api/uploads/abort", post(abort_upload))
+        .route("/api/uploads/clear", post(clear_uploads))
+        .route("/api/uploads/clear_all", post(clear_all_uploads))
+}
+
+async fn list_downloads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
     Json(json!({ "transfers": data.transfers.list(TransferDirection::Download) }))
 }
 
-pub async fn list_uploads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+async fn list_uploads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
     Json(json!({ "transfers": data.transfers.list(TransferDirection::Upload) }))
 }
 
 #[derive(Deserialize)]
-pub struct DownloadBody {
+struct DownloadBody {
     username: String,
     virtual_path: String,
     size: u64,
@@ -33,7 +48,7 @@ pub struct DownloadBody {
     attributes: FileAttributes,
 }
 
-pub async fn enqueue_download(
+async fn enqueue_download(
     State(app): State<Arc<App>>,
     Json(body): Json<DownloadBody>,
 ) -> StatusCode {
@@ -53,27 +68,29 @@ pub async fn enqueue_download(
 }
 
 #[derive(Deserialize)]
-pub struct FolderDownloadBody {
+struct FolderDownloadBody {
     username: String,
     dir: String,
     #[serde(default)]
     recursive: bool,
 }
 
-pub async fn enqueue_folder_download(
+async fn enqueue_folder_download(
     State(app): State<Arc<App>>,
     Json(body): Json<FolderDownloadBody>,
 ) -> impl IntoResponse {
-    let files: Vec<(String, u64, FileAttributes)> = {
+    let (folders, private_folders) = {
         let data = app.projection.read();
         let Some(browse) = data.users.browse(&body.username) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        let subdir_prefix = format!("{}\\", body.dir);
-        browse
-            .folders
+        (browse.folders.clone(), browse.private_folders.clone())
+    };
+    let subdir_prefix = format!("{}\\", body.dir);
+    let files: Vec<(String, u64, FileAttributes)> = {
+        folders
             .iter()
-            .chain(browse.private_folders.iter())
+            .chain(private_folders.iter())
             .filter(|folder| {
                 folder.directory == body.dir
                     || (body.recursive && folder.directory.starts_with(&subdir_prefix))
@@ -87,8 +104,20 @@ pub async fn enqueue_folder_download(
                     )
                 })
             })
+            .take(FOLDER_DOWNLOAD_FILE_LIMIT + 1)
             .collect()
     };
+    if files.len() > FOLDER_DOWNLOAD_FILE_LIMIT {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "folder contains more than {FOLDER_DOWNLOAD_FILE_LIMIT} files",
+                ),
+            })),
+        )
+            .into_response();
+    }
     let (mut enqueued, mut already_active) = (0usize, 0usize);
     for (virtual_path, size, attributes) in files {
         match app
@@ -104,21 +133,15 @@ pub async fn enqueue_folder_download(
 }
 
 #[derive(Deserialize)]
-pub struct TransferRef {
+struct TransferRef {
     id: TransferId,
 }
 
-pub async fn abort_download(
-    State(app): State<Arc<App>>,
-    Json(body): Json<TransferRef>,
-) -> StatusCode {
+async fn abort_download(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
     abort(&app, TransferDirection::Download, body.id).await
 }
 
-pub async fn retry_download(
-    State(app): State<Arc<App>>,
-    Json(body): Json<TransferRef>,
-) -> StatusCode {
+async fn retry_download(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
     match app.client.retry_download(body.id).await {
         RetryResult::Requeued => StatusCode::ACCEPTED,
         RetryResult::AlreadyActive => StatusCode::CONFLICT,
@@ -134,7 +157,7 @@ async fn abort(app: &App, direction: TransferDirection, id: TransferId) -> Statu
 }
 
 #[derive(Deserialize)]
-pub struct ClearBody {
+struct ClearBody {
     statuses: Vec<TransferStatus>,
 }
 
@@ -145,10 +168,7 @@ fn clear_statuses(body: ClearBody) -> Option<Vec<TransferStatus>> {
     Some(body.statuses)
 }
 
-pub async fn clear_downloads(
-    State(app): State<Arc<App>>,
-    Json(body): Json<ClearBody>,
-) -> StatusCode {
+async fn clear_downloads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {
     let Some(statuses) = clear_statuses(body) else {
         return StatusCode::BAD_REQUEST;
     };
@@ -158,14 +178,11 @@ pub async fn clear_downloads(
     StatusCode::ACCEPTED
 }
 
-pub async fn abort_upload(
-    State(app): State<Arc<App>>,
-    Json(body): Json<TransferRef>,
-) -> StatusCode {
+async fn abort_upload(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
     abort(&app, TransferDirection::Upload, body.id).await
 }
 
-pub async fn clear_uploads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {
+async fn clear_uploads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {
     let Some(statuses) = clear_statuses(body) else {
         return StatusCode::BAD_REQUEST;
     };
@@ -175,14 +192,14 @@ pub async fn clear_uploads(State(app): State<Arc<App>>, Json(body): Json<ClearBo
     StatusCode::ACCEPTED
 }
 
-pub async fn clear_all_downloads(State(app): State<Arc<App>>) -> StatusCode {
+async fn clear_all_downloads(State(app): State<Arc<App>>) -> StatusCode {
     app.client
         .clear_all_transfers(TransferDirection::Download)
         .await;
     StatusCode::ACCEPTED
 }
 
-pub async fn clear_all_uploads(State(app): State<Arc<App>>) -> StatusCode {
+async fn clear_all_uploads(State(app): State<Arc<App>>) -> StatusCode {
     app.client
         .clear_all_transfers(TransferDirection::Upload)
         .await;

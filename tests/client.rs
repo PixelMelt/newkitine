@@ -8,12 +8,14 @@ use tokio::time::timeout;
 
 use common::{client_config, free_port, start_fake_server, temp_dir, tempfile};
 use newkitine::client::Client;
-use newkitine::network::spawn as spawn_network;
+use newkitine::client::{
+    ClientEvent, EnqueueResult, Observation, RetryResult, SearchScope, TransferWork,
+};
+use newkitine::network::{NetworkCommand, NetworkEvent, spawn as spawn_network};
 use newkitine::protocol::PeerMessage;
 use newkitine::types::{
-    ClientEvent, ConnectionType, EnqueueResult, FileAttributes, NetworkCommand, NetworkEvent,
-    Observation, Restriction, RetryResult, SearchScope, SharedFolder, TransferDirection,
-    TransferId, TransferStatus, TransferWork,
+    ConnectionType, FileAttributes, Restriction, SharedFolder, TransferDirection, TransferId,
+    TransferStatus,
 };
 
 async fn wait_client<T>(
@@ -434,7 +436,6 @@ async fn client_receives_search_results() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let results = vec![newkitine::types::FileInfo {
-        code: 1,
         name: "Music\\test query.flac".into(),
         size: 123456,
         attributes: FileAttributes {

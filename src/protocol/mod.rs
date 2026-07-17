@@ -10,10 +10,10 @@ mod wire;
 pub use compress::{compress, decompress};
 pub use distributed::DistributedMessage;
 pub use file::{FileOffset, FileTransferInit};
-pub use peer::{PeerMessage, encode_shared_file_list};
+pub use peer::PeerMessage;
 pub use peer_init::PeerInitMessage;
 pub use server_request::ServerRequest;
-pub use server_response::{LoginOutcome, ParentCandidate, ServerResponse};
+pub use server_response::{LoginOutcome, ParentCandidate, ServerResponse, UserData};
 pub use wire::{MessageReader, MessageWriter, ProtocolError};
 
 pub const LOGIN_VERSION: u32 = 160;

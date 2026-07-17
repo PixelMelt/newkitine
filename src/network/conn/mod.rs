@@ -17,8 +17,9 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+use crate::network::ConnId;
 use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage, ServerResponse};
-use crate::types::{ConnId, ConnectionType};
+use crate::types::ConnectionType;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const FRAME_QUEUE_CAPACITY: usize = 256;

@@ -13,12 +13,13 @@ use super::file::run_file_loop;
 use super::{
     ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, PeerTask, SharedAllowed, connect, write_all,
 };
+use crate::network::ConnId;
 use crate::network::codec::{
     FrameError, MAX_CONTROL_MESSAGE_SIZE, MAX_LARGE_RESPONSE_SIZE, MAX_PEER_MESSAGE_SIZE,
     read_frame_u8, read_payload,
 };
 use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage};
-use crate::types::{ConnId, ConnectionType};
+use crate::types::ConnectionType;
 
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const GHOST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -187,13 +188,15 @@ async fn run_typed_loop(
         ConnectionType::Distributed => {
             let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE_CAPACITY);
             let reader_task = tokio::spawn(read_distrib_frames(reader, frames_tx));
-            run_message_loop(conn_id, events, control, frames, writer, reader_task, false).await;
+            run_message_loop(conn_id, events, control, frames, writer, reader_task, true).await;
         }
         ConnectionType::File => {
             run_file_loop(conn_id, events, control, limits, reader, writer).await;
         }
     }
 }
+
+const OFFLOADED_PARSE_THRESHOLD: usize = 1048576;
 
 enum PeerFrame {
     Message(ConnEventPayload),
@@ -233,7 +236,7 @@ async fn read_peer_frames(
         let code = u32::from_le_bytes(frame[..4].try_into().unwrap());
 
         let is_large_response = matches!(code, 5 | 16);
-        let limit = if is_large_response {
+        let limit = if code == 5 {
             MAX_LARGE_RESPONSE_SIZE
         } else {
             MAX_PEER_MESSAGE_SIZE
@@ -258,7 +261,14 @@ async fn read_peer_frames(
                 return;
             }
         };
-        match PeerMessage::parse(code, &payload) {
+        let parsed = if payload.len() >= OFFLOADED_PARSE_THRESHOLD {
+            tokio::task::spawn_blocking(move || PeerMessage::parse(code, &payload))
+                .await
+                .expect("peer parse task panicked")
+        } else {
+            PeerMessage::parse(code, &payload)
+        };
+        match parsed {
             Ok(message) => {
                 if !is_parsed_message_allowed(&allowed, &message) {
                     debug!(code, username, "dropping disallowed peer response");

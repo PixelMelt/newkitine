@@ -4,17 +4,18 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
-use super::downloads::{TransferIds, TransferPhase};
 use super::queue::UploadQueue;
 use super::registry::{Registry, TransferKey};
-use super::shares::SharesIndex;
 use super::speed::SpeedMeter;
-use super::users::Users;
-use crate::network::NetworkHandle;
+use super::{TransferIds, TransferPhase, TransferRejectReason};
+use crate::client::shares::SharesIndex;
+use crate::client::users::Users;
+use crate::client::{AbortResult, TransferWork};
+use crate::network::ConnId;
+use crate::network::{NetworkCommand, NetworkHandle};
 use crate::protocol::{PeerMessage, ServerRequest, increment_token, initial_token};
 use crate::types::{
-    AbortResult, ConnId, FileAttributes, NetworkCommand, Restriction, TransferDirection,
-    TransferId, TransferRejectReason, TransferSnapshot, TransferStatus, TransferWork,
+    FileAttributes, Restriction, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
 };
 
 const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
@@ -69,10 +70,12 @@ impl UploadTransfer {
     }
 }
 
-pub struct Uploads {
+pub(in crate::client) struct Uploads {
     net: NetworkHandle,
     upload_slots: usize,
     queue_file_limit: usize,
+    queue_size_limit_mb: u64,
+    banned_message: String,
     transfers: Registry<UploadTransfer>,
     queue: UploadQueue,
     token: u32,
@@ -85,11 +88,15 @@ impl Uploads {
         upload_slots: usize,
         queue_file_limit: usize,
         uploads_per_user: usize,
+        queue_size_limit_mb: u64,
+        banned_message: String,
     ) -> Self {
         Self {
             net,
             upload_slots,
             queue_file_limit,
+            queue_size_limit_mb,
+            banned_message,
             transfers: Registry::default(),
             queue: UploadQueue::new(uploads_per_user),
             token: initial_token(),
@@ -106,10 +113,14 @@ impl Uploads {
         upload_slots: usize,
         queue_file_limit: usize,
         uploads_per_user: usize,
+        queue_size_limit_mb: u64,
+        banned_message: String,
     ) {
         self.upload_slots = upload_slots;
         self.queue_file_limit = queue_file_limit;
         self.queue.set_max_per_user(uploads_per_user);
+        self.queue_size_limit_mb = queue_size_limit_mb;
+        self.banned_message = banned_message;
     }
 
     pub fn is_new_upload_accepted(&self) -> bool {
@@ -224,7 +235,7 @@ impl Uploads {
         users: &Users,
     ) -> Result<(PathBuf, u64, FileAttributes), String> {
         if users.is_banned(username) {
-            return Err(TransferRejectReason::BANNED.into());
+            return Err(self.banned_message.clone());
         }
         if let Some(Restriction::Denied { reason }) = users.restriction(username) {
             return Err(reason.clone());
@@ -235,7 +246,22 @@ impl Uploads {
         if self.queue.queued_for(username) >= self.queue_file_limit {
             return Err(TransferRejectReason::TOO_MANY_FILES.into());
         }
+        if self.queue_size_limit_mb > 0
+            && self.queued_bytes_for(username) >= self.queue_size_limit_mb * 1024 * 1024
+        {
+            return Err(TransferRejectReason::TOO_MANY_MEGABYTES.into());
+        }
         Ok((real_path.to_owned(), size, attributes.clone()))
+    }
+
+    fn queued_bytes_for(&self, username: &str) -> u64 {
+        self.transfers
+            .values()
+            .filter(|transfer| {
+                transfer.username == username && transfer.phase == TransferPhase::Queued
+            })
+            .map(|transfer| transfer.size)
+            .sum()
     }
 
     fn enqueue(
@@ -340,7 +366,6 @@ impl Uploads {
         &mut self,
         username: &str,
         token: u32,
-        allowed: bool,
         reason: Option<&str>,
         users: &Users,
     ) -> Vec<TransferWork> {
@@ -357,12 +382,10 @@ impl Uploads {
             self.check_queue(users);
             return updates;
         }
-        if allowed {
-            self.net.send(NetworkCommand::RequestFileConnection {
-                username: username.to_owned(),
-                token,
-            });
-        }
+        self.net.send(NetworkCommand::RequestFileConnection {
+            username: username.to_owned(),
+            token,
+        });
         Vec::new()
     }
 
@@ -479,7 +502,15 @@ impl Uploads {
             TransferPhase::Transferring if transfer.bytes_done >= transfer.size => {
                 self.finish(&key, true)
             }
-            TransferPhase::Transferring => self.fail(&key, "connection closed".into()),
+            TransferPhase::Transferring => {
+                self.net.peer(
+                    key.0.clone(),
+                    PeerMessage::UploadFailed {
+                        file: key.1.clone(),
+                    },
+                );
+                self.fail(&key, "connection closed".into())
+            }
             _ => {
                 self.deactivate(&key);
                 Vec::new()
@@ -624,6 +655,33 @@ impl Uploads {
         updates
     }
 
+    pub fn revoke_all(&mut self) -> Vec<TransferWork> {
+        let active: Vec<TransferKey> = self
+            .transfers
+            .values()
+            .filter(|transfer| transfer.phase.is_active())
+            .map(UploadTransfer::key)
+            .collect();
+        let mut updates = Vec::new();
+        for key in active {
+            self.deactivate(&key);
+            if let Some(conn_id) = self.transfers.detach_conn(&key) {
+                self.net.send(NetworkCommand::CloseConnection(conn_id));
+            }
+            let transfer = self.transfers.get_mut(&key).unwrap();
+            transfer.phase = TransferPhase::Aborted;
+            updates.push(TransferWork::Update(transfer.snapshot()));
+            self.net.peer(
+                key.0,
+                PeerMessage::UploadDenied {
+                    file: key.1,
+                    reason: TransferRejectReason::CANCELLED.into(),
+                },
+            );
+        }
+        updates
+    }
+
     pub fn reset(&mut self) -> Vec<TransferWork> {
         let active: Vec<TransferKey> = self
             .transfers
@@ -704,7 +762,7 @@ mod tests {
     #[tokio::test]
     async fn restriction_tiers_control_slot_grants() {
         let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 1);
+        let mut uploads = Uploads::new(net, 0, 500, 1, 0, "Banned".into());
         let mut ids = TransferIds::new(&[]);
 
         let dir =
@@ -717,10 +775,12 @@ mod tests {
                 path: dir.clone(),
                 buddy_only: false,
             }],
+            &[],
             &dir.with_extension("slots.cache"),
             &|_| {},
         )
-        .expect("scan test shares");
+        .expect("scan test shares")
+        .index;
 
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
         users.set_restriction("leech".into(), Restriction::Deprioritized);
@@ -742,13 +802,13 @@ mod tests {
         );
         assert!(accepted);
 
-        uploads.set_limits(1, 500, 1);
+        uploads.set_limits(1, 500, 1, 0, "Banned".into());
         uploads.check_queue(&users);
         assert!(uploads.queue.has_active("human"));
         assert!(!uploads.queue.has_active("leech"));
 
         users.set_restriction("leech".into(), Restriction::Hold);
-        uploads.set_limits(2, 500, 1);
+        uploads.set_limits(2, 500, 1, 0, "Banned".into());
         uploads.check_queue(&users);
         assert!(!uploads.queue.has_active("leech"));
 
@@ -760,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn denied_restriction_rejects_queue_requests() {
         let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 2, 500, 1);
+        let mut uploads = Uploads::new(net, 2, 500, 1, 0, "Banned".into());
         let mut ids = TransferIds::new(&[]);
 
         let dir = std::env::temp_dir().join(format!("newkitine-deny-test-{}", std::process::id()));
@@ -772,10 +832,12 @@ mod tests {
                 path: dir.clone(),
                 buddy_only: false,
             }],
+            &[],
             &dir.with_extension("deny.cache"),
             &|_| {},
         )
-        .expect("scan test shares");
+        .expect("scan test shares")
+        .index;
 
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
         users.set_restriction(
@@ -798,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn per_user_cap_limits_concurrent_uploads() {
         let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 2);
+        let mut uploads = Uploads::new(net, 0, 500, 2, 0, "Banned".into());
         let mut ids = TransferIds::new(&[]);
 
         let dir =
@@ -813,10 +875,12 @@ mod tests {
                 path: dir.clone(),
                 buddy_only: false,
             }],
+            &[],
             &dir.with_extension("peruser.cache"),
             &|_| {},
         )
-        .expect("scan test shares");
+        .expect("scan test shares")
+        .index;
 
         let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
         for name in ["Music\\a.mp3", "Music\\b.mp3", "Music\\c.mp3"] {
@@ -825,12 +889,12 @@ mod tests {
             assert!(accepted);
         }
 
-        uploads.set_limits(999, 500, 2);
+        uploads.set_limits(999, 500, 2, 0, "Banned".into());
         uploads.check_queue(&users);
         assert_eq!(uploads.queue.active_count("fan"), 2);
         assert_eq!(uploads.queue.len(), 1);
 
-        uploads.set_limits(999, 500, 0);
+        uploads.set_limits(999, 500, 0, 0, "Banned".into());
         uploads.check_queue(&users);
         assert_eq!(uploads.queue.active_count("fan"), 3);
         assert_eq!(uploads.queue.len(), 0);

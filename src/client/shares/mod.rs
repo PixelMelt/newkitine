@@ -1,17 +1,43 @@
 mod cache;
 mod scan;
+mod wire;
 
-pub use scan::{ScanError, scan};
+pub(crate) use cache::save as save_cache;
+pub(crate) use scan::AttributeCache;
+pub use scan::{ScanError, ScanOutcome, scan};
+pub(crate) use wire::encode_shared_file_list;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::types::{FileInfo, FolderContents, ShareCatalog, ShareCatalogFile, ShareCatalogFolder};
+use crate::types::{FileAttributes, FileInfo, FolderContents};
 
-const MAX_SEARCH_RESULTS: usize = 300;
-const MIN_SEARCH_CHARS: usize = 3;
+#[derive(Debug)]
+pub struct ShareCatalog {
+    pub folders: Vec<ShareCatalogFolder>,
+    pub files: Vec<ShareCatalogFile>,
+    pub folders_by_path: Vec<u32>,
+}
+
+#[derive(Debug)]
+pub struct ShareCatalogFolder {
+    pub virtual_path: Box<str>,
+    pub virtual_path_lower: Box<str>,
+    pub real_path: std::path::PathBuf,
+    pub files: Range<u32>,
+    pub buddy_only: bool,
+}
+
+#[derive(Debug)]
+pub struct ShareCatalogFile {
+    pub name: Box<str>,
+    pub name_lower: Box<str>,
+    pub real_name: std::ffi::OsString,
+    pub size: u64,
+    pub attributes: FileAttributes,
+}
 
 #[derive(Debug, Default)]
 pub(super) struct WordPostings {
@@ -169,8 +195,10 @@ impl SharesIndex {
         search_term: &str,
         is_buddy: bool,
         excluded_phrases: &[String],
+        max_results: usize,
+        min_chars: usize,
     ) -> Vec<FileInfo> {
-        if search_term.len() < MIN_SEARCH_CHARS {
+        if search_term.len() < min_chars {
             return Vec::new();
         }
         let term_lower = search_term.to_lowercase();
@@ -212,13 +240,12 @@ impl SharesIndex {
                     return None;
                 }
                 Some(FileInfo {
-                    code: 1,
                     name,
                     size: file.size,
                     attributes: file.attributes.clone(),
                 })
             })
-            .take(MAX_SEARCH_RESULTS)
+            .take(max_results)
             .collect();
         results.sort_by(|left, right| left.name.cmp(&right.name));
         results
@@ -294,7 +321,6 @@ impl SharesIndex {
 
     fn file_view(&self, file: &ShareCatalogFile) -> FileInfo {
         FileInfo {
-            code: 1,
             name: file.name.to_string(),
             size: file.size,
             attributes: file.attributes.clone(),

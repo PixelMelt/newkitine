@@ -1,7 +1,8 @@
 <script>
   import { searches, wishlist, rooms, notice } from '../lib/stores.js';
   import { searchTarget, openBrowse, openUserInfo } from '../lib/ui.js';
-  import { post, del, formatSize, formatAttributes, baseName, folderName } from '../lib/api.js';
+  import { post, del } from '../lib/api.js';
+  import { formatSize, formatAttributes, baseName, folderName } from '../lib/format.js';
   import { emptyFilters, compileFilters } from '../lib/filters.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';

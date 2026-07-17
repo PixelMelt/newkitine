@@ -9,6 +9,7 @@ mod events;
 mod geo;
 mod gluetun;
 mod interests;
+mod peer_history;
 mod projection;
 mod search;
 mod session;

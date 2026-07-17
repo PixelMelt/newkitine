@@ -1,17 +1,30 @@
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::MySqlPool;
 
-use crate::types::{InterestsView, Recommendations, SimilarUser};
+use crate::types::{Recommendations, SimilarUser};
 
 use super::api;
 use super::contract::AppEvent;
 use super::state::App;
+
+#[derive(Default, Clone, serde::Serialize)]
+pub struct InterestsView {
+    pub liked: Vec<String>,
+    pub hated: Vec<String>,
+    pub recommendations: Recommendations,
+    pub unrecommendations: Recommendations,
+    pub recommendations_for: Option<String>,
+    pub recommendations_global: bool,
+    pub similar_users: Vec<SimilarUser>,
+    pub similar_users_for: Option<String>,
+}
 
 #[derive(Default)]
 pub struct Interests {
@@ -120,11 +133,14 @@ pub async fn load_interests(pool: &MySqlPool, kind: &str) -> Vec<String> {
 }
 
 async fn insert_interest(pool: &MySqlPool, kind: &str, thing: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT IGNORE INTO interests (kind, thing) VALUES (?, ?)")
-        .bind(kind)
-        .bind(thing)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO interests (kind, thing) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE thing = thing",
+    )
+    .bind(kind)
+    .bind(thing)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -137,21 +153,28 @@ async fn delete_interest(pool: &MySqlPool, kind: &str, thing: &str) -> Result<()
     Ok(())
 }
 
-pub async fn interests(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+pub(super) fn router() -> Router<Arc<App>> {
+    Router::new()
+        .route("/api/interests", get(interests))
+        .route("/api/interests/add", post(add_interest))
+        .route("/api/interests/remove", post(remove_interest))
+        .route("/api/interests/refresh", post(refresh_interests))
+        .route("/api/interests/item", post(item_recommendations))
+}
+
+async fn interests(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
     Json(json!({ "interests": data.interests.view() }))
 }
 
 #[derive(Deserialize)]
-pub struct InterestBody {
+struct InterestBody {
     kind: String,
     thing: String,
 }
 
-pub async fn add_interest(
-    State(app): State<Arc<App>>,
-    Json(body): Json<InterestBody>,
-) -> StatusCode {
+async fn add_interest(State(app): State<Arc<App>>, Json(body): Json<InterestBody>) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if !matches!(body.kind.as_str(), "liked" | "hated") {
         return StatusCode::BAD_REQUEST;
     }
@@ -176,10 +199,11 @@ pub async fn add_interest(
     StatusCode::ACCEPTED
 }
 
-pub async fn remove_interest(
+async fn remove_interest(
     State(app): State<Arc<App>>,
     Json(body): Json<InterestBody>,
 ) -> StatusCode {
+    let _mutation = app.list_mutation.lock().await;
     if !matches!(body.kind.as_str(), "liked" | "hated") {
         return StatusCode::BAD_REQUEST;
     }
@@ -201,7 +225,10 @@ pub async fn remove_interest(
     StatusCode::ACCEPTED
 }
 
-pub async fn refresh_interests(State(app): State<Arc<App>>) -> StatusCode {
+async fn refresh_interests(State(app): State<Arc<App>>) -> StatusCode {
+    if let Err(status) = api::require_login(&app) {
+        return status;
+    }
     let no_interests = {
         let data = app.projection.read();
         data.interests.view.liked.is_empty() && data.interests.view.hated.is_empty()
@@ -216,14 +243,17 @@ pub async fn refresh_interests(State(app): State<Arc<App>>) -> StatusCode {
 }
 
 #[derive(Deserialize)]
-pub struct ItemBody {
+struct ItemBody {
     thing: String,
 }
 
-pub async fn item_recommendations(
+async fn item_recommendations(
     State(app): State<Arc<App>>,
     Json(body): Json<ItemBody>,
 ) -> StatusCode {
+    if let Err(status) = api::require_login(&app) {
+        return status;
+    }
     app.client.request_item_recommendations(&body.thing).await;
     app.client.request_item_similar_users(&body.thing).await;
     StatusCode::ACCEPTED

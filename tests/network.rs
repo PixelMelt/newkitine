@@ -9,8 +9,9 @@ use tokio::time::timeout;
 
 use common::{free_port, start_fake_server, tempfile};
 use newkitine::network::spawn;
+use newkitine::network::{NetworkCommand, NetworkEvent};
 use newkitine::protocol::PeerMessage;
-use newkitine::types::{ConnectionType, NetworkCommand, NetworkEvent};
+use newkitine::types::ConnectionType;
 
 async fn wait_for<T>(
     events: &mut Receiver<NetworkEvent>,

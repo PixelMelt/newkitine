@@ -1,7 +1,8 @@
 <script>
   import { privateChats, chatPartners, loadChatHistory, status } from '../lib/stores.js';
   import { activeTab, chatTarget } from '../lib/ui.js';
-  import { post, del, formatTime } from '../lib/api.js';
+  import { post, del } from '../lib/api.js';
+  import { formatTime } from '../lib/format.js';
   import { autoscroll } from '../lib/autoscroll.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';

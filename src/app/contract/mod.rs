@@ -5,11 +5,15 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::types::{
-    BuddyView, ChatMessage, InterestsView, PublicSettings, RoomEntry, RoomsView,
-    SearchResponseView, SearchView, Status, TransferDirection, TransferId, TransferView,
-    UserInfoView,
-};
+use crate::app::settings::PublicSettings;
+use crate::types::{TransferDirection, TransferId};
+
+use super::chat::{ChatMessage, RoomEntry, RoomsView};
+use super::interests::InterestsView;
+use super::search::{SearchResponseView, SearchView};
+use super::session::Status;
+use super::transfers::TransferView;
+use super::users::{BuddyView, UserInfoView};
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -67,9 +71,15 @@ pub enum AppEvent {
     UserInfo {
         info: UserInfoView,
     },
+    UserInfoRemoved {
+        username: String,
+    },
     BrowseLoaded {
         username: String,
         received_at: i64,
+    },
+    BrowseRemoved {
+        username: String,
     },
     PrivateMessage {
         username: String,
@@ -136,5 +146,6 @@ pub struct Snapshot<'a> {
     pub rooms: &'a RoomsView,
     pub chat_partners: &'a [String],
     pub browses: HashMap<&'a String, i64>,
+    pub user_infos: Vec<&'a UserInfoView>,
     pub settings: SettingsPayload,
 }

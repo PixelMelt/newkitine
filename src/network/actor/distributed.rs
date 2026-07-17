@@ -4,10 +4,11 @@ use std::net::SocketAddrV4;
 use tracing::{debug, info};
 
 use super::Actor;
+use crate::network::ConnId;
+use crate::network::NetworkEvent;
 use crate::network::conn::ConnControl;
 use crate::protocol::{DistributedMessage, ParentCandidate, ServerRequest};
-use crate::types::NetworkEvent;
-use crate::types::{ConnId, ConnectionType};
+use crate::types::ConnectionType;
 
 const MAX_DISTRIB_CHILDREN_LIMIT: u32 = 10;
 

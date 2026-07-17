@@ -40,7 +40,8 @@ export function userMenu(username, { skip = [] } = {}) {
 			action: async () => {
 				try {
 					await post(`/users/${encoded}/ban_ip`);
-				} catch {
+				} catch (error) {
+					if (error.status !== 404) throw error;
 					alert(`No known IP address for ${username}.`);
 				}
 			},

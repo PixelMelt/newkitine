@@ -51,7 +51,10 @@ pub(super) fn place_download(
 ) -> std::io::Result<PathBuf> {
     fs::create_dir_all(download_dir)?;
     let (destination, mut claimed) = claim_destination(download_dir, basename)?;
-    let installed = fs::rename(incomplete_path, &destination).or_else(|_| {
+    let installed = fs::rename(incomplete_path, &destination).or_else(|error| {
+        if error.kind() != std::io::ErrorKind::CrossesDevices {
+            return Err(error);
+        }
         let mut source = fs::File::open(incomplete_path)?;
         std::io::copy(&mut source, &mut claimed)?;
         claimed.sync_all()

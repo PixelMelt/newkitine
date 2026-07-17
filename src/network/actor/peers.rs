@@ -6,9 +6,11 @@ use tracing::warn;
 
 use super::indirect::InitId;
 use super::{Actor, CONN_CONTROL_QUEUE_CAPACITY};
+use crate::network::ConnId;
+use crate::network::NetworkEvent;
 use crate::network::conn::{ConnControl, PeerTask, run_incoming_peer, run_outgoing_peer};
-use crate::protocol::{PeerInitMessage, PeerMessage};
-use crate::types::{ConnId, ConnectionType, NetworkEvent};
+use crate::protocol::{PeerInitMessage, PeerMessage, ServerRequest};
+use crate::types::ConnectionType;
 
 #[derive(Clone)]
 pub(super) struct PeerIdentity {
@@ -22,6 +24,7 @@ pub(super) struct Conn {
     pub(super) init_id: Option<InitId>,
     pub(super) established: bool,
     pub(super) file_token: Option<u32>,
+    pub(super) pierce_token: Option<u32>,
     pub(super) ip: Option<Ipv4Addr>,
 }
 
@@ -115,6 +118,7 @@ impl Actor {
             init_id: None,
             established: true,
             file_token: None,
+            pierce_token: None,
             ip,
         });
         let task = PeerTask {
@@ -124,7 +128,7 @@ impl Actor {
             allowed: self.allowed.clone(),
             limits: self.limits.clone(),
         };
-        tokio::spawn(run_incoming_peer(task, stream, addr));
+        super::spawn_conn_task("incoming peer", run_incoming_peer(task, stream, addr));
         self.emit(NetworkEvent::ConnectionCount(self.peers.count()));
     }
 
@@ -136,6 +140,10 @@ impl Actor {
         conn_type: ConnectionType,
         init_id: Option<InitId>,
     ) -> ConnId {
+        let pierce_token = match first_message {
+            PeerInitMessage::PierceFireWall { token } => Some(token),
+            _ => None,
+        };
         let (control_tx, control_rx) = mpsc::channel(CONN_CONTROL_QUEUE_CAPACITY);
         let conn_id = self.peers.add(Conn {
             control: control_tx,
@@ -146,6 +154,7 @@ impl Actor {
             init_id,
             established: false,
             file_token: None,
+            pierce_token,
             ip: Some(*addr.ip()),
         });
         let task = PeerTask {
@@ -155,13 +164,16 @@ impl Actor {
             allowed: self.allowed.clone(),
             limits: self.limits.clone(),
         };
-        tokio::spawn(run_outgoing_peer(
-            task,
-            SocketAddr::V4(addr),
-            username,
-            first_message,
-            conn_type,
-        ));
+        super::spawn_conn_task(
+            "outgoing peer",
+            run_outgoing_peer(
+                task,
+                SocketAddr::V4(addr),
+                username,
+                first_message,
+                conn_type,
+            ),
+        );
         self.emit(NetworkEvent::ConnectionCount(self.peers.count()));
         conn_id
     }
@@ -205,11 +217,7 @@ impl Actor {
         };
         let username = identity.username.clone();
         let close_after = matches!(message, PeerMessage::FileSearchResponse { .. });
-        self.emit(NetworkEvent::PeerMessage {
-            username,
-            conn_id,
-            message,
-        });
+        self.emit(NetworkEvent::PeerMessage { username, message });
         if close_after {
             self.close_conn(conn_id);
         }
@@ -220,6 +228,15 @@ impl Actor {
             return;
         };
         self.emit(NetworkEvent::ConnectionCount(self.peers.count()));
+
+        if !conn.established
+            && let (Some(token), Some(identity)) = (conn.pierce_token, &conn.identity)
+        {
+            self.send_to_server(ServerRequest::CantConnectToPeer {
+                token,
+                user: identity.username.clone(),
+            });
+        }
 
         if let Some(init_id) = conn.init_id {
             self.detach_init_conn(init_id, conn_id, error.as_deref());

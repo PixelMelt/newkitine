@@ -1,8 +1,9 @@
 use tracing::warn;
 
 use super::Actor;
+use crate::network::ConnId;
+use crate::network::NetworkEvent;
 use crate::network::conn::ConnEvent;
-use crate::types::{ConnId, NetworkEvent};
 
 impl Actor {
     fn file_transfer_identity(&mut self, conn_id: ConnId) -> Option<(String, u32)> {

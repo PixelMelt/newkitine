@@ -4,16 +4,17 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::client::Client;
-use crate::types::{ClientBootstrap, Settings, TransferSnapshot};
+use crate::client::ClientBootstrap;
+use crate::types::TransferSnapshot;
 
 use super::behavior::{self, Behavior};
 use super::chat::Chat;
-use super::config::{self, Bootstrap, GluetunConfig};
+use super::config::{Bootstrap, GluetunConfig};
 use super::interests::{self, Interests};
 use super::projection::{AppData, Projection};
 use super::search::{self, SearchState};
 use super::session::Session;
-use super::settings::{self, SettingsState};
+use super::settings::{self, Settings, SettingsState};
 use super::state::App;
 use super::stats::{self, StatsSink};
 use super::transfers::{self, Transfers};
@@ -72,7 +73,7 @@ pub async fn run(config_path: PathBuf) {
             defaults
         }
     };
-    let locked_settings = config::apply_settings_env(&mut stored_settings.clone());
+    let locked_settings = settings::apply_settings_env(&mut stored_settings.clone());
 
     let gluetun_port = match &bootstrap.gluetun {
         Some(gluetun) => Some(initial_gluetun_port(gluetun).await),
@@ -139,6 +140,7 @@ pub async fn run(config_path: PathBuf) {
         geo,
         stats: StatsSink::default(),
         behavior: Behavior::default(),
+        list_mutation: tokio::sync::Mutex::new(()),
     });
 
     behavior::load(&app).await;
@@ -146,6 +148,7 @@ pub async fn run(config_path: PathBuf) {
     let events_task = tokio::spawn(events::run(app.clone(), client_events));
     let worker_task = tokio::spawn(transfers::run_worker(app.clone(), transfer_events));
     let stats_task = tokio::spawn(stats::flush_loop(app.clone()));
+    let rescan_task = tokio::spawn(daily_rescan(app.clone()));
     let gluetun_task = match gluetun_config {
         Some(gluetun) => tokio::spawn(gluetun::watch(
             app.clone(),
@@ -176,6 +179,7 @@ pub async fn run(config_path: PathBuf) {
         result = events_task => task_ended("client event loop", result),
         result = worker_task => task_ended("transfer worker", result),
         result = stats_task => task_ended("statistics flush loop", result),
+        result = rescan_task => task_ended("daily rescan scheduler", result),
         result = gluetun_task => task_ended("gluetun watcher", result),
         result = axum::serve(listener, router) => {
             match result {
@@ -183,6 +187,28 @@ pub async fn run(config_path: PathBuf) {
                 Err(error) => tracing::error!(%error, "web server failed"),
             }
             std::process::exit(1);
+        }
+    }
+}
+
+async fn daily_rescan(app: Arc<App>) {
+    let mut ticks = tokio::time::interval(std::time::Duration::from_secs(60));
+    let mut last_fired_day = None;
+    loop {
+        ticks.tick().await;
+        let settings = app.settings.effective();
+        if !settings.rescan_daily {
+            continue;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let day = now / 86_400;
+        if (now / 3600) % 24 == settings.rescan_hour_utc as u64 && last_fired_day != Some(day) {
+            last_fired_day = Some(day);
+            info!("starting scheduled daily share rescan");
+            app.client.rescan_shares().await;
         }
     }
 }

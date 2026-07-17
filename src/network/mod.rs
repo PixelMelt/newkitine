@@ -1,10 +1,11 @@
 mod actor;
+mod api;
 mod codec;
 mod conn;
 
 use tokio::sync::mpsc;
 
-use crate::types::{NetworkCommand, NetworkEvent};
+pub use api::{ConnId, NetworkCommand, NetworkEvent};
 
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
 pub const EVENT_QUEUE_CAPACITY: usize = 4096;
@@ -42,6 +43,12 @@ impl NetworkHandle {
             bytes,
         });
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_channel() -> (NetworkHandle, mpsc::Receiver<NetworkCommand>) {
+    let (commands, rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
+    (NetworkHandle { commands }, rx)
 }
 
 pub fn spawn() -> (NetworkHandle, mpsc::Receiver<NetworkEvent>) {

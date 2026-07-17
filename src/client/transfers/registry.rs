@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::types::{ConnId, TransferId};
+use crate::network::ConnId;
+use crate::types::TransferId;
 
 pub(super) type TransferKey = (String, String);
 

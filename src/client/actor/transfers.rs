@@ -1,10 +1,10 @@
 use tokio::sync::oneshot;
 
 use super::ClientActor;
-use crate::types::{
-    AbortResult, ConnId, EnqueueResult, FileAttributes, NetworkCommand, Restriction, RetryResult,
-    TransferDirection, TransferId, TransferStatus, TransferWork,
-};
+use crate::client::{AbortResult, EnqueueResult, RetryResult, TransferWork};
+use crate::network::ConnId;
+use crate::network::NetworkCommand;
+use crate::types::{FileAttributes, Restriction, TransferDirection, TransferId, TransferStatus};
 
 use crate::protocol::PeerMessage;
 
@@ -23,19 +23,24 @@ impl ClientActor {
         attributes: FileAttributes,
         ack: oneshot::Sender<EnqueueResult>,
     ) {
+        let defer_requests = self.awaiting_share_index();
         let (result, events) = self.downloads.enqueue(
             &mut self.transfer_ids,
             username,
             virtual_path,
             size,
             attributes,
+            defer_requests,
         );
         self.emit_transfers(events);
         Self::ack(ack, result);
     }
 
     pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
-        let (result, events) = self.downloads.retry(&mut self.transfer_ids, id);
+        let defer_requests = self.awaiting_share_index();
+        let (result, events) = self
+            .downloads
+            .retry(&mut self.transfer_ids, id, defer_requests);
         self.emit_transfers(events);
         Self::ack(ack, result);
     }
@@ -99,6 +104,9 @@ impl ClientActor {
         self.emit_transfers(downloads);
         let uploads = self.uploads.sweep_request_timeouts(&self.users);
         self.emit_transfers(uploads);
+        if self.session.logged_in {
+            self.downloads.request_queue_positions();
+        }
     }
 
     pub(super) fn handle_peer_connection_error(
@@ -107,6 +115,19 @@ impl ClientActor {
         unsent: &[PeerMessage],
         is_offline: bool,
     ) {
+        for message in unsent {
+            match message {
+                PeerMessage::SharedFileListRequest => {
+                    self.net
+                        .send(NetworkCommand::DisallowSharedListUser(username.to_owned()));
+                }
+                PeerMessage::UserInfoRequest => {
+                    self.net
+                        .send(NetworkCommand::DisallowUserInfoUser(username.to_owned()));
+                }
+                _ => {}
+            }
+        }
         let downloads = self
             .downloads
             .handle_peer_connection_error(username, unsent, is_offline);

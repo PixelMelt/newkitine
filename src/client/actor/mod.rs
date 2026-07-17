@@ -14,16 +14,12 @@ use tokio::time::{Instant, sleep_until};
 use tracing::{debug, info, warn};
 
 use super::ClientCommand;
-use super::downloads::{Downloads, TransferIds};
-use super::search::Searches;
-use super::uploads::Uploads;
+use super::transfers::{Downloads, TransferIds, Uploads};
 use super::users::Users;
-use crate::network::{NetworkHandle, spawn as spawn_network};
+use crate::client::{ClientBootstrap, ClientEvent, Observation, TransferWork};
+use crate::network::{NetworkCommand, NetworkEvent, NetworkHandle, spawn as spawn_network};
 use crate::protocol::PeerMessage;
-use crate::types::{
-    ClientBootstrap, ClientEvent, NetworkCommand, NetworkEvent, Observation, RuntimeConfig,
-    TransferDirection, TransferWork,
-};
+use crate::types::{RuntimeConfig, TransferDirection};
 
 use search::Wishlist;
 use session::Session;
@@ -37,7 +33,7 @@ struct ClientActor {
     events: mpsc::Sender<ClientEvent>,
     transfers: mpsc::Sender<TransferWork>,
     token_counter: Arc<AtomicU32>,
-    searches: Searches,
+    search_tokens: std::collections::HashSet<u32>,
     transfer_ids: TransferIds,
     downloads: Downloads,
     uploads: Uploads,
@@ -58,24 +54,30 @@ pub(crate) async fn run(
 ) {
     let (net, mut net_events) = spawn_network();
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel();
+    let (place_tx, mut place_rx) = mpsc::unbounded_channel();
+    let (browse_tx, mut browse_rx) = mpsc::unbounded_channel();
 
     let mut actor = ClientActor {
         net: net.clone(),
         events,
         transfers,
         token_counter,
-        searches: Searches::new(),
+        search_tokens: std::collections::HashSet::new(),
         transfer_ids: TransferIds::new(&config.transfers),
         downloads: Downloads::new(
             net.clone(),
             config.runtime.transfers.download_dir.clone(),
             config.runtime.transfers.incomplete_dir.clone(),
+            config.runtime.transfers.download_username_subfolders,
+            place_tx,
         ),
         uploads: Uploads::new(
             net.clone(),
             config.runtime.transfers.upload_slots,
             config.runtime.transfers.queue_file_limit,
             config.runtime.transfers.uploads_per_user,
+            config.runtime.transfers.queue_size_limit_mb,
+            config.runtime.transfers.banned_message.clone(),
         ),
         users: Users::new(
             config.buddies.into_iter().collect(),
@@ -83,7 +85,7 @@ pub(crate) async fn run(
             config.ignored.into_iter().collect(),
             config.ip_bans,
         ),
-        sharing: Sharing::new(scan_tx, config.scan_cache, net.clone()),
+        sharing: Sharing::new(scan_tx, browse_tx, config.scan_cache),
         session: Session::new(),
         wishlist: Wishlist::new(config.wishlist),
         liked_interests: config.liked_interests,
@@ -133,9 +135,20 @@ pub(crate) async fn run(
                 }
             }
             result = scan_rx.recv() => {
-                if let Some((generation, update)) = result {
-                    actor.handle_scan_update(generation, update);
-                }
+                let (generation, update) =
+                    result.expect("scan channel closed while the actor holds the sender");
+                actor.handle_scan_update(generation, update);
+            }
+            result = place_rx.recv() => {
+                let (key, result) =
+                    result.expect("placement channel closed while the actor holds the sender");
+                let updates = actor.downloads.handle_placement_done(&key, result);
+                actor.emit_transfers(updates);
+            }
+            result = browse_rx.recv() => {
+                let encoded =
+                    result.expect("browse channel closed while the actor holds the sender");
+                actor.handle_browse_encoded(encoded);
             }
             _ = sweep.tick() => actor.sweep(),
             _ = sleep_until(reconnect_deadline), if actor.session.reconnect_at.is_some() => {
@@ -185,7 +198,7 @@ impl ClientActor {
                 scope,
             } => self.start_search(token, query, scope),
             ClientCommand::CancelSearch { token } => {
-                self.searches.remove(token);
+                self.search_tokens.remove(&token);
                 self.net.send(NetworkCommand::DisallowSearchToken(token));
             }
             ClientCommand::Download {
@@ -242,11 +255,13 @@ impl ClientActor {
                 username,
                 restriction,
             } => self.set_user_restriction(username, restriction),
+            ClientCommand::AddInterest { thing, hated } => self.add_interest(thing, hated),
+            ClientCommand::RemoveInterest { thing, hated } => self.remove_interest(&thing, hated),
             ClientCommand::AddWish { term } => self.add_wish(term),
             ClientCommand::RemoveWish { term } => self.remove_wish(&term),
             ClientCommand::RescanShares => self.start_scan(),
             ClientCommand::ApplyConfig { config, ack } => {
-                self.apply_config(config);
+                self.apply_config(*config);
                 Self::ack(ack, ());
             }
             ClientCommand::Server(request) => self.net.server(request),
@@ -268,6 +283,9 @@ impl ClientActor {
             NetworkEvent::LoggedIn { username, banner } => self.handle_logged_in(username, banner),
             NetworkEvent::LoginRejected { reason, detail } => {
                 self.emit(ClientEvent::LoginFailed { reason, detail });
+            }
+            NetworkEvent::ListenFailed { port, error } => {
+                self.handle_listen_failed(port, error);
             }
             NetworkEvent::ServerDisconnected { manual } => self.handle_server_disconnected(manual),
             NetworkEvent::ServerMessage(message) => self.handle_server_message(message),
@@ -341,9 +359,13 @@ impl ClientActor {
                 token,
                 error,
             } => {
-                let updates =
+                let updates = if self.downloads.owns_token(&username, token) {
+                    self.downloads
+                        .handle_transfer_error(&username, token, &error)
+                } else {
                     self.uploads
-                        .handle_transfer_error(&username, token, &error, &self.users);
+                        .handle_transfer_error(&username, token, &error, &self.users)
+                };
                 self.emit_transfers(updates);
             }
             NetworkEvent::FileConnectionClosed {

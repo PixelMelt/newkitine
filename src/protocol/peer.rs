@@ -1,9 +1,11 @@
 use super::compress::{compress, decompress};
 use super::wire::{MessageReader, MessageWriter, ProtocolError};
-use crate::types::{FileAttributes, FileInfo, FolderContents, ShareCatalog, TransferDirection};
+use crate::types::{FileAttributes, FileInfo, FolderContents, TransferDirection};
 
-const MAX_SHARES_SIZE: usize = 2147483648;
+const MAX_SHARES_SIZE: usize = 268435456;
 const MAX_RESULTS_SIZE: usize = 134217728;
+const MAX_SEARCH_RESULTS_PER_RESPONSE: usize = 5000;
+const MAX_USER_PICTURE_SIZE: usize = 8388608;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PeerMessage {
@@ -84,6 +86,23 @@ pub enum PeerMessage {
     UnknownPeerMessage,
 }
 
+impl TransferDirection {
+    pub(super) fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Download),
+            1 => Some(Self::Upload),
+            _ => None,
+        }
+    }
+
+    pub(super) fn as_u32(self) -> u32 {
+        match self {
+            Self::Download => 0,
+            Self::Upload => 1,
+        }
+    }
+}
+
 fn read_file_attributes(r: &mut MessageReader) -> Result<FileAttributes, ProtocolError> {
     let mut attrs = FileAttributes::default();
     let num = r.read_u32()?;
@@ -121,7 +140,7 @@ fn write_file_attributes(w: &mut MessageWriter, attrs: &FileAttributes) {
 }
 
 fn read_file_entry(r: &mut MessageReader, backslash_name: bool) -> Result<FileInfo, ProtocolError> {
-    let code = r.read_u8()?;
+    r.read_u8()?;
     let mut name = r.read_string()?;
     if backslash_name {
         name = name.replace('/', "\\");
@@ -131,7 +150,6 @@ fn read_file_entry(r: &mut MessageReader, backslash_name: bool) -> Result<FileIn
     r.skip(ext_len)?;
     let attributes = read_file_attributes(r)?;
     Ok(FileInfo {
-        code,
         name,
         size,
         attributes,
@@ -141,8 +159,16 @@ fn read_file_entry(r: &mut MessageReader, backslash_name: bool) -> Result<FileIn
 fn read_file_list(
     r: &mut MessageReader,
     backslash_name: bool,
+    max: usize,
 ) -> Result<Vec<FileInfo>, ProtocolError> {
     let num = r.read_u32()? as usize;
+    if num > max {
+        return Err(ProtocolError::TooManyEntries {
+            what: "file list",
+            count: num,
+            limit: max,
+        });
+    }
     let mut files = Vec::with_capacity(num.min(65536));
     for _ in 0..num {
         files.push(read_file_entry(r, backslash_name)?);
@@ -158,7 +184,7 @@ fn read_folder_list(r: &mut MessageReader) -> Result<Vec<FolderContents>, Protoc
     let mut folders = Vec::with_capacity(num.min(65536));
     for _ in 0..num {
         let directory = r.read_string()?.replace('/', "\\");
-        let files = read_file_list(r, false)?;
+        let files = read_file_list(r, false, usize::MAX)?;
         folders.push(FolderContents { directory, files });
     }
     if folders.len() > 1 {
@@ -168,7 +194,7 @@ fn read_folder_list(r: &mut MessageReader) -> Result<Vec<FolderContents>, Protoc
 }
 
 fn write_file_entry(w: &mut MessageWriter, file: &FileInfo) {
-    w.write_u8(file.code);
+    w.write_u8(1);
     w.write_string(&file.name);
     w.write_u64(file.size);
     w.write_u32(0);
@@ -189,74 +215,6 @@ fn write_folder_list(w: &mut MessageWriter, folders: &[FolderContents]) {
         write_file_list(w, &folder.files);
     }
 }
-
-pub fn encode_shared_file_list(catalog: &ShareCatalog, is_buddy: bool) -> Vec<u8> {
-    use std::io::Write;
-
-    let mut framed = vec![0; 8];
-    framed[4..8].copy_from_slice(&5u32.to_le_bytes());
-    let mut encoder = flate2::write::ZlibEncoder::new(framed, flate2::Compression::new(4));
-    write_u32_to(
-        &mut encoder,
-        catalog
-            .folders_by_path
-            .iter()
-            .map(|&folder| &catalog.folders[folder as usize])
-            .filter(|folder| is_buddy || !folder.buddy_only)
-            .count() as u32,
-    );
-    for &folder_id in &catalog.folders_by_path {
-        let folder = &catalog.folders[folder_id as usize];
-        if !is_buddy && folder.buddy_only {
-            continue;
-        }
-        write_string_to(&mut encoder, &folder.virtual_path);
-        write_u32_to(&mut encoder, folder.files.len() as u32);
-        for file_id in folder.files.clone() {
-            let file = &catalog.files[file_id as usize];
-            encoder.write_all(&[1]).unwrap();
-            write_string_to(&mut encoder, &file.name);
-            encoder.write_all(&file.size.to_le_bytes()).unwrap();
-            write_u32_to(&mut encoder, 0);
-            write_attributes_to(&mut encoder, &file.attributes);
-        }
-    }
-    write_u32_to(&mut encoder, 0);
-    let mut framed = encoder.finish().unwrap();
-    let size = framed.len() as u32 - 4;
-    framed[..4].copy_from_slice(&size.to_le_bytes());
-    framed
-}
-
-fn write_u32_to(writer: &mut impl std::io::Write, value: u32) {
-    writer.write_all(&value.to_le_bytes()).unwrap();
-}
-
-fn write_string_to(writer: &mut impl std::io::Write, value: &str) {
-    write_u32_to(writer, value.len() as u32);
-    writer.write_all(value.as_bytes()).unwrap();
-}
-
-fn write_attributes_to(writer: &mut impl std::io::Write, attributes: &FileAttributes) {
-    let values = [
-        (0u32, attributes.bitrate),
-        (1, attributes.length),
-        (2, attributes.vbr),
-        (4, attributes.sample_rate),
-        (5, attributes.bit_depth),
-    ];
-    write_u32_to(
-        writer,
-        values.iter().filter(|(_, value)| value.is_some()).count() as u32,
-    );
-    for (kind, value) in values {
-        if let Some(value) = value {
-            write_u32_to(writer, kind);
-            write_u32_to(writer, value);
-        }
-    }
-}
-
 impl PeerMessage {
     pub fn code(&self) -> u32 {
         match self {
@@ -455,13 +413,13 @@ impl PeerMessage {
                 let r = &mut MessageReader::new(&data);
                 let username = r.read_string()?;
                 let token = r.read_u32()?;
-                let results = read_file_list(r, true)?;
+                let results = read_file_list(r, true, MAX_SEARCH_RESULTS_PER_RESPONSE)?;
                 let free_upload_slots = r.read_bool()?;
                 let upload_speed = r.read_u32()?;
                 let queue_size = r.read_u32()?;
                 let unknown = if r.has_remaining() { r.read_u32()? } else { 0 };
                 let private_results = if r.has_remaining() {
-                    read_file_list(r, true)?
+                    read_file_list(r, true, MAX_SEARCH_RESULTS_PER_RESPONSE)?
                 } else {
                     Vec::new()
                 };
@@ -482,7 +440,15 @@ impl PeerMessage {
                 let description = r.read_string()?;
                 let has_picture = r.read_bool()?;
                 let picture = if has_picture {
-                    Some(r.read_bytes()?)
+                    let picture = r.read_bytes()?;
+                    if picture.len() > MAX_USER_PICTURE_SIZE {
+                        return Err(ProtocolError::TooManyEntries {
+                            what: "user picture bytes",
+                            count: picture.len(),
+                            limit: MAX_USER_PICTURE_SIZE,
+                        });
+                    }
+                    Some(picture)
                 } else {
                     None
                 };

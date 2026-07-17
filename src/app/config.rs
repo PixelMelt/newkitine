@@ -1,38 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::types::Settings;
-
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
-}
-
-pub fn apply_settings_env(settings: &mut Settings) -> Vec<&'static str> {
-    let mut locked = Vec::new();
-    if let Some(value) = env_var("NEWKITINE_SERVER") {
-        settings.server = value;
-        locked.push("server");
-    }
-    if let Some(value) = env_var("NEWKITINE_USERNAME") {
-        settings.username = value;
-        locked.push("username");
-    }
-    if let Some(value) = env_var("NEWKITINE_PASSWORD") {
-        settings.password = value;
-        locked.push("password");
-    }
-    if let Some(value) = env_var("NEWKITINE_LISTEN_PORT") {
-        settings.listen_port = value
-            .parse()
-            .expect("NEWKITINE_LISTEN_PORT must be a port number");
-        locked.push("listen_port");
-    }
-    if let Some(value) = env_var("NEWKITINE_DOWNLOAD_DIR") {
-        settings.download_dir = PathBuf::from(value);
-        locked.push("download_dir");
-    }
-    locked
 }
 
 #[derive(Debug, Clone, Deserialize)]

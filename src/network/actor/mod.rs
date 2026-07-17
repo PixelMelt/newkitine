@@ -10,13 +10,25 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::network::conn::{ConnControl, ConnEvent, SharedAllowed, SharedLimits};
+use crate::network::{NetworkCommand, NetworkEvent};
 use crate::protocol::ServerRequest;
-use crate::types::{NetworkCommand, NetworkEvent};
 
 use distributed::Distributed;
 use indirect::{Indirect, QueuedItem};
 use peers::Peers;
 use server::Server;
+
+pub(super) fn spawn_conn_task(name: &'static str, task: impl Future<Output = ()> + Send + 'static) {
+    let handle = tokio::spawn(task);
+    tokio::spawn(async move {
+        if let Err(error) = handle.await
+            && error.is_panic()
+        {
+            tracing::error!(task = name, %error, "connection task panicked, aborting");
+            std::process::exit(101);
+        }
+    });
+}
 
 const SERVER_PING_INTERVAL: Duration = Duration::from_secs(60);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(2);
@@ -77,14 +89,14 @@ impl Actor {
                     }
                 }
                 event = self.conn_events.recv() => {
-                    if let Some(event) = event {
-                        self.handle_conn_event(event);
-                    }
+                    let event =
+                        event.expect("conn event channel closed while the actor holds the sender");
+                    self.handle_conn_event(event);
                 }
                 stream = self.accepted.recv() => {
-                    if let Some((stream, addr)) = stream {
-                        self.handle_accepted(stream, addr);
-                    }
+                    let (stream, addr) =
+                        stream.expect("accept channel closed while the actor holds the sender");
+                    self.handle_accepted(stream, addr);
                 }
                 _ = sweep.tick() => self.sweep_indirect_requests(),
                 _ = ping.tick() => {

@@ -7,11 +7,13 @@ use tracing::debug;
 
 use super::Actor;
 use super::peers::PeerIdentity;
+use crate::network::ConnId;
+use crate::network::NetworkEvent;
 use crate::network::conn::ConnControl;
 use crate::protocol::{
     PeerInitMessage, PeerMessage, ServerRequest, increment_token, initial_token,
 };
-use crate::types::{ConnId, ConnectionType, NetworkEvent};
+use crate::types::ConnectionType;
 
 const INDIRECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_ADDRESS_TTL: Duration = Duration::from_secs(1800);
@@ -36,7 +38,7 @@ pub(super) struct Init {
 }
 
 struct UserAddress {
-    addr: Option<SocketAddrV4>,
+    addr: SocketAddrV4,
     updated: Instant,
 }
 
@@ -83,7 +85,7 @@ impl Indirect {
         self.user_addresses.insert(
             username,
             Some(UserAddress {
-                addr: Some(addr),
+                addr,
                 updated: Instant::now(),
             }),
         );
@@ -92,7 +94,7 @@ impl Indirect {
     fn record_address(&mut self, username: &str, addr: Option<SocketAddrV4>) {
         if let Some(entry) = self.user_addresses.get_mut(username) {
             *entry = addr.map(|addr| UserAddress {
-                addr: Some(addr),
+                addr,
                 updated: Instant::now(),
             });
         }
@@ -115,7 +117,7 @@ impl Indirect {
         own_username: Option<&str>,
     ) -> Option<SocketAddrV4> {
         let entry = self.user_addresses.get(username)?.as_ref()?;
-        let addr = entry.addr?;
+        let addr = entry.addr;
         if addr.port() == 0 {
             return None;
         }
@@ -438,7 +440,6 @@ impl Actor {
             .collect();
         self.emit(NetworkEvent::PeerConnectionError {
             username: init.username,
-            conn_type: init.conn_type,
             unsent,
             is_offline,
         });

@@ -11,6 +11,7 @@ export function applySnapshot(msg) {
 	banned.set(msg.banned);
 	ignored.set(msg.ignored);
 	browses.set(msg.browses);
+	userInfos.set(Object.fromEntries(msg.user_infos.map((info) => [info.username, info])));
 }
 
 export const handlers = {
@@ -29,7 +30,21 @@ export const handlers = {
 	user_info: (msg) => {
 		userInfos.update((map) => ({ ...map, [msg.info.username]: msg.info }));
 	},
+	user_info_removed: (msg) => {
+		userInfos.update((map) => {
+			const next = { ...map };
+			delete next[msg.username];
+			return next;
+		});
+	},
 	browse_loaded: (msg) => {
 		browses.update((map) => ({ ...map, [msg.username]: msg.received_at }));
+	},
+	browse_removed: (msg) => {
+		browses.update((map) => {
+			const next = { ...map };
+			delete next[msg.username];
+			return next;
+		});
 	},
 };

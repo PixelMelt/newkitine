@@ -2,43 +2,59 @@ use std::collections::HashMap;
 use std::process::Command;
 
 use super::{AppEvent, Envelope, SettingsPayload, Snapshot};
+use crate::app::chat::{ChatMessage, RoomEntry, RoomView, RoomsView};
+use crate::app::interests::InterestsView;
+use crate::app::search::{SearchFileView, SearchResponseView, SearchView};
+use crate::app::session::Status;
+use crate::app::settings::{PublicSettings, Settings};
+use crate::app::transfers::TransferView;
+use crate::app::users::{BuddyView, UserInfoView};
 use crate::types::{
-    BuddyView, ChatMessage, FileAttributes, InterestsView, PublicSettings, RoomEntry, RoomView,
-    RoomsView, SearchFileView, SearchResponseView, SearchView, Settings, SimilarUser, Status,
-    TransferDirection, TransferId, TransferStatus, TransferView, UserInfoView, UserStats,
+    FileAttributes, SimilarUser, TransferDirection, TransferId, TransferStatus, UserStats,
 };
 
-fn type_tag(event: &AppEvent) -> &'static str {
-    match event {
-        AppEvent::Status { .. } => "status",
-        AppEvent::ConnCount { .. } => "conn_count",
-        AppEvent::LoginFailed { .. } => "login_failed",
-        AppEvent::ServerMessage { .. } => "server_message",
-        AppEvent::Settings(_) => "settings",
-        AppEvent::Transfer { .. } => "transfer",
-        AppEvent::TransfersRemoved { .. } => "transfers_removed",
-        AppEvent::SearchAdded { .. } => "search_added",
-        AppEvent::SearchResults { .. } => "search_results",
-        AppEvent::SearchRemoved { .. } => "search_removed",
-        AppEvent::Wishlist { .. } => "wishlist",
-        AppEvent::Interests { .. } => "interests",
-        AppEvent::Buddy { .. } => "buddy",
-        AppEvent::BuddyRemoved { .. } => "buddy_removed",
-        AppEvent::Banned { .. } => "banned",
-        AppEvent::Ignored { .. } => "ignored",
-        AppEvent::UserInfo { .. } => "user_info",
-        AppEvent::BrowseLoaded { .. } => "browse_loaded",
-        AppEvent::PrivateMessage { .. } => "private_message",
-        AppEvent::ChatOpened { .. } => "chat_opened",
-        AppEvent::ChatClosed { .. } => "chat_closed",
-        AppEvent::RoomMessage { .. } => "room_message",
-        AppEvent::RoomList { .. } => "room_list",
-        AppEvent::RoomJoined { .. } => "room_joined",
-        AppEvent::RoomLeft { .. } => "room_left",
-        AppEvent::RoomUserJoined { .. } => "room_user_joined",
-        AppEvent::RoomUserLeft { .. } => "room_user_left",
-    }
+macro_rules! event_tags {
+    ($(($variant:ident, $tag:literal)),* $(,)?) => {
+        fn type_tag(event: &AppEvent) -> &'static str {
+            match event {
+                $(AppEvent::$variant { .. } => $tag,)*
+            }
+        }
+        const EVENT_TAGS: &[&str] = &[$($tag),*];
+    };
 }
+
+event_tags![
+    (Status, "status"),
+    (ConnCount, "conn_count"),
+    (LoginFailed, "login_failed"),
+    (ServerMessage, "server_message"),
+    (Settings, "settings"),
+    (Transfer, "transfer"),
+    (TransfersRemoved, "transfers_removed"),
+    (SearchAdded, "search_added"),
+    (SearchResults, "search_results"),
+    (SearchRemoved, "search_removed"),
+    (Wishlist, "wishlist"),
+    (Interests, "interests"),
+    (Buddy, "buddy"),
+    (BuddyRemoved, "buddy_removed"),
+    (Banned, "banned"),
+    (Ignored, "ignored"),
+    (UserInfo, "user_info"),
+    (UserInfoRemoved, "user_info_removed"),
+    (BrowseLoaded, "browse_loaded"),
+    (BrowseRemoved, "browse_removed"),
+    (PrivateMessage, "private_message"),
+    (ChatOpened, "chat_opened"),
+    (ChatClosed, "chat_closed"),
+    (RoomMessage, "room_message"),
+    (RoomList, "room_list"),
+    (RoomJoined, "room_joined"),
+    (RoomLeft, "room_left"),
+    (RoomUserJoined, "room_user_joined"),
+    (RoomUserLeft, "room_user_left"),
+];
 
 fn attributes() -> FileAttributes {
     FileAttributes {
@@ -145,6 +161,7 @@ fn user_info_view() -> UserInfoView {
 
 fn message() -> ChatMessage {
     ChatMessage {
+        id: Some(7),
         sender: "peer".into(),
         message: "hi".into(),
         timestamp: 1,
@@ -161,7 +178,6 @@ fn rooms_view() -> RoomsView {
             "indie".to_owned(),
             RoomView {
                 users: vec!["peer".into()],
-                messages: vec![message()],
             },
         )]),
     }
@@ -240,9 +256,15 @@ fn fixture_events() -> Vec<AppEvent> {
         AppEvent::UserInfo {
             info: user_info_view(),
         },
+        AppEvent::UserInfoRemoved {
+            username: "peer".into(),
+        },
         AppEvent::BrowseLoaded {
             username: "peer".into(),
             received_at: 1,
+        },
+        AppEvent::BrowseRemoved {
+            username: "peer".into(),
         },
         AppEvent::PrivateMessage {
             username: "peer".into(),
@@ -295,6 +317,7 @@ fn snapshot_json() -> String {
     let rooms = rooms_view();
     let partners = vec!["peer".to_owned()];
     let browsed = "peer".to_owned();
+    let infos = [user_info_view()];
     serde_json::to_string(&Snapshot {
         kind: "snapshot",
         rev: 1,
@@ -310,6 +333,7 @@ fn snapshot_json() -> String {
         rooms: &rooms,
         chat_partners: &partners,
         browses: HashMap::from([(&browsed, 1i64)]),
+        user_infos: infos.iter().collect(),
         settings: settings_payload(),
     })
     .unwrap()
@@ -318,6 +342,13 @@ fn snapshot_json() -> String {
 #[test]
 fn browser_contract_validates_serialized_events() {
     let events = fixture_events();
+    let fixture_tags: std::collections::HashSet<&str> =
+        events.iter().map(|event| type_tag(event)).collect();
+    let all_tags: std::collections::HashSet<&str> = EVENT_TAGS.iter().copied().collect();
+    assert_eq!(
+        fixture_tags, all_tags,
+        "every AppEvent variant needs exactly one fixture"
+    );
     let mut fixtures: Vec<serde_json::Value> = events
         .iter()
         .enumerate()
@@ -353,6 +384,12 @@ for (const msg of fixtures) {{
 const missing = eventTypes.filter((type) => !seen.has(type));
 if (missing.length) {{
 	console.error(`no fixture exercises: ${{missing.join(', ')}}`);
+	process.exit(1);
+}}
+const declared = new Set(eventTypes);
+const undeclared = [...seen].filter((type) => !declared.has(type));
+if (undeclared.length) {{
+	console.error(`rust emits events the browser contract does not declare: ${{undeclared.join(', ')}}`);
 	process.exit(1);
 }}
 "#

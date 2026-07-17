@@ -16,6 +16,12 @@ pub enum ProtocolError {
     Decompress(#[from] std::io::Error),
     #[error("decompressed payload exceeds {limit} bytes")]
     DecompressedTooLarge { limit: usize },
+    #[error("{what} count {count} exceeds limit {limit}")]
+    TooManyEntries {
+        what: &'static str,
+        count: usize,
+        limit: usize,
+    },
     #[error("invalid value for {field}: {value}")]
     InvalidValue { field: &'static str, value: u64 },
     #[error("invalid connection type {value:?}")]

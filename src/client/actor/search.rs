@@ -3,9 +3,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::ClientActor;
-use crate::client::search::sanitize_search_term;
+use crate::client::{ClientEvent, SearchScope};
+use crate::network::NetworkCommand;
 use crate::protocol::ServerRequest;
-use crate::types::{ClientEvent, NetworkCommand, SearchScope};
 
 const DEFAULT_WISHLIST_INTERVAL: Duration = Duration::from_secs(720);
 
@@ -29,7 +29,7 @@ impl Wishlist {
 
 impl ClientActor {
     pub(super) fn start_search(&mut self, token: u32, query: String, scope: SearchScope) {
-        self.searches.add(token);
+        self.search_tokens.insert(token);
         self.net.send(NetworkCommand::AllowSearchToken(token));
         let search_term = sanitize_search_term(&query);
         self.emit(ClientEvent::SearchStarted { token, query });
@@ -101,7 +101,7 @@ impl ClientActor {
         let term = self.wishlist.terms[self.wishlist.cursor % self.wishlist.terms.len()].clone();
         self.wishlist.cursor += 1;
         let token = self.next_token();
-        self.searches.add(token);
+        self.search_tokens.insert(token);
         self.net.send(NetworkCommand::AllowSearchToken(token));
         self.emit(ClientEvent::SearchStarted {
             token,
@@ -113,4 +113,11 @@ impl ClientActor {
         });
         self.schedule_wishlist();
     }
+}
+
+fn sanitize_search_term(text: &str) -> String {
+    text.split_whitespace()
+        .filter(|word| *word != "-")
+        .collect::<Vec<_>>()
+        .join(" ")
 }

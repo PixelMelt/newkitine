@@ -1,13 +1,17 @@
 mod actor;
-mod downloads;
-mod files;
-mod queue;
-mod registry;
+mod bootstrap;
+mod event;
+mod observation;
 mod search;
 mod shares;
-mod speed;
-mod uploads;
+mod transfers;
 mod users;
+
+pub use bootstrap::ClientBootstrap;
+pub use event::{ClientEvent, SearchResult, UserInfoReceived};
+pub use observation::Observation;
+pub use search::SearchScope;
+pub use transfers::{AbortResult, EnqueueResult, RetryResult, TransferWork};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -16,9 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::protocol::{ServerRequest, initial_token};
 use crate::types::{
-    AbortResult, ClientBootstrap, ClientEvent, EnqueueResult, FileAttributes, Restriction,
-    RetryResult, RuntimeConfig, SearchScope, TransferDirection, TransferId, TransferStatus,
-    TransferWork,
+    FileAttributes, Restriction, RuntimeConfig, TransferDirection, TransferId, TransferStatus,
 };
 
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
@@ -91,6 +93,14 @@ pub(crate) enum ClientCommand {
         username: String,
         restriction: Restriction,
     },
+    AddInterest {
+        thing: String,
+        hated: bool,
+    },
+    RemoveInterest {
+        thing: String,
+        hated: bool,
+    },
     AddWish {
         term: String,
     },
@@ -99,7 +109,7 @@ pub(crate) enum ClientCommand {
     },
     RescanShares,
     ApplyConfig {
-        config: RuntimeConfig,
+        config: Box<RuntimeConfig>,
         ack: oneshot::Sender<()>,
     },
     Server(ServerRequest),
@@ -236,20 +246,6 @@ impl Client {
         .await;
     }
 
-    pub async fn watch_user(&self, username: &str) {
-        self.send(ClientCommand::Server(ServerRequest::WatchUser {
-            user: username.to_owned(),
-        }))
-        .await;
-    }
-
-    pub async fn unwatch_user(&self, username: &str) {
-        self.send(ClientCommand::Server(ServerRequest::UnwatchUser {
-            user: username.to_owned(),
-        }))
-        .await;
-    }
-
     pub async fn add_buddy(&self, username: &str) {
         self.send(ClientCommand::AddBuddy {
             username: username.to_owned(),
@@ -324,7 +320,11 @@ impl Client {
 
     pub async fn apply_config(&self, config: RuntimeConfig) {
         let (ack, done) = oneshot::channel();
-        self.send(ClientCommand::ApplyConfig { config, ack }).await;
+        self.send(ClientCommand::ApplyConfig {
+            config: Box::new(config),
+            ack,
+        })
+        .await;
         done.await.expect("client actor dropped acknowledgement")
     }
 
@@ -333,30 +333,34 @@ impl Client {
     }
 
     pub async fn add_liked_interest(&self, thing: &str) {
-        self.send(ClientCommand::Server(ServerRequest::AddThingILike {
+        self.send(ClientCommand::AddInterest {
             thing: thing.to_owned(),
-        }))
+            hated: false,
+        })
         .await;
     }
 
     pub async fn remove_liked_interest(&self, thing: &str) {
-        self.send(ClientCommand::Server(ServerRequest::RemoveThingILike {
+        self.send(ClientCommand::RemoveInterest {
             thing: thing.to_owned(),
-        }))
+            hated: false,
+        })
         .await;
     }
 
     pub async fn add_hated_interest(&self, thing: &str) {
-        self.send(ClientCommand::Server(ServerRequest::AddThingIHate {
+        self.send(ClientCommand::AddInterest {
             thing: thing.to_owned(),
-        }))
+            hated: true,
+        })
         .await;
     }
 
     pub async fn remove_hated_interest(&self, thing: &str) {
-        self.send(ClientCommand::Server(ServerRequest::RemoveThingIHate {
+        self.send(ClientCommand::RemoveInterest {
             thing: thing.to_owned(),
-        }))
+            hated: true,
+        })
         .await;
     }
 

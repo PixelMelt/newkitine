@@ -9,8 +9,18 @@ async fn main() {
         )
         .init();
 
-    let config_path = PathBuf::from(
-        std::env::var("NEWKITINE_CONFIG").unwrap_or_else(|_| "newkitine.toml".into()),
-    );
+    let config_path = match std::env::var("NEWKITINE_CONFIG") {
+        Ok(path) => {
+            let path = PathBuf::from(path);
+            if !path.exists() {
+                panic!(
+                    "NEWKITINE_CONFIG points to {} which does not exist",
+                    path.display()
+                );
+            }
+            path
+        }
+        Err(_) => PathBuf::from("newkitine.toml"),
+    };
     newkitine::app::run(config_path).await;
 }

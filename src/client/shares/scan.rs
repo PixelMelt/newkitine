@@ -8,12 +8,12 @@ use std::time::UNIX_EPOCH;
 use lofty::prelude::AudioFile;
 use tracing::{info, warn};
 
-use crate::types::{
-    FileAttributes, ShareCatalog, ShareCatalogFile, ShareCatalogFolder, SharedFolder, UINT32_LIMIT,
-};
+use crate::types::{FileAttributes, SharedFolder, UINT32_LIMIT};
 
 use super::cache::{self, CacheEntry};
-use super::{SharesIndex, WordPostings, split_words};
+use super::{
+    ShareCatalog, ShareCatalogFile, ShareCatalogFolder, SharesIndex, WordPostings, split_words,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
@@ -36,6 +36,8 @@ pub enum ScanError {
     },
     #[error("duplicate virtual path {path}")]
     DuplicateVirtualPath { path: String },
+    #[error("scan task panicked: {reason}")]
+    Panicked { reason: String },
 }
 
 const BACKSLASH_SENTINEL: &str = "@@BACKSLASH@@";
@@ -97,11 +99,19 @@ impl Progress<'_> {
     }
 }
 
+pub(crate) type AttributeCache = HashMap<String, CacheEntry>;
+
+pub struct ScanOutcome {
+    pub index: SharesIndex,
+    pub(crate) cache: AttributeCache,
+}
+
 pub fn scan(
     shared_folders: &[SharedFolder],
+    share_filters: &[String],
     cache_path: &Path,
     progress: &(dyn Fn(u64) + Sync),
-) -> Result<SharesIndex, ScanError> {
+) -> Result<ScanOutcome, ScanError> {
     let mut virtual_names = HashSet::new();
     for shared in shared_folders {
         if !virtual_names.insert(shared.virtual_name.as_str()) {
@@ -128,7 +138,7 @@ pub fn scan(
         misses: Vec::new(),
     };
     for shared in shared_folders {
-        walk_root(shared, &cache, &progress, |folder| {
+        walk_root(shared, share_filters, &cache, &progress, |folder| {
             merger.add_folder(shared.buddy_only, folder)
         })?;
     }
@@ -143,7 +153,6 @@ pub fn scan(
     let cache_hits = new_cache.len();
     let attribute_reads = misses.len();
     read_missing_attributes(&mut catalog, &mut new_cache, misses, &progress);
-    cache::save(cache_path, &new_cache);
 
     let total_files = catalog.files.len();
     let unique_words = word_index.len();
@@ -168,11 +177,15 @@ pub fn scan(
         attribute_reads,
         "share scan complete"
     );
-    Ok(index)
+    Ok(ScanOutcome {
+        index,
+        cache: new_cache,
+    })
 }
 
 fn walk_root(
     shared: &SharedFolder,
+    share_filters: &[String],
     cache: &HashMap<String, CacheEntry>,
     progress: &Progress,
     mut add_folder: impl FnMut(RawFolder) -> Result<(), ScanError>,
@@ -195,7 +208,7 @@ fn walk_root(
             })?;
             let real_name = entry.file_name();
             let name = real_name.to_string_lossy().into_owned();
-            if name.starts_with('.') {
+            if name.starts_with('.') || share_filters.contains(&name) {
                 continue;
             }
             let file_type = entry.file_type().map_err(|error| ScanError::Metadata {
@@ -413,6 +426,22 @@ fn has_audio_extension(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_MIN_SEARCH_CHARS, FileInfo};
+
+    fn search(
+        index: &SharesIndex,
+        term: &str,
+        is_buddy: bool,
+        phrases: &[String],
+    ) -> Vec<FileInfo> {
+        index.search(
+            term,
+            is_buddy,
+            phrases,
+            DEFAULT_MAX_SEARCH_RESULTS,
+            DEFAULT_MIN_SEARCH_CHARS,
+        )
+    }
 
     fn temp_base() -> PathBuf {
         use std::sync::atomic::AtomicU64;
@@ -472,48 +501,46 @@ mod tests {
                     buddy_only: true,
                 },
             ],
+            &[],
             &cache_path(&base),
             &|_| {},
         )
         .expect("scan test shares")
+        .index
     }
 
     #[test]
     fn search_word_matching() {
         let index = test_index();
 
-        let results = index.search("sample first", false, &[]);
+        let results = search(&index, "sample first", false, &[]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "Public\\Sample Album\\First Song.flac");
 
-        assert!(index.search("sample missing", false, &[]).is_empty());
+        assert!(search(&index, "sample missing", false, &[]).is_empty());
 
-        let excluded = index.search("sample -tune", false, &[]);
+        let excluded = search(&index, "sample -tune", false, &[]);
         assert_eq!(excluded.len(), 1);
         assert_eq!(excluded[0].name, "Public\\Sample Album\\First Song.flac");
 
-        let partial = index.search("sample *une", false, &[]);
+        let partial = search(&index, "sample *une", false, &[]);
         assert_eq!(partial.len(), 1);
         assert_eq!(partial[0].name, "Public\\Sample Album\\Second Tune.ogg");
 
-        assert_eq!(index.search("SAMPLE ALBUM", false, &[]).len(), 2);
-        assert!(index.search("ab", false, &[]).is_empty());
+        assert_eq!(search(&index, "SAMPLE ALBUM", false, &[]).len(), 2);
+        assert!(search(&index, "ab", false, &[]).is_empty());
     }
 
     #[test]
     fn search_respects_permissions_and_phrases() {
         let index = test_index();
 
-        assert!(index.search("hidden song", false, &[]).is_empty());
-        let buddy = index.search("hidden song", true, &[]);
+        assert!(search(&index, "hidden song", false, &[]).is_empty());
+        let buddy = search(&index, "hidden song", true, &[]);
         assert_eq!(buddy.len(), 1);
         assert_eq!(buddy[0].name, "Private\\hidden song.wav");
 
-        assert!(
-            index
-                .search("first song", false, &["first".into()])
-                .is_empty()
-        );
+        assert!(search(&index, "first song", false, &["first".into()]).is_empty());
     }
 
     #[test]
@@ -532,10 +559,12 @@ mod tests {
                 path: base.join("music"),
                 buddy_only: false,
             }],
+            &[],
             &cache_path(&base),
             &|_| {},
         )
-        .expect("case collision must not fail the scan");
+        .expect("case collision must not fail the scan")
+        .index;
 
         let (folders, files) = index.counts();
         assert_eq!(folders, 3);
@@ -598,7 +627,7 @@ mod tests {
                 unknown: 0,
                 private_shares: Vec::new(),
             };
-            let bytes = crate::protocol::encode_shared_file_list(&index.catalog(), is_buddy);
+            let bytes = crate::client::shares::encode_shared_file_list(&index.catalog(), is_buddy);
             assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 5);
             let parsed = crate::protocol::PeerMessage::parse(5, &bytes[8..]).unwrap();
             assert_eq!(parsed, expected);
@@ -618,16 +647,18 @@ mod tests {
             .into_owned();
         let cache_path = cache_path(&base);
 
-        let index = scan(
+        let outcome = scan(
             &[SharedFolder {
                 virtual_name: "Music".into(),
                 path: dir,
                 buddy_only: false,
             }],
+            &[],
             &cache_path,
             &|_| {},
         )
         .unwrap();
+        let index = &outcome.index;
 
         let (_, _, attributes) = index.resolve("Music\\tone.wav", false).unwrap();
         assert_eq!(attributes.sample_rate, Some(44100));
@@ -637,8 +668,7 @@ mod tests {
         let contents = index.folder_contents("Music", false);
         assert_eq!(contents[0].files[0].attributes.sample_rate, Some(44100));
 
-        let saved = cache::load(&cache_path);
-        assert_eq!(saved[&key].attributes.sample_rate, Some(44100));
+        assert_eq!(outcome.cache[&key].attributes.sample_rate, Some(44100));
     }
 
     #[test]
@@ -675,10 +705,12 @@ mod tests {
                 path: dir,
                 buddy_only: false,
             }],
+            &[],
             &cache_path,
             &|_| {},
         )
-        .unwrap();
+        .unwrap()
+        .index;
 
         let (_, _, attributes) = index.resolve("Music\\song.flac", false).unwrap();
         assert_eq!(attributes.bitrate, Some(320));
@@ -712,23 +744,24 @@ mod tests {
         );
         cache::save(&cache_path, &entries);
 
-        let index = scan(
+        let outcome = scan(
             &[SharedFolder {
                 virtual_name: "Music".into(),
                 path: dir,
                 buddy_only: false,
             }],
+            &[],
             &cache_path,
             &|_| {},
         )
         .unwrap();
+        let index = &outcome.index;
 
         let (_, _, attributes) = index.resolve("Music\\song.flac", false).unwrap();
         assert_eq!(*attributes, FileAttributes::default());
 
-        let saved = cache::load(&cache_path);
-        assert_eq!(saved[&key].mtime, unix_mtime(&metadata));
-        assert_eq!(saved[&key].attributes, FileAttributes::default());
+        assert_eq!(outcome.cache[&key].mtime, unix_mtime(&metadata));
+        assert_eq!(outcome.cache[&key].attributes, FileAttributes::default());
     }
 
     #[test]
@@ -749,18 +782,19 @@ mod tests {
         );
         cache::save(&cache_path, &entries);
 
-        scan(
+        let outcome = scan(
             &[SharedFolder {
                 virtual_name: "Music".into(),
                 path: dir,
                 buddy_only: false,
             }],
+            &[],
             &cache_path,
             &|_| {},
         )
         .unwrap();
 
-        assert!(!cache::load(&cache_path).contains_key("/nowhere/gone.mp3"));
+        assert!(!outcome.cache.contains_key("/nowhere/gone.mp3"));
     }
 
     #[test]
@@ -781,6 +815,35 @@ mod tests {
     }
 
     #[test]
+    fn share_filters_skip_exact_names() {
+        let base = temp_base();
+        let dir = base.join("music");
+        let covers = dir.join("Covers");
+        fs::create_dir_all(&covers).unwrap();
+        fs::write(dir.join("song.mp3"), b"g".repeat(300)).unwrap();
+        fs::write(dir.join("Thumbs.db"), b"x").unwrap();
+        fs::write(covers.join("front.mp3"), b"y".repeat(300)).unwrap();
+
+        let index = scan(
+            &[SharedFolder {
+                virtual_name: "Music".into(),
+                path: dir,
+                buddy_only: false,
+            }],
+            &["Thumbs.db".into(), "Covers".into()],
+            &cache_path(&base),
+            &|_| {},
+        )
+        .unwrap()
+        .index;
+
+        let (folders, files) = index.counts();
+        assert_eq!(folders, 1);
+        assert_eq!(files, 1);
+        assert!(index.resolve("Music\\song.mp3", false).is_some());
+    }
+
+    #[test]
     fn backslash_in_directory_names_is_sanitized() {
         let base = temp_base();
         let dir = base.join("music");
@@ -794,10 +857,12 @@ mod tests {
                 path: dir,
                 buddy_only: false,
             }],
+            &[],
             &cache_path(&base),
             &|_| {},
         )
-        .unwrap();
+        .unwrap()
+        .index;
 
         assert_eq!(
             index.folder_contents("Music\\a@@BACKSLASH@@b", false).len(),

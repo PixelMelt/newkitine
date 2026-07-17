@@ -6,11 +6,12 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use super::{Actor, CONN_CONTROL_QUEUE_CAPACITY};
+use crate::network::NetworkEvent;
 use crate::network::conn::{ConnControl, run_server_conn};
 use crate::protocol::{
     LOGIN_MINOR_VERSION, LOGIN_VERSION, LoginOutcome, ServerRequest, ServerResponse,
 };
-use crate::types::{ConnectionType, NetworkEvent, UserStatus};
+use crate::types::{ConnectionType, UserStatus};
 
 pub(super) struct ServerState {
     control: mpsc::Sender<ConnControl>,
@@ -76,13 +77,28 @@ impl Actor {
             warn!("already connected to server, ignoring connect request");
             return;
         }
+        let listener = match std::net::TcpListener::bind(("0.0.0.0", listen_port)) {
+            Ok(listener) => listener,
+            Err(error) => {
+                warn!(%error, listen_port, "cannot bind listen port");
+                self.emit(NetworkEvent::ListenFailed {
+                    port: listen_port,
+                    error: error.to_string(),
+                });
+                return;
+            }
+        };
+        listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking");
+        let listener =
+            TcpListener::from_std(listener).expect("register listener with tokio runtime");
         self.server.listen_port = listen_port;
         let (control_tx, control_rx) = mpsc::channel(CONN_CONTROL_QUEUE_CAPACITY);
-        tokio::spawn(run_server_conn(
-            address,
-            self.conn_events_tx.clone(),
-            control_rx,
-        ));
+        super::spawn_conn_task(
+            "server connection",
+            run_server_conn(address, self.conn_events_tx.clone(), control_rx),
+        );
 
         let login = ServerRequest::Login {
             username: username.clone(),
@@ -116,13 +132,6 @@ impl Actor {
 
         let listener_events = self.accepted_tx.clone();
         self.server.listener = Some(tokio::spawn(async move {
-            let listener = match TcpListener::bind(("0.0.0.0", listen_port)).await {
-                Ok(listener) => listener,
-                Err(error) => {
-                    warn!(%error, listen_port, "cannot bind listen port");
-                    return;
-                }
-            };
             info!(listen_port, "listening for peer connections");
             loop {
                 match listener.accept().await {

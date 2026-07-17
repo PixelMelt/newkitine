@@ -11,24 +11,31 @@ pub async fn load_list(pool: &MySqlPool, list: &str) -> Vec<String> {
         .collect()
 }
 
-pub async fn add_to_list(pool: &MySqlPool, list: &str, username: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT IGNORE INTO user_lists (list, username) VALUES (?, ?)")
-        .bind(list)
-        .bind(username)
-        .execute(pool)
-        .await?;
+pub async fn add_to_list(
+    executor: impl sqlx::MySqlExecutor<'_>,
+    list: &str,
+    username: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO user_lists (list, username) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE username = username",
+    )
+    .bind(list)
+    .bind(username)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 
 pub async fn remove_from_list(
-    pool: &MySqlPool,
+    executor: impl sqlx::MySqlExecutor<'_>,
     list: &str,
     username: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM user_lists WHERE list = ? AND username = ?")
         .bind(list)
         .bind(username)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

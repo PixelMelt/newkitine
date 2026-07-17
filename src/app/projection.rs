@@ -62,6 +62,7 @@ impl Projection {
             rooms: data.chat.rooms(),
             chat_partners: data.chat.partners(),
             browses: data.users.browse_timestamps().collect(),
+            user_infos: data.users.infos().collect(),
             settings: settings.payload(),
         })
         .expect("snapshot serialization")

@@ -5,8 +5,56 @@ use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus
 
 use super::TransferView;
 
+impl TransferDirection {
+    pub(in crate::app) fn as_str(self) -> &'static str {
+        match self {
+            Self::Download => "download",
+            Self::Upload => "upload",
+        }
+    }
+}
+
+impl std::str::FromStr for TransferDirection {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
+            "download" => Self::Download,
+            "upload" => Self::Upload,
+            other => return Err(format!("unknown transfer direction {other:?}")),
+        })
+    }
+}
+
+impl TransferStatus {
+    pub(in crate::app) fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Transferring => "transferring",
+            Self::Finished => "finished",
+            Self::Aborted => "aborted",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for TransferStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
+            "queued" => Self::Queued,
+            "transferring" => Self::Transferring,
+            "finished" => Self::Finished,
+            "aborted" => Self::Aborted,
+            "failed" => Self::Failed,
+            other => return Err(format!("unknown transfer status {other:?}")),
+        })
+    }
+}
+
 pub(super) async fn upsert_transfer(
-    pool: &MySqlPool,
+    executor: impl sqlx::MySqlExecutor<'_>,
     view: &TransferView,
 ) -> Result<(), sqlx::Error> {
     let attributes = serde_json::to_string(&view.attributes).unwrap();
@@ -30,7 +78,7 @@ pub(super) async fn upsert_transfer(
     .bind(&view.file_path)
     .bind(attributes)
     .bind(view.updated_at)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -94,7 +142,7 @@ pub(super) async fn delete_transfers(
 }
 
 pub(super) async fn record_transfer(
-    pool: &MySqlPool,
+    executor: impl sqlx::MySqlExecutor<'_>,
     direction: TransferDirection,
     username: &str,
     virtual_path: &str,
@@ -112,7 +160,7 @@ pub(super) async fn record_transfer(
     .bind(size)
     .bind(speed_bps)
     .bind(finished_at)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }

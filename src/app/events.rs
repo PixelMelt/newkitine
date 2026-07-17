@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::types::{ClientEvent, Observation};
+use crate::client::{ClientEvent, Observation};
 
 use super::state::App;
 use super::{behavior, chat, db, interests, search, session, users};
@@ -16,6 +16,7 @@ pub async fn run(app: Arc<App>, mut events: mpsc::Receiver<ClientEvent>) {
 
 async fn handle(app: &Arc<App>, event: ClientEvent) {
     match event {
+        ClientEvent::Connecting => session::connecting(app),
         ClientEvent::LoggedIn { username, banner } => {
             session::logged_in(app, username, banner);
             app.client.request_room_list().await;
@@ -26,10 +27,7 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::LoginFailed { reason, detail } => {
             session::login_failed(app, reason, detail);
         }
-        ClientEvent::Disconnected => {
-            chat::server_disconnected(app);
-            session::disconnected(app);
-        }
+        ClientEvent::Disconnected => session::disconnected(app),
         ClientEvent::ConnectionCount(count) => session::connection_count(app, count),
         ClientEvent::ShareScanStarted => session::share_scan_started(app),
         ClientEvent::ShareScanProgress { files } => session::share_scan_progress(app, files),
@@ -37,7 +35,9 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             session::shares_scanned(app, folders, files);
         }
         ClientEvent::ShareScanFailed { error } => session::share_scan_failed(app, error),
-        ClientEvent::SearchStarted { token, query } => search::search_started(app, token, query),
+        ClientEvent::SearchStarted { token, query } => {
+            search::search_started(app, token, query).await;
+        }
         ClientEvent::SearchResults(result) => search::apply_results(app, result),
         ClientEvent::UserStatus {
             username,

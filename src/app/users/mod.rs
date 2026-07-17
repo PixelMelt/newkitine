@@ -1,21 +1,56 @@
 mod db;
-pub mod http;
+mod http;
 
-pub use db::{load_notes, record_user_shares};
+pub use db::load_notes;
+pub(super) use http::router;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use base64::Engine;
 
-use crate::types::{
-    BrowseView, BuddyView, FolderContents, UserInfoReceived, UserInfoView, UserStats, UserStatus,
-};
+use crate::client::UserInfoReceived;
+use crate::types::{FolderContents, UserStats, UserStatus};
 
 use super::behavior;
 use super::contract::AppEvent;
 use super::db::fatal;
+use super::peer_history::record_user_shares;
+use super::projection::ProjectionWriter;
 use super::state::{App, now};
+
+#[derive(Default, Clone, serde::Serialize)]
+pub struct BuddyView {
+    pub username: String,
+    pub status: String,
+    pub privileged: bool,
+    pub stats: UserStats,
+    pub note: String,
+}
+
+#[derive(Default, Clone, serde::Serialize)]
+pub struct UserInfoView {
+    pub username: String,
+    pub received: bool,
+    pub description: String,
+    pub picture_base64: Option<String>,
+    pub upload_slots: u32,
+    pub queue_size: u32,
+    pub slots_available: bool,
+    pub stats: Option<UserStats>,
+    pub interests_liked: Vec<String>,
+    pub interests_hated: Vec<String>,
+}
+
+pub struct BrowseView {
+    pub username: String,
+    pub folders: Arc<Vec<FolderContents>>,
+    pub private_folders: Arc<Vec<FolderContents>>,
+    pub received_at: i64,
+}
+
+const MAX_RETAINED_BROWSES: usize = 8;
+const MAX_RETAINED_USER_INFOS: usize = 32;
 
 #[derive(Default)]
 pub struct UsersState {
@@ -23,6 +58,8 @@ pub struct UsersState {
     banned: Vec<String>,
     ignored: Vec<String>,
     user_infos: HashMap<String, UserInfoView>,
+    info_sequence: HashMap<String, u64>,
+    info_counter: u64,
     browses: HashMap<String, BrowseView>,
 }
 
@@ -41,6 +78,8 @@ impl UsersState {
             banned,
             ignored,
             user_infos: HashMap::new(),
+            info_sequence: HashMap::new(),
+            info_counter: 0,
             browses: HashMap::new(),
         };
         for (username, note) in notes {
@@ -78,8 +117,21 @@ impl UsersState {
             .map(|(username, browse)| (username, browse.received_at))
     }
 
-    fn insert_browse(&mut self, browse: BrowseView) {
+    fn insert_browse(&mut self, browse: BrowseView) -> Vec<String> {
         self.browses.insert(browse.username.clone(), browse);
+        let mut evicted = Vec::new();
+        while self.browses.len() > MAX_RETAINED_BROWSES {
+            let oldest = self
+                .browses
+                .values()
+                .min_by_key(|browse| browse.received_at)
+                .unwrap()
+                .username
+                .clone();
+            self.browses.remove(&oldest);
+            evicted.push(oldest);
+        }
+        evicted
     }
 
     fn insert_buddy(&mut self, username: &str) -> BuddyView {
@@ -97,6 +149,17 @@ impl UsersState {
         let buddy = self.buddies.get_mut(username)?;
         buddy.note = note;
         Some(buddy.clone())
+    }
+
+    fn reset_statuses(&mut self) -> Vec<BuddyView> {
+        self.buddies
+            .values_mut()
+            .map(|buddy| {
+                buddy.status = "unknown".into();
+                buddy.privileged = false;
+                buddy.clone()
+            })
+            .collect()
     }
 
     fn set_status(
@@ -151,21 +214,47 @@ impl UsersState {
         Some(info.clone())
     }
 
-    fn ensure_info(&mut self, username: &str) -> UserInfoView {
-        self.user_infos
+    fn evict_excess_infos(&mut self, keep: &str) -> Vec<String> {
+        self.info_counter += 1;
+        self.info_sequence
+            .insert(keep.to_owned(), self.info_counter);
+        let mut evicted = Vec::new();
+        while self.user_infos.len() > MAX_RETAINED_USER_INFOS {
+            let oldest = self
+                .info_sequence
+                .iter()
+                .min_by_key(|(_, sequence)| **sequence)
+                .map(|(username, _)| username.clone())
+                .unwrap();
+            self.user_infos.remove(&oldest);
+            self.info_sequence.remove(&oldest);
+            evicted.push(oldest);
+        }
+        evicted
+    }
+
+    pub fn infos(&self) -> impl Iterator<Item = &UserInfoView> {
+        self.user_infos.values()
+    }
+
+    fn ensure_info(&mut self, username: &str) -> (UserInfoView, Vec<String>) {
+        let info = self
+            .user_infos
             .entry(username.to_owned())
             .or_insert_with(|| UserInfoView {
                 username: username.to_owned(),
                 ..Default::default()
             })
-            .clone()
+            .clone();
+        let evicted = self.evict_excess_infos(username);
+        (info, evicted)
     }
 
     fn info(&self, username: &str) -> Option<&UserInfoView> {
         self.user_infos.get(username)
     }
 
-    fn info_received(&mut self, received: UserInfoReceived) -> UserInfoView {
+    fn info_received(&mut self, received: UserInfoReceived) -> (UserInfoView, Vec<String>) {
         let info = self
             .user_infos
             .entry(received.username.clone())
@@ -181,7 +270,9 @@ impl UsersState {
         info.upload_slots = received.total_uploads;
         info.queue_size = received.queue_size;
         info.slots_available = received.slots_available;
-        info.clone()
+        let info = info.clone();
+        let evicted = self.evict_excess_infos(&info.username);
+        (info, evicted)
     }
 
     fn ban(&mut self, username: String) -> Vec<String> {
@@ -228,6 +319,12 @@ pub fn status_string(status: Option<UserStatus>) -> &'static str {
     }
 }
 
+pub fn server_disconnected(data: &mut ProjectionWriter<'_>) {
+    for buddy in data.users.reset_statuses() {
+        data.broadcast(AppEvent::Buddy { buddy });
+    }
+}
+
 pub fn user_status(app: &App, username: String, status: Option<UserStatus>, privileged: bool) {
     let mut data = app.projection.write();
     if let Some(buddy) = data
@@ -252,12 +349,15 @@ pub async fn shared_file_list(
     behavior::browse_received(app, &username, file_count as u32).await;
     let mut data = app.projection.write();
     let received_at = now();
-    data.users.insert_browse(BrowseView {
+    let evicted = data.users.insert_browse(BrowseView {
         username: username.clone(),
-        folders: shares,
-        private_folders: private_shares,
+        folders: Arc::new(shares),
+        private_folders: Arc::new(private_shares),
         received_at,
     });
+    for username in evicted {
+        data.broadcast(AppEvent::BrowseRemoved { username });
+    }
     data.broadcast(AppEvent::BrowseLoaded {
         username,
         received_at,
@@ -266,7 +366,10 @@ pub async fn shared_file_list(
 
 pub fn user_info_received(app: &App, received: UserInfoReceived) {
     let mut data = app.projection.write();
-    let info = data.users.info_received(received);
+    let (info, evicted) = data.users.info_received(received);
+    for username in evicted {
+        data.broadcast(AppEvent::UserInfoRemoved { username });
+    }
     data.broadcast(AppEvent::UserInfo { info });
 }
 
@@ -308,5 +411,47 @@ pub fn user_interests(app: &App, user: String, likes: Vec<String>, hates: Vec<St
     let mut data = app.projection.write();
     if let Some(info) = data.users.set_info_interests(&user, likes, hates) {
         data.broadcast(AppEvent::UserInfo { info });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn browse(username: &str, received_at: i64) -> BrowseView {
+        BrowseView {
+            username: username.into(),
+            folders: Arc::new(Vec::new()),
+            private_folders: Arc::new(Vec::new()),
+            received_at,
+        }
+    }
+
+    #[test]
+    fn oldest_browse_evicts_beyond_retention_cap() {
+        let mut state = UsersState::default();
+        for i in 0..MAX_RETAINED_BROWSES as i64 {
+            assert!(
+                state
+                    .insert_browse(browse(&format!("user{i}"), i))
+                    .is_empty()
+            );
+        }
+        let evicted = state.insert_browse(browse("newcomer", 100));
+        assert_eq!(evicted, vec!["user0".to_string()]);
+        assert_eq!(state.browses.len(), MAX_RETAINED_BROWSES);
+        assert!(state.browse("user0").is_none());
+        assert!(state.browse("newcomer").is_some());
+    }
+
+    #[test]
+    fn rebrowsing_same_user_does_not_evict() {
+        let mut state = UsersState::default();
+        for i in 0..MAX_RETAINED_BROWSES as i64 {
+            state.insert_browse(browse(&format!("user{i}"), i));
+        }
+        let evicted = state.insert_browse(browse("user3", 100));
+        assert!(evicted.is_empty());
+        assert_eq!(state.browses.len(), MAX_RETAINED_BROWSES);
     }
 }
