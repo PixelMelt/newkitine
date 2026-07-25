@@ -1,3 +1,5 @@
+![AI SLOP](resources/slop-warning-88x31.png)
+
 # Newkitine
 
 Vibecoded replacement for running a lighter nicotine-plus on a server, with a webui.

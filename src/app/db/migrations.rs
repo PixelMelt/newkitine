@@ -17,7 +17,7 @@ const BASELINE: &[&str] = &[
         UNIQUE KEY uniq_transfer (direction, username, path_hash)
     )",
     "CREATE TABLE IF NOT EXISTS chat_messages (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         kind ENUM('private','room') NOT NULL,
         target VARCHAR(190) NOT NULL,
         sender VARCHAR(190) NOT NULL,
@@ -92,7 +92,7 @@ pub async fn init_schema(pool: &MySqlPool) {
         .expect("read schema version")
         .get(0);
     let applied = applied.unwrap_or(0);
-    if applied > 3 {
+    if applied > 4 {
         panic!("database schema version {applied} is newer than this binary supports");
     }
 
@@ -109,6 +109,15 @@ pub async fn init_schema(pool: &MySqlPool) {
     if applied < 3 {
         migrate_transfer_identity(pool).await;
         record_migration(pool, 3).await;
+    }
+    if applied < 4 {
+        migration_statement(
+            pool,
+            4,
+            "ALTER TABLE chat_messages MODIFY id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT",
+        )
+        .await;
+        record_migration(pool, 4).await;
     }
 }
 
