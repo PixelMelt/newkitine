@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::types::Restriction;
 
@@ -7,33 +7,27 @@ use crate::client::users::Users;
 
 pub(super) struct UploadQueue {
     entries: Vec<TransferKey>,
-    active_users: HashMap<String, HashSet<u32>>,
+    active_users: HashMap<String, u32>,
     user_counters: HashMap<String, u64>,
     counter: u64,
-    max_per_user: usize,
 }
 
 impl UploadQueue {
-    pub(super) fn new(max_per_user: usize) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             entries: Vec::new(),
             active_users: HashMap::new(),
             user_counters: HashMap::new(),
             counter: 0,
-            max_per_user,
         }
     }
 
-    pub(super) fn set_max_per_user(&mut self, max_per_user: usize) {
-        self.max_per_user = max_per_user;
+    pub(super) fn is_active(&self, username: &str) -> bool {
+        self.active_users.contains_key(username)
     }
 
-    pub(super) fn active_count(&self, username: &str) -> usize {
-        self.active_users.get(username).map_or(0, HashSet::len)
-    }
-
-    fn under_per_user_cap(&self, username: &str) -> bool {
-        self.max_per_user == 0 || self.active_count(username) < self.max_per_user
+    pub(super) fn active_user_count(&self) -> usize {
+        self.active_users.len()
     }
 
     pub(super) fn len(&self) -> usize {
@@ -54,11 +48,6 @@ impl UploadQueue {
             .map(|place| place as u32 + 1)
     }
 
-    #[cfg(test)]
-    pub(super) fn has_active(&self, username: &str) -> bool {
-        self.active_users.contains_key(username)
-    }
-
     pub(super) fn push(&mut self, key: TransferKey) {
         let username = key.0.clone();
         self.entries.push(key);
@@ -66,60 +55,37 @@ impl UploadQueue {
     }
 
     pub(super) fn select_next(&self, users: &Users) -> Option<TransferKey> {
-        let eligible: Vec<&String> = self
-            .user_counters
-            .keys()
-            .filter(|username| !matches!(users.restriction(username), Some(Restriction::Hold)))
-            .filter(|username| self.under_per_user_cap(username))
-            .collect();
-        let privileged: Vec<&&String> = eligible
-            .iter()
-            .filter(|username| users.is_privileged(username))
-            .collect();
-        let normal: Vec<&&String> = eligible
-            .iter()
-            .filter(|username| {
-                !matches!(
-                    users.restriction(username),
-                    Some(Restriction::Deprioritized)
-                )
-            })
-            .collect();
-        let tier: Vec<&String> = if !privileged.is_empty() {
-            privileged.into_iter().copied().collect()
-        } else if !normal.is_empty() {
-            normal.into_iter().copied().collect()
-        } else {
-            eligible
+        let eligible = || {
+            self.user_counters
+                .iter()
+                .filter(|(username, _)| {
+                    !matches!(users.restriction(username), Some(Restriction::Hold))
+                })
+                .filter(|(username, _)| !self.is_active(username))
         };
-        tier.into_iter()
-            .min_by_key(|username| self.user_counters[*username])
-            .cloned()
-            .and_then(|username| {
+        eligible()
+            .filter(|(username, _)| users.is_privileged(username))
+            .min_by_key(|(_, counter)| *counter)
+            .or_else(|| eligible().min_by_key(|(_, counter)| *counter))
+            .and_then(|(username, _)| {
                 self.entries
                     .iter()
-                    .find(|(user, _)| *user == username)
+                    .find(|(user, _)| user == username)
                     .cloned()
             })
     }
 
     pub(super) fn mark_active(&mut self, key: &TransferKey, token: u32) {
         self.entries.retain(|queued| queued != key);
-        self.active_users
-            .entry(key.0.clone())
-            .or_default()
-            .insert(token);
+        self.active_users.insert(key.0.clone(), token);
         self.record_user(&key.0);
     }
 
     pub(super) fn release(&mut self, key: &TransferKey, token: Option<u32>) {
         if let Some(token) = token
-            && let Some(tokens) = self.active_users.get_mut(&key.0)
+            && self.active_users.get(&key.0) == Some(&token)
         {
-            tokens.remove(&token);
-            if tokens.is_empty() {
-                self.active_users.remove(&key.0);
-            }
+            self.active_users.remove(&key.0);
         }
         self.entries.retain(|queued| queued != key);
         self.record_user(&key.0);

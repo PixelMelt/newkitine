@@ -14,8 +14,8 @@ use newkitine::client::{
 use newkitine::network::{NetworkCommand, NetworkEvent, spawn as spawn_network};
 use newkitine::protocol::PeerMessage;
 use newkitine::types::{
-    ConnectionType, FileAttributes, Restriction, SharedFolder, TransferDirection, TransferId,
-    TransferStatus,
+    ConnectionType, DescriptionTemplate, FileAttributes, Restriction, SharedFolder,
+    TransferDirection, TransferId, TransferStatus,
 };
 
 async fn wait_client<T>(
@@ -87,7 +87,7 @@ async fn client_downloads_file_from_peer() {
     let incomplete_dir = temp_dir("incomplete");
     let mut bob_config = client_config(server_addr, "bob", free_port(), download_dir.clone());
     bob_config.runtime.transfers.incomplete_dir = incomplete_dir;
-    bob_config.runtime.description = "test client".into();
+    bob_config.runtime.description = DescriptionTemplate::parse("test client").unwrap();
     let (bob, mut bob_events, mut bob_transfers) = Client::spawn(bob_config);
     wait_client(&mut bob_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
@@ -582,6 +582,17 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
 
+    frank.search("guarded song", SearchScope::Global).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(event) = eve_events.try_recv() {
+        if let ClientEvent::Observed(Observation::SearchSeen { username, .. }) = &event {
+            assert_ne!(
+                username, "frank",
+                "a denied peer's search must not be recorded as an observation"
+            );
+        }
+    }
+
     eve.set_user_restriction("frank", Restriction::Hold).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
@@ -644,6 +655,63 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
+}
+
+#[tokio::test]
+async fn description_template_renders_for_the_asking_user() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("described-music");
+    std::fs::create_dir_all(share_dir.join("Album")).unwrap();
+    std::fs::write(share_dir.join("Album").join("song.mp3"), b"payload").unwrap();
+
+    let mut gina_config = client_config(server_addr, "gina", free_port(), temp_dir("gina-dl"));
+    gina_config.runtime.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    gina_config.runtime.description = DescriptionTemplate::parse(
+        "${user.is_buddy?Hey buddy:Hi} ${user.name}! ${me.name} shares ${me.shared_files} \
+         file in ${me.shared_folders} folders, ${me.free_slots}/${me.slots} slots free. 100$$",
+    )
+    .unwrap();
+    let (gina, mut gina_events, _gina_transfers) = Client::spawn(gina_config);
+    wait_client(&mut gina_events, |event| match event {
+        ClientEvent::SharesScanned { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let hank_config = client_config(server_addr, "hank", free_port(), temp_dir("hank-dl"));
+    let (hank, mut hank_events, _hank_transfers) = Client::spawn(hank_config);
+    wait_client(&mut hank_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    async fn description(events: &mut Receiver<ClientEvent>) -> String {
+        wait_client(events, |event| match event {
+            ClientEvent::UserInfo(info) if info.username == "gina" => Some(info.description),
+            _ => None,
+        })
+        .await
+    }
+
+    hank.request_user_info("gina").await;
+    assert_eq!(
+        description(&mut hank_events).await,
+        "Hi hank! gina shares 1 file in 2 folders, 2/2 slots free. 100$"
+    );
+
+    gina.add_buddy("hank").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    hank.request_user_info("gina").await;
+    assert_eq!(
+        description(&mut hank_events).await,
+        "Hey buddy hank! gina shares 1 file in 2 folders, 2/2 slots free. 100$"
+    );
 }
 
 #[tokio::test]

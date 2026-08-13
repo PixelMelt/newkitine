@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 use crate::types::{
     DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESPONSES, DEFAULT_MAX_SEARCH_RESULTS,
     DEFAULT_MIN_SEARCH_CHARS, DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS,
-    DEFAULT_UPLOADS_PER_USER, FilterLevel, LoginConfig, RuntimeConfig, SearchConfig, SharedFolder,
-    TransferConfig, TransferDirection,
+    DenialMessages, DescriptionTemplate, FilterLevel, LoginConfig, RuntimeConfig, SearchConfig,
+    SharedFolder, TransferConfig, TransferDirection,
 };
 
 use super::contract::{AppEvent, SettingsPayload};
+use super::pushover::Keys;
 use super::session;
 use super::state::App;
 
@@ -65,17 +66,19 @@ pub struct Settings {
     pub shares: Vec<SharedFolder>,
     pub upload_slots: usize,
     pub queue_file_limit: usize,
-    pub uploads_per_user: usize,
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
     pub auto_reconnect: bool,
     pub theme: String,
     pub filter_level: FilterLevel,
-    pub denied_message: String,
+    pub abusive_message: String,
+    pub leech_message: String,
+    pub clear_verdict_on_message: bool,
     pub max_search_results: usize,
     pub min_search_chars: usize,
     pub respond_to_searches: bool,
     pub max_search_responses: usize,
+    pub scan_on_startup: bool,
     pub rescan_daily: bool,
     pub rescan_hour_utc: u8,
     pub autoclear_downloads: bool,
@@ -84,6 +87,9 @@ pub struct Settings {
     pub banned_message: String,
     pub download_username_subfolders: bool,
     pub share_filters: Vec<String>,
+    pub pushover_token: String,
+    pub pushover_user_key: String,
+    pub pushover_private_messages: bool,
 }
 
 impl Default for Settings {
@@ -99,17 +105,19 @@ impl Default for Settings {
             shares: Vec::new(),
             upload_slots: DEFAULT_UPLOAD_SLOTS,
             queue_file_limit: DEFAULT_QUEUE_FILE_LIMIT,
-            uploads_per_user: DEFAULT_UPLOADS_PER_USER,
             upload_limit_kbps: 0,
             download_limit_kbps: 0,
             auto_reconnect: true,
             theme: "dark".into(),
             filter_level: FilterLevel::Open,
-            denied_message: "You need to share files to download from me.".into(),
+            abusive_message: "Your client is flooding me with requests.".into(),
+            leech_message: "You need to share files to download from me.".into(),
+            clear_verdict_on_message: true,
             max_search_results: DEFAULT_MAX_SEARCH_RESULTS,
             min_search_chars: DEFAULT_MIN_SEARCH_CHARS,
             respond_to_searches: true,
             max_search_responses: DEFAULT_MAX_SEARCH_RESPONSES,
+            scan_on_startup: false,
             rescan_daily: false,
             rescan_hour_utc: 0,
             autoclear_downloads: false,
@@ -118,6 +126,9 @@ impl Default for Settings {
             banned_message: DEFAULT_BANNED_MESSAGE.into(),
             download_username_subfolders: false,
             share_filters: Vec::new(),
+            pushover_token: String::new(),
+            pushover_user_key: String::new(),
+            pushover_private_messages: false,
         }
     }
 }
@@ -134,17 +145,19 @@ pub struct PublicSettings {
     pub shares: Vec<SharedFolder>,
     pub upload_slots: usize,
     pub queue_file_limit: usize,
-    pub uploads_per_user: usize,
     pub upload_limit_kbps: u32,
     pub download_limit_kbps: u32,
     pub auto_reconnect: bool,
     pub theme: String,
     pub filter_level: FilterLevel,
-    pub denied_message: String,
+    pub abusive_message: String,
+    pub leech_message: String,
+    pub clear_verdict_on_message: bool,
     pub max_search_results: usize,
     pub min_search_chars: usize,
     pub respond_to_searches: bool,
     pub max_search_responses: usize,
+    pub scan_on_startup: bool,
     pub rescan_daily: bool,
     pub rescan_hour_utc: u8,
     pub autoclear_downloads: bool,
@@ -153,6 +166,9 @@ pub struct PublicSettings {
     pub banned_message: String,
     pub download_username_subfolders: bool,
     pub share_filters: Vec<String>,
+    pub pushover_token: String,
+    pub pushover_user_key: String,
+    pub pushover_private_messages: bool,
 }
 
 impl From<&Settings> for PublicSettings {
@@ -168,17 +184,19 @@ impl From<&Settings> for PublicSettings {
             shares: settings.shares.clone(),
             upload_slots: settings.upload_slots,
             queue_file_limit: settings.queue_file_limit,
-            uploads_per_user: settings.uploads_per_user,
             upload_limit_kbps: settings.upload_limit_kbps,
             download_limit_kbps: settings.download_limit_kbps,
             auto_reconnect: settings.auto_reconnect,
             theme: settings.theme.clone(),
             filter_level: settings.filter_level,
-            denied_message: settings.denied_message.clone(),
+            abusive_message: settings.abusive_message.clone(),
+            leech_message: settings.leech_message.clone(),
+            clear_verdict_on_message: settings.clear_verdict_on_message,
             max_search_results: settings.max_search_results,
             min_search_chars: settings.min_search_chars,
             respond_to_searches: settings.respond_to_searches,
             max_search_responses: settings.max_search_responses,
+            scan_on_startup: settings.scan_on_startup,
             rescan_daily: settings.rescan_daily,
             rescan_hour_utc: settings.rescan_hour_utc,
             autoclear_downloads: settings.autoclear_downloads,
@@ -187,6 +205,9 @@ impl From<&Settings> for PublicSettings {
             banned_message: settings.banned_message.clone(),
             download_username_subfolders: settings.download_username_subfolders,
             share_filters: settings.share_filters.clone(),
+            pushover_token: settings.pushover_token.clone(),
+            pushover_user_key: settings.pushover_user_key.clone(),
+            pushover_private_messages: settings.pushover_private_messages,
         }
     }
 }
@@ -269,6 +290,15 @@ impl Settings {
         if self.banned_message.is_empty() {
             return Err("banned_message must not be empty".into());
         }
+        if self.pushover_private_messages
+            && (self.pushover_token.is_empty() || self.pushover_user_key.is_empty())
+        {
+            return Err(
+                "pushover_private_messages requires both pushover_token and \
+                 pushover_user_key to be set"
+                    .into(),
+            );
+        }
         Ok(RuntimeConfig {
             login: LoginConfig {
                 server: self.resolve_server()?,
@@ -276,14 +306,13 @@ impl Settings {
                 password: self.password.clone(),
                 listen_port: self.listen_port,
             },
-            description: self.description.clone(),
+            description: DescriptionTemplate::parse(&self.description)?,
             auto_reconnect: self.auto_reconnect,
             transfers: TransferConfig {
                 download_dir: self.download_dir.clone(),
                 incomplete_dir: self.incomplete_dir(),
                 upload_slots: self.upload_slots,
                 queue_file_limit: self.queue_file_limit,
-                uploads_per_user: self.uploads_per_user,
                 upload_limit_kbps: self.upload_limit_kbps,
                 download_limit_kbps: self.download_limit_kbps,
                 queue_size_limit_mb: self.queue_size_limit_mb,
@@ -340,11 +369,18 @@ impl SettingsState {
         settings
     }
 
-    pub fn behavior_policy(&self) -> (FilterLevel, String) {
+    pub fn clear_verdict_on_message(&self) -> bool {
+        self.inner.read().unwrap().stored.clear_verdict_on_message
+    }
+
+    pub fn behavior_policy(&self) -> (FilterLevel, DenialMessages) {
         let inner = self.inner.read().unwrap();
         (
             inner.stored.filter_level,
-            inner.stored.denied_message.clone(),
+            DenialMessages {
+                abusive: inner.stored.abusive_message.clone(),
+                leech: inner.stored.leech_message.clone(),
+            },
         )
     }
 
@@ -358,6 +394,24 @@ impl SettingsState {
             TransferDirection::Download => inner.stored.autoclear_downloads,
             TransferDirection::Upload => inner.stored.autoclear_uploads,
         }
+    }
+
+    pub fn pushover_keys(&self) -> Option<Keys> {
+        let inner = self.inner.read().unwrap();
+        let set =
+            !inner.stored.pushover_token.is_empty() && !inner.stored.pushover_user_key.is_empty();
+        set.then(|| Keys {
+            token: inner.stored.pushover_token.clone(),
+            user_key: inner.stored.pushover_user_key.clone(),
+        })
+    }
+
+    pub fn pushover_private_messages(&self) -> Option<Keys> {
+        let inner = self.inner.read().unwrap();
+        inner.stored.pushover_private_messages.then(|| Keys {
+            token: inner.stored.pushover_token.clone(),
+            user_key: inner.stored.pushover_user_key.clone(),
+        })
     }
 
     pub fn payload(&self) -> SettingsPayload {
@@ -393,7 +447,8 @@ impl SettingsState {
             stored
         };
         let behavior_changed = effective.filter_level != old.filter_level
-            || effective.denied_message != old.denied_message;
+            || effective.abusive_message != old.abusive_message
+            || effective.leech_message != old.leech_message;
         Ok(SettingsChange {
             stored,
             effective,
@@ -424,7 +479,7 @@ pub async fn apply_live_port(app: &Arc<App>, port: u16) -> Result<(), String> {
     app.settings.set_live_port(port);
     session::set_listen_port(app, port);
     let mut data = app.projection.write();
-    data.broadcast(AppEvent::Settings(app.settings.payload()));
+    data.broadcast(AppEvent::Settings(Box::new(app.settings.payload())));
     Ok(())
 }
 
@@ -442,11 +497,20 @@ mod tests {
                 buddy_only: true,
             }],
             theme: "catppuccin".into(),
+            description: "first line\nsecond line\n\nfourth".into(),
             ..Default::default()
         };
         let json = serde_json::to_string(&settings).unwrap();
         let loaded: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(settings, loaded);
+    }
+
+    #[test]
+    fn stored_settings_without_the_new_messages_still_load() {
+        let loaded: Settings = serde_json::from_str(r#"{"username":"someone"}"#).unwrap();
+        assert_eq!(loaded.username, "someone");
+        assert_eq!(loaded.abusive_message, Settings::default().abusive_message);
+        assert_eq!(loaded.leech_message, Settings::default().leech_message);
     }
 
     #[test]
@@ -504,6 +568,16 @@ mod tests {
                 share_filters: vec!["a\\b".into()],
                 ..base()
             },
+            Settings {
+                pushover_private_messages: true,
+                pushover_token: "token".into(),
+                ..base()
+            },
+            Settings {
+                pushover_private_messages: true,
+                pushover_user_key: "key".into(),
+                ..base()
+            },
         ];
         for settings in invalid {
             assert!(settings.runtime_config().is_err());
@@ -511,8 +585,45 @@ mod tests {
         let valid = Settings {
             rescan_hour_utc: 23,
             share_filters: vec!["Thumbs.db".into(), "desktop.ini".into()],
+            pushover_private_messages: true,
+            pushover_token: "token".into(),
+            pushover_user_key: "key".into(),
             ..base()
         };
         assert!(valid.runtime_config().is_ok());
+    }
+
+    #[test]
+    fn a_broken_description_template_fails_the_runtime_config() {
+        let with_description = |description: &str| Settings {
+            server: "127.0.0.1:2242".into(),
+            description: description.into(),
+            ..Default::default()
+        };
+        assert!(
+            with_description("hi ${user.nope}")
+                .runtime_config()
+                .is_err()
+        );
+        assert!(
+            with_description("${user.is_buddy?Hey buddy:Hi} ${user.name}")
+                .runtime_config()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_settings_page_documents_every_description_variable() {
+        let page = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/web/src/tabs/Settings.svelte"
+        ))
+        .unwrap();
+        for name in crate::types::description_variables() {
+            assert!(
+                page.contains(name),
+                "{name} is missing from the profile hint"
+            );
+        }
     }
 }

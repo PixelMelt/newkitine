@@ -4,8 +4,8 @@ use tokio::sync::mpsc;
 
 use crate::client::{ClientEvent, Observation};
 
-use super::state::App;
-use super::{behavior, chat, db, interests, search, session, users};
+use super::state::{App, now};
+use super::{behavior, chat, db, interests, peer_history, search, session, users};
 
 pub async fn run(app: Arc<App>, mut events: mpsc::Receiver<ClientEvent>) {
     while let Some(event) = events.recv().await {
@@ -100,22 +100,30 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::ItemSimilarUsers { thing, usernames } => {
             interests::item_similar_users(app, thing, usernames);
         }
+        ClientEvent::PeerAddress { ip, .. } if ip.is_unspecified() => {}
+        ClientEvent::PeerAddress { username, ip } => {
+            let country = app.geo.as_ref().and_then(|geo| geo.country(ip));
+            peer_history::record_address(
+                &app.db,
+                &username,
+                &ip.to_string(),
+                country.as_deref(),
+                now(),
+            )
+            .await
+            .unwrap_or_else(|error| db::fatal(error));
+        }
         ClientEvent::Privileges { seconds } => session::privileges(app, seconds),
         ClientEvent::AdminMessage { message } => session::server_message(app, message),
         ClientEvent::Observed(observation) => {
             app.stats.record(&observation, app.geo.as_ref());
-            match &observation {
-                Observation::SearchSeen { username, .. } => {
-                    behavior::search_seen(app, username).await;
-                }
-                Observation::QueueRequest {
-                    username,
-                    accepted: true,
-                    ..
-                } => {
-                    behavior::queue_request(app, username).await;
-                }
-                _ => {}
+            if let Observation::QueueRequest {
+                username,
+                accepted: true,
+                ..
+            } = &observation
+            {
+                behavior::queue_request(app, username).await;
             }
         }
     }

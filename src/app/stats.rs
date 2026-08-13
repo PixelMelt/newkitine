@@ -258,8 +258,8 @@ async fn peers_seen(pool: &MySqlPool, limit: u32) -> serde_json::Value {
 async fn verdict_users(pool: &MySqlPool) -> serde_json::Value {
     let users: Vec<serde_json::Value> = sqlx::query(
         "SELECT username, verdict, COALESCE(evidence, ''), restriction, last_ip, country,
-                shared_files, shared_folders, last_seen
-         FROM users_seen WHERE verdict IN ('suspect', 'leech') ORDER BY last_seen DESC",
+                shared_files, shared_folders, last_seen, convicted_at
+         FROM users_seen WHERE verdict IN ('abusive', 'leech') ORDER BY last_seen DESC",
     )
     .fetch_all(pool)
     .await
@@ -276,6 +276,7 @@ async fn verdict_users(pool: &MySqlPool) -> serde_json::Value {
             "shared_files": row.get::<Option<u32>, _>(6),
             "shared_folders": row.get::<Option<u32>, _>(7),
             "last_seen": row.get::<i64, _>(8),
+            "convicted_at": row.get::<Option<i64>, _>(9),
         })
     })
     .collect();

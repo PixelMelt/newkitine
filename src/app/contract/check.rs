@@ -220,7 +220,7 @@ fn fixture_events() -> Vec<AppEvent> {
         AppEvent::ServerMessage {
             message: "hello".into(),
         },
-        AppEvent::Settings(settings_payload()),
+        AppEvent::Settings(Box::new(settings_payload())),
         AppEvent::Transfer {
             direction: TransferDirection::Download,
             transfer: transfer_view(),
@@ -446,11 +446,11 @@ fn events_carry_type_tag_and_revision() {
     assert_eq!(value["type"], "room_user_left");
     assert_eq!(value["room"], "indie");
 
-    let event = AppEvent::Settings(SettingsPayload {
+    let event = AppEvent::Settings(Box::new(SettingsPayload {
         settings: PublicSettings::from(&Settings::default()),
         locked: vec!["server"],
         gluetun: true,
-    });
+    }));
     let value = serde_json::to_value(&Envelope {
         rev: 10,
         event: &event,

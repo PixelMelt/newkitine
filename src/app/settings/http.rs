@@ -44,7 +44,7 @@ async fn apply_update(app: &Arc<App>, update: SettingsUpdate) -> Result<(), Appl
         &change.effective.username,
     );
     let mut data = app.projection.write();
-    data.broadcast(AppEvent::Settings(app.settings.payload()));
+    data.broadcast(AppEvent::Settings(Box::new(app.settings.payload())));
     Ok(())
 }
 
@@ -60,17 +60,19 @@ struct SettingsUpdate {
     shares: Vec<SharedFolder>,
     upload_slots: usize,
     queue_file_limit: usize,
-    uploads_per_user: usize,
     upload_limit_kbps: u32,
     download_limit_kbps: u32,
     auto_reconnect: bool,
     theme: String,
     filter_level: FilterLevel,
-    denied_message: String,
+    abusive_message: String,
+    leech_message: String,
+    clear_verdict_on_message: bool,
     max_search_results: usize,
     min_search_chars: usize,
     respond_to_searches: bool,
     max_search_responses: usize,
+    scan_on_startup: bool,
     rescan_daily: bool,
     rescan_hour_utc: u8,
     autoclear_downloads: bool,
@@ -79,6 +81,9 @@ struct SettingsUpdate {
     banned_message: String,
     download_username_subfolders: bool,
     share_filters: Vec<String>,
+    pushover_token: String,
+    pushover_user_key: String,
+    pushover_private_messages: bool,
 }
 
 impl SettingsUpdate {
@@ -94,17 +99,19 @@ impl SettingsUpdate {
             shares: self.shares,
             upload_slots: self.upload_slots,
             queue_file_limit: self.queue_file_limit,
-            uploads_per_user: self.uploads_per_user,
             upload_limit_kbps: self.upload_limit_kbps,
             download_limit_kbps: self.download_limit_kbps,
             auto_reconnect: self.auto_reconnect,
             theme: self.theme,
             filter_level: self.filter_level,
-            denied_message: self.denied_message,
+            abusive_message: self.abusive_message,
+            leech_message: self.leech_message,
+            clear_verdict_on_message: self.clear_verdict_on_message,
             max_search_results: self.max_search_results,
             min_search_chars: self.min_search_chars,
             respond_to_searches: self.respond_to_searches,
             max_search_responses: self.max_search_responses,
+            scan_on_startup: self.scan_on_startup,
             rescan_daily: self.rescan_daily,
             rescan_hour_utc: self.rescan_hour_utc,
             autoclear_downloads: self.autoclear_downloads,
@@ -113,6 +120,9 @@ impl SettingsUpdate {
             banned_message: self.banned_message,
             download_username_subfolders: self.download_username_subfolders,
             share_filters: self.share_filters,
+            pushover_token: self.pushover_token,
+            pushover_user_key: self.pushover_user_key,
+            pushover_private_messages: self.pushover_private_messages,
         }
     }
 }
@@ -154,17 +164,19 @@ mod tests {
             "shares": [],
             "upload_slots": 2,
             "queue_file_limit": 100,
-            "uploads_per_user": 1,
             "upload_limit_kbps": 0,
             "download_limit_kbps": 0,
             "auto_reconnect": true,
             "theme": "dark",
             "filter_level": "open",
-            "denied_message": "denied",
+            "abusive_message": "denied",
+            "leech_message": "share something",
+            "clear_verdict_on_message": true,
             "max_search_results": 300,
             "min_search_chars": 3,
             "respond_to_searches": true,
             "max_search_responses": 500,
+            "scan_on_startup": false,
             "rescan_daily": false,
             "rescan_hour_utc": 0,
             "autoclear_downloads": false,
@@ -172,7 +184,10 @@ mod tests {
             "queue_size_limit_mb": 0,
             "banned_message": "Banned",
             "download_username_subfolders": false,
-            "share_filters": []
+            "share_filters": [],
+            "pushover_token": "",
+            "pushover_user_key": "",
+            "pushover_private_messages": false
         }))
         .unwrap();
         let current = Settings {

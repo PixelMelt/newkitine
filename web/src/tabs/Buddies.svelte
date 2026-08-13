@@ -11,12 +11,19 @@
   let banName = '';
   let ignoreName = '';
   let sort = { key: null, dir: 1 };
+  let banSort = { key: null, dir: 1 };
+  let ignoreSort = { key: null, dir: 1 };
+
+  const byName = (a, b) => a.localeCompare(b);
+  const asName = { username: (name) => name };
 
   $: list = sortRows(
     Object.values($buddies).sort((a, b) => a.username.localeCompare(b.username)),
     sort,
     { speed: (b) => b.stats.avgspeed, files: (b) => b.stats.files },
   );
+  $: banRows = sortRows([...$banned].sort(byName), banSort, asName);
+  $: ignoreRows = sortRows([...$ignored].sort(byName), ignoreSort, asName);
 
   function add(path, username, reset) {
     if (!username.trim()) return;
@@ -39,6 +46,14 @@
       },
       { sep: true },
       { label: 'Remove', action: () => del(`/buddies/${encodeURIComponent(buddy.username)}`) },
+    ]);
+  }
+
+  function listMenu(event, path, skip, username) {
+    openMenu(event, [
+      ...userMenu(username, { skip }),
+      { sep: true },
+      { label: 'Remove', action: () => del(`${path}/${encodeURIComponent(username)}`) },
     ]);
   }
 </script>
@@ -80,43 +95,57 @@
 </div>
 
 <div class="split" style="flex: 0 0 auto;">
-  <div class="side">
+  <div class="side" style="flex: 1;">
     <h3>Banned</h3>
     <div class="toolbar">
       <input
         style="min-width: 0; flex: 1;"
+        placeholder="Ban user…"
         bind:value={banName}
         on:keydown={(e) => e.key === 'Enter' && add('/banned', banName, () => (banName = ''))}
       />
       <button on:click={() => add('/banned', banName, () => (banName = ''))}>Ban</button>
     </div>
-    <div class="list" style="max-height: 150px;">
-      {#each $banned as user}
-        <div class="row" on:contextmenu={(e) => openMenu(e, userMenu(user))}>
-          {user}
-          <button on:click={() => del(`/banned/${encodeURIComponent(user)}`)}>Remove</button>
-        </div>
-      {/each}
+    <div class="scroll" style="max-height: 150px;">
+      <table>
+        <thead>
+          <tr><Th bind:sort={banSort} key="username" grow>User</Th></tr>
+        </thead>
+        <tbody>
+          {#each banRows as user (user)}
+            <tr on:contextmenu={(e) => listMenu(e, '/banned', ['ban'], user)}>
+              <td class="grow">{user}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
     </div>
   </div>
-  <div class="side">
+  <div class="side" style="flex: 1;">
     <h3>Ignored</h3>
     <div class="toolbar">
       <input
         style="min-width: 0; flex: 1;"
+        placeholder="Ignore user…"
         bind:value={ignoreName}
         on:keydown={(e) =>
           e.key === 'Enter' && add('/ignored', ignoreName, () => (ignoreName = ''))}
       />
       <button on:click={() => add('/ignored', ignoreName, () => (ignoreName = ''))}>Ignore</button>
     </div>
-    <div class="list" style="max-height: 150px;">
-      {#each $ignored as user}
-        <div class="row" on:contextmenu={(e) => openMenu(e, userMenu(user))}>
-          {user}
-          <button on:click={() => del(`/ignored/${encodeURIComponent(user)}`)}>Remove</button>
-        </div>
-      {/each}
+    <div class="scroll" style="max-height: 150px;">
+      <table>
+        <thead>
+          <tr><Th bind:sort={ignoreSort} key="username" grow>User</Th></tr>
+        </thead>
+        <tbody>
+          {#each ignoreRows as user (user)}
+            <tr on:contextmenu={(e) => listMenu(e, '/ignored', ['ignore'], user)}>
+              <td class="grow">{user}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
     </div>
   </div>
 </div>

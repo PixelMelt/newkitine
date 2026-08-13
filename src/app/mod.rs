@@ -11,6 +11,7 @@ mod gluetun;
 mod interests;
 mod peer_history;
 mod projection;
+mod pushover;
 mod search;
 mod session;
 mod settings;

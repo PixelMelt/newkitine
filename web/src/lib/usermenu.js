@@ -28,29 +28,31 @@ export function userMenu(username, { skip = [] } = {}) {
 			action: () => (isBuddy ? del(`/buddies/${encoded}`) : post('/buddies', { username })),
 		});
 	}
-	items.push(
-		{ sep: true },
-		{
+	items.push({ sep: true });
+	if (!skip.includes('ban')) {
+		items.push({
 			label: 'Ban User',
 			checked: isBanned,
 			action: () => (isBanned ? del(`/banned/${encoded}`) : post('/banned', { username })),
+		});
+	}
+	items.push({
+		label: 'Ban IP Address',
+		action: async () => {
+			try {
+				await post(`/users/${encoded}/ban_ip`);
+			} catch (error) {
+				if (error.status !== 404) throw error;
+				alert(`No known IP address for ${username}.`);
+			}
 		},
-		{
-			label: 'Ban IP Address',
-			action: async () => {
-				try {
-					await post(`/users/${encoded}/ban_ip`);
-				} catch (error) {
-					if (error.status !== 404) throw error;
-					alert(`No known IP address for ${username}.`);
-				}
-			},
-		},
-		{
+	});
+	if (!skip.includes('ignore')) {
+		items.push({
 			label: 'Ignore User',
 			checked: isIgnored,
 			action: () => (isIgnored ? del(`/ignored/${encoded}`) : post('/ignored', { username })),
-		},
-	);
+		});
+	}
 	return items;
 }

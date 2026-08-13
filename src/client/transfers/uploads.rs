@@ -87,7 +87,6 @@ impl Uploads {
         net: NetworkHandle,
         upload_slots: usize,
         queue_file_limit: usize,
-        uploads_per_user: usize,
         queue_size_limit_mb: u64,
         banned_message: String,
     ) -> Self {
@@ -98,7 +97,7 @@ impl Uploads {
             queue_size_limit_mb,
             banned_message,
             transfers: Registry::default(),
-            queue: UploadQueue::new(uploads_per_user),
+            queue: UploadQueue::new(),
             token: initial_token(),
             upload_speed: 0,
         }
@@ -112,23 +111,34 @@ impl Uploads {
         &mut self,
         upload_slots: usize,
         queue_file_limit: usize,
-        uploads_per_user: usize,
         queue_size_limit_mb: u64,
         banned_message: String,
     ) {
         self.upload_slots = upload_slots;
         self.queue_file_limit = queue_file_limit;
-        self.queue.set_max_per_user(uploads_per_user);
         self.queue_size_limit_mb = queue_size_limit_mb;
         self.banned_message = banned_message;
     }
 
     pub fn is_new_upload_accepted(&self) -> bool {
-        self.transfers.token_count() < self.upload_slots
+        self.free_slots() > 0
+    }
+
+    pub fn free_slots(&self) -> u32 {
+        self.upload_slots
+            .saturating_sub(self.queue.active_user_count()) as u32
     }
 
     pub fn queue_size(&self) -> u32 {
         self.queue.len() as u32
+    }
+
+    pub fn queued_for(&self, username: &str) -> u32 {
+        self.queue.queued_for(username) as u32
+    }
+
+    pub fn active_uploads(&self, username: &str) -> u32 {
+        u32::from(self.queue.is_active(username))
     }
 
     pub fn owns_token(&self, username: &str, token: u32) -> bool {
@@ -701,14 +711,14 @@ impl Uploads {
         updates
     }
 
-    fn finish(&mut self, key: &TransferKey, send_speed: bool) -> Vec<TransferWork> {
+    fn finish(&mut self, key: &TransferKey, delivered: bool) -> Vec<TransferWork> {
         self.deactivate(key);
         self.transfers.detach_conn(key);
         let transfer = self.transfers.get_mut(key).unwrap();
         transfer.phase = TransferPhase::Finished;
         transfer.bytes_done = transfer.size;
         let mut avg_speed_bps = None;
-        if send_speed && let Some(started_at) = transfer.started_at {
+        if delivered && let Some(started_at) = transfer.started_at {
             let elapsed = started_at.elapsed().as_secs_f64();
             let bytes_sent = transfer.bytes_done - transfer.started_offset;
             if elapsed >= 1.0 && bytes_sent > 0 {
@@ -724,6 +734,7 @@ impl Uploads {
         vec![TransferWork::Finished {
             snapshot,
             avg_speed_bps,
+            delivered,
         }]
     }
 
@@ -759,85 +770,63 @@ mod tests {
     use crate::network::spawn as spawn_network;
     use crate::types::SharedFolder;
 
-    #[tokio::test]
-    async fn restriction_tiers_control_slot_grants() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 1, 0, "Banned".into());
-        let mut ids = TransferIds::new(&[]);
+    const TRACKS: [&str; 3] = ["Music\\a.mp3", "Music\\b.mp3", "Music\\c.mp3"];
 
-        let dir =
-            std::env::temp_dir().join(format!("newkitine-uploads-test-{}", std::process::id()));
+    fn three_track_shares(tag: &str) -> SharesIndex {
+        let dir = std::env::temp_dir().join(format!("newkitine-{tag}-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("song.mp3"), b"payload").unwrap();
-        let shares = shares::scan(
+        for name in ["a.mp3", "b.mp3", "c.mp3"] {
+            std::fs::write(dir.join(name), b"payload").unwrap();
+        }
+        shares::scan(
             &[SharedFolder {
                 virtual_name: "Music".into(),
                 path: dir.clone(),
                 buddy_only: false,
             }],
             &[],
-            &dir.with_extension("slots.cache"),
+            &dir.with_extension(format!("{tag}.cache")),
             &|_| {},
         )
         .expect("scan test shares")
-        .index;
+        .index
+    }
+
+    #[tokio::test]
+    async fn held_users_are_skipped_until_the_hold_lifts() {
+        let (net, _events) = spawn_network();
+        let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
+        let mut ids = TransferIds::new(&[]);
+
+        let shares = three_track_shares("slots");
 
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        users.set_restriction("leech".into(), Restriction::Deprioritized);
 
-        let (_, accepted) = uploads.handle_queue_upload(
-            &mut ids,
-            "leech",
-            "Music\\song.mp3",
-            Some(&shares),
-            &users,
-        );
+        let (_, accepted) =
+            uploads.handle_queue_upload(&mut ids, "leech", TRACKS[0], Some(&shares), &users);
         assert!(accepted);
-        let (_, accepted) = uploads.handle_queue_upload(
-            &mut ids,
-            "human",
-            "Music\\song.mp3",
-            Some(&shares),
-            &users,
-        );
+        let (_, accepted) =
+            uploads.handle_queue_upload(&mut ids, "human", TRACKS[0], Some(&shares), &users);
         assert!(accepted);
-
-        uploads.set_limits(1, 500, 1, 0, "Banned".into());
-        uploads.check_queue(&users);
-        assert!(uploads.queue.has_active("human"));
-        assert!(!uploads.queue.has_active("leech"));
 
         users.set_restriction("leech".into(), Restriction::Hold);
-        uploads.set_limits(2, 500, 1, 0, "Banned".into());
+        uploads.set_limits(2, 500, 0, "Banned".into());
         uploads.check_queue(&users);
-        assert!(!uploads.queue.has_active("leech"));
+        assert!(uploads.queue.is_active("human"));
+        assert!(!uploads.queue.is_active("leech"));
 
         users.set_restriction("leech".into(), Restriction::None);
         uploads.check_queue(&users);
-        assert!(uploads.queue.has_active("leech"));
+        assert!(uploads.queue.is_active("leech"));
     }
 
     #[tokio::test]
     async fn denied_restriction_rejects_queue_requests() {
         let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 2, 500, 1, 0, "Banned".into());
+        let mut uploads = Uploads::new(net, 2, 500, 0, "Banned".into());
         let mut ids = TransferIds::new(&[]);
 
-        let dir = std::env::temp_dir().join(format!("newkitine-deny-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("song.mp3"), b"payload").unwrap();
-        let shares = shares::scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir.clone(),
-                buddy_only: false,
-            }],
-            &[],
-            &dir.with_extension("deny.cache"),
-            &|_| {},
-        )
-        .expect("scan test shares")
-        .index;
+        let shares = three_track_shares("deny");
 
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
         users.set_restriction(
@@ -846,57 +835,53 @@ mod tests {
                 reason: "not welcome".into(),
             },
         );
-        let (updates, accepted) = uploads.handle_queue_upload(
-            &mut ids,
-            "leech",
-            "Music\\song.mp3",
-            Some(&shares),
-            &users,
-        );
+        let (updates, accepted) =
+            uploads.handle_queue_upload(&mut ids, "leech", TRACKS[0], Some(&shares), &users);
         assert!(!accepted);
         assert!(updates.is_empty());
     }
 
     #[tokio::test]
-    async fn per_user_cap_limits_concurrent_uploads() {
+    async fn one_upload_per_peer_and_no_peer_waits_behind_another() {
         let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 2, 0, "Banned".into());
+        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
         let mut ids = TransferIds::new(&[]);
-
-        let dir =
-            std::env::temp_dir().join(format!("newkitine-peruser-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for name in ["a.mp3", "b.mp3", "c.mp3"] {
-            std::fs::write(dir.join(name), b"payload").unwrap();
-        }
-        let shares = shares::scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir.clone(),
-                buddy_only: false,
-            }],
-            &[],
-            &dir.with_extension("peruser.cache"),
-            &|_| {},
-        )
-        .expect("scan test shares")
-        .index;
-
+        let shares = three_track_shares("nowait");
         let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        for name in ["Music\\a.mp3", "Music\\b.mp3", "Music\\c.mp3"] {
-            let (_, accepted) =
-                uploads.handle_queue_upload(&mut ids, "fan", name, Some(&shares), &users);
-            assert!(accepted);
+
+        for peer in ["one", "two", "three"] {
+            for path in TRACKS {
+                let (_, accepted) =
+                    uploads.handle_queue_upload(&mut ids, peer, path, Some(&shares), &users);
+                assert!(accepted);
+            }
         }
-
-        uploads.set_limits(999, 500, 2, 0, "Banned".into());
         uploads.check_queue(&users);
-        assert_eq!(uploads.queue.active_count("fan"), 2);
-        assert_eq!(uploads.queue.len(), 1);
-
-        uploads.set_limits(999, 500, 0, 0, "Banned".into());
         uploads.check_queue(&users);
-        assert_eq!(uploads.queue.active_count("fan"), 3);
-        assert_eq!(uploads.queue.len(), 0);
+
+        for peer in ["one", "two", "three"] {
+            assert!(uploads.queue.is_active(peer), "{peer} is transferring");
+        }
+        assert_eq!(uploads.queue.active_user_count(), 3);
+        assert_eq!(uploads.queue.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn slot_ceiling_counts_peers_not_transfers() {
+        let (net, _events) = spawn_network();
+        let mut uploads = Uploads::new(net, 2, 500, 0, "Banned".into());
+        let mut ids = TransferIds::new(&[]);
+        let shares = three_track_shares("ceiling");
+        let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+
+        for peer in ["one", "two", "three"] {
+            for path in TRACKS {
+                uploads.handle_queue_upload(&mut ids, peer, path, Some(&shares), &users);
+            }
+        }
+        uploads.check_queue(&users);
+
+        assert_eq!(uploads.queue.active_user_count(), 2);
+        assert!(!uploads.is_new_upload_accepted());
     }
 }

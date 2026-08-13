@@ -111,6 +111,10 @@ impl Sharing {
             excluded_phrases: Vec::new(),
         }
     }
+
+    pub(super) fn counts(&self) -> (u32, u32) {
+        self.index.as_ref().map_or((0, 0), |index| index.counts())
+    }
 }
 
 impl ClientActor {
@@ -261,20 +265,23 @@ impl ClientActor {
         if username == self.config.login.username {
             return;
         }
-        let blocked = self.users.is_banned(username)
+        if self.users.is_banned(username)
             || matches!(
                 self.users.restriction(username),
                 Some(Restriction::Denied { .. })
-            );
-        let results = match (&self.sharing.index, blocked) {
-            (Some(shares), false) => shares.search(
+            )
+        {
+            return;
+        }
+        let results = match &self.sharing.index {
+            Some(shares) => shares.search(
                 search_term,
                 self.users.is_buddy(username),
                 &self.sharing.excluded_phrases,
                 self.config.search.max_search_results,
                 self.config.search.min_search_chars,
             ),
-            _ => Vec::new(),
+            None => Vec::new(),
         };
         self.emit(ClientEvent::Observed(Observation::SearchSeen {
             username: username.to_owned(),

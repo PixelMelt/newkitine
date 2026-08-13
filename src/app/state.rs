@@ -7,6 +7,7 @@ use crate::client::Client;
 use super::behavior::Behavior;
 use super::geo::Geo;
 use super::projection::Projection;
+use super::pushover::Notifier;
 use super::settings::SettingsState;
 use super::stats::StatsSink;
 
@@ -25,5 +26,6 @@ pub struct App {
     pub geo: Option<Geo>,
     pub stats: StatsSink,
     pub behavior: Behavior,
+    pub pushover: Notifier,
     pub list_mutation: tokio::sync::Mutex<()>,
 }

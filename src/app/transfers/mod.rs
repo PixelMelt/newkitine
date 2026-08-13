@@ -161,21 +161,24 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
             TransferWork::Finished {
                 snapshot,
                 avg_speed_bps,
+                delivered,
             } => {
                 let view = TransferView::from_snapshot(snapshot, now());
                 let direction = view.direction;
                 let mut tx = app.db.begin().await.unwrap_or_else(|error| fatal(error));
-                db::record_transfer(
-                    &mut *tx,
-                    view.direction,
-                    &view.username,
-                    &view.virtual_path,
-                    view.size,
-                    avg_speed_bps,
-                    view.updated_at,
-                )
-                .await
-                .unwrap_or_else(|error| fatal(error));
+                if delivered {
+                    db::record_transfer(
+                        &mut *tx,
+                        view.direction,
+                        &view.username,
+                        &view.virtual_path,
+                        view.size,
+                        avg_speed_bps,
+                        view.updated_at,
+                    )
+                    .await
+                    .unwrap_or_else(|error| fatal(error));
+                }
                 db::upsert_transfer(&mut *tx, &view)
                     .await
                     .unwrap_or_else(|error| fatal(error));

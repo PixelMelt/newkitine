@@ -19,7 +19,7 @@ use super::state::App;
 use super::stats::{self, StatsSink};
 use super::transfers::{self, Transfers};
 use super::users::{self, UsersState};
-use super::{api, db, events, geo, gluetun};
+use super::{api, db, events, geo, gluetun, pushover};
 
 async fn connect_database(url: &str) -> sqlx::MySqlPool {
     let mut attempts = 0u32;
@@ -93,6 +93,7 @@ pub async fn run(config_path: PathBuf) {
     let client_config = ClientBootstrap {
         runtime,
         scan_cache: config_path.with_file_name("scan-cache.json.gz"),
+        scan_on_startup: settings.scan_on_startup,
         buddies: db::load_list(&pool, "buddy").await,
         banned: db::load_list(&pool, "banned").await,
         ignored: db::load_list(&pool, "ignored").await,
@@ -132,6 +133,7 @@ pub async fn run(config_path: PathBuf) {
         .geoip_db
         .as_deref()
         .map(|path| geo::Geo::load(std::path::Path::new(path)));
+    let (notifier, pushover_worker) = pushover::Notifier::new();
     let app = Arc::new(App {
         client,
         db: pool,
@@ -140,6 +142,7 @@ pub async fn run(config_path: PathBuf) {
         geo,
         stats: StatsSink::default(),
         behavior: Behavior::default(),
+        pushover: notifier,
         list_mutation: tokio::sync::Mutex::new(()),
     });
 
@@ -148,7 +151,9 @@ pub async fn run(config_path: PathBuf) {
     let events_task = tokio::spawn(events::run(app.clone(), client_events));
     let worker_task = tokio::spawn(transfers::run_worker(app.clone(), transfer_events));
     let stats_task = tokio::spawn(stats::flush_loop(app.clone()));
+    let sweep_task = tokio::spawn(behavior::sweep_loop(app.clone()));
     let rescan_task = tokio::spawn(daily_rescan(app.clone()));
+    let pushover_task = tokio::spawn(pushover_worker.run());
     let gluetun_task = match gluetun_config {
         Some(gluetun) => tokio::spawn(gluetun::watch(
             app.clone(),
@@ -179,7 +184,9 @@ pub async fn run(config_path: PathBuf) {
         result = events_task => task_ended("client event loop", result),
         result = worker_task => task_ended("transfer worker", result),
         result = stats_task => task_ended("statistics flush loop", result),
+        result = sweep_task => task_ended("behaviour sweep", result),
         result = rescan_task => task_ended("daily rescan scheduler", result),
+        result = pushover_task => task_ended("pushover notifier", result),
         result = gluetun_task => task_ended("gluetun watcher", result),
         result = axum::serve(listener, router) => {
             match result {

@@ -77,9 +77,13 @@ const BASELINE: &[&str] = &[
         verdict VARCHAR(32) NOT NULL DEFAULT 'clean',
         evidence TEXT NULL,
         restriction VARCHAR(32) NOT NULL DEFAULT 'none',
+        convicted_at BIGINT NULL,
+        counters_reset_at BIGINT NULL,
         KEY idx_seen_last (last_seen)
     )",
 ];
+
+const LATEST_VERSION: i32 = 10;
 
 pub async fn init_schema(pool: &MySqlPool) {
     sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL PRIMARY KEY)")
@@ -92,7 +96,7 @@ pub async fn init_schema(pool: &MySqlPool) {
         .expect("read schema version")
         .get(0);
     let applied = applied.unwrap_or(0);
-    if applied > 4 {
+    if applied > LATEST_VERSION {
         panic!("database schema version {applied} is newer than this binary supports");
     }
 
@@ -119,6 +123,145 @@ pub async fn init_schema(pool: &MySqlPool) {
         .await;
         record_migration(pool, 4).await;
     }
+    if applied < 5 {
+        migration_statement(
+            pool,
+            5,
+            "UPDATE users_seen SET verdict = 'clean', evidence = NULL, restriction = 'none'
+             WHERE verdict = 'suspect' AND evidence = 'search-flood'",
+        )
+        .await;
+        migration_statement(
+            pool,
+            5,
+            "UPDATE users_seen SET verdict = 'abusive' WHERE verdict = 'suspect'",
+        )
+        .await;
+        record_migration(pool, 5).await;
+    }
+    if applied < 6 {
+        migration_statement(
+            pool,
+            6,
+            "UPDATE settings SET data = JSON_SET(
+                JSON_REMOVE(data, '$.denied_message'),
+                '$.abusive_message', JSON_UNQUOTE(JSON_EXTRACT(data, '$.denied_message')),
+                '$.leech_message', JSON_UNQUOTE(JSON_EXTRACT(data, '$.denied_message')))
+             WHERE id = 1 AND JSON_EXTRACT(data, '$.denied_message') IS NOT NULL",
+        )
+        .await;
+        migration_statement(
+            pool,
+            6,
+            "UPDATE settings SET data = JSON_SET(data, '$.description',
+                REPLACE(REPLACE(JSON_UNQUOTE(JSON_EXTRACT(data, '$.description')),
+                    '\\\\r\\\\n', CHAR(10)), '\\\\n', CHAR(10)))
+             WHERE id = 1 AND JSON_EXTRACT(data, '$.description') IS NOT NULL",
+        )
+        .await;
+        record_migration(pool, 6).await;
+    }
+    if applied < 7 {
+        migration_statement(
+            pool,
+            7,
+            "UPDATE users_seen SET verdict = CASE
+                WHEN evidence LIKE '%search-flood%' OR evidence LIKE '%repeat-downloads%'
+                    THEN 'abusive'
+                WHEN evidence LIKE '%zero-share%' OR evidence LIKE '%preset-stats%'
+                    OR evidence LIKE '%browse-contradicts-stats%' THEN 'leech'
+                ELSE 'clean' END
+             WHERE FIND_IN_SET('queue-flood', evidence)",
+        )
+        .await;
+        migration_statement(
+            pool,
+            7,
+            "UPDATE users_seen SET evidence = NULLIF(
+                TRIM(BOTH ',' FROM REPLACE(CONCAT(',', evidence, ','), ',queue-flood,', ',')), '')
+             WHERE FIND_IN_SET('queue-flood', evidence)",
+        )
+        .await;
+        migration_statement(
+            pool,
+            7,
+            "UPDATE users_seen SET restriction = 'none'
+             WHERE verdict = 'clean' AND restriction <> 'none'",
+        )
+        .await;
+        record_migration(pool, 7).await;
+    }
+    if applied < 8 {
+        migration_statement(
+            pool,
+            8,
+            "UPDATE users_seen SET verdict = 'clean', evidence = NULL, restriction = 'none'
+             WHERE evidence LIKE 'search-flood:0.0.0.0:%'",
+        )
+        .await;
+        migration_statement(
+            pool,
+            8,
+            "UPDATE users_seen SET last_ip = NULL WHERE last_ip = '0.0.0.0'",
+        )
+        .await;
+        record_migration(pool, 8).await;
+    }
+    if applied < 9 {
+        migration_statement(
+            pool,
+            9,
+            "UPDATE settings SET data = JSON_SET(data, '$.description',
+                REPLACE(JSON_UNQUOTE(JSON_EXTRACT(data, '$.description')), '$', '$$'))
+             WHERE id = 1 AND JSON_EXTRACT(data, '$.description') IS NOT NULL",
+        )
+        .await;
+        record_migration(pool, 9).await;
+    }
+    if applied < 10 {
+        release_filter_convictions(pool).await;
+        record_migration(pool, 10).await;
+    }
+}
+
+async fn release_filter_convictions(pool: &MySqlPool) {
+    if !column_exists(pool, "users_seen", "convicted_at").await {
+        migration_statement(
+            pool,
+            10,
+            "ALTER TABLE users_seen
+                ADD COLUMN convicted_at BIGINT NULL,
+                ADD COLUMN counters_reset_at BIGINT NULL",
+        )
+        .await;
+    }
+    migration_statement(
+        pool,
+        10,
+        "DELETE h FROM transfer_history h
+         JOIN (SELECT MIN(id) keep_id, username, virtual_path FROM transfer_history
+               WHERE direction = 'upload'
+               GROUP BY username, virtual_path HAVING COUNT(*) > 1) d
+           ON d.username = h.username AND d.virtual_path = h.virtual_path
+         JOIN users_seen u ON u.username = h.username
+         WHERE h.direction = 'upload' AND h.id > d.keep_id
+           AND (u.evidence LIKE 'search-flood%'
+                OR u.evidence LIKE 'repeat-downloads%'
+                OR u.evidence LIKE 'preset-stats%')",
+    )
+    .await;
+    migration_statement(
+        pool,
+        10,
+        "UPDATE users_seen u
+         SET u.verdict = 'clean', u.restriction = 'none', u.searches = 0,
+             u.searches_matched = 0, u.counters_reset_at = UNIX_TIMESTAMP()
+         WHERE u.verdict <> 'clean'
+           AND (u.evidence LIKE 'search-flood%'
+                OR u.evidence LIKE 'repeat-downloads%'
+                OR u.evidence LIKE 'preset-stats%')",
+    )
+    .await;
 }
 
 async fn migrate_transfer_identity(pool: &MySqlPool) {

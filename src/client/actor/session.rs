@@ -76,7 +76,6 @@ impl ClientActor {
             self.uploads.set_limits(
                 transfers.upload_slots,
                 transfers.queue_file_limit,
-                transfers.uploads_per_user,
                 transfers.queue_size_limit_mb,
                 transfers.banned_message,
             );
@@ -165,10 +164,7 @@ impl ClientActor {
         self.net.server(ServerRequest::WatchUser {
             user: username.clone(),
         });
-        let (folders, files) = match &self.sharing.index {
-            Some(shares) => shares.counts(),
-            None => (0, 0),
-        };
+        let (folders, files) = self.sharing.counts();
         self.net
             .server(ServerRequest::SharedFoldersFiles { folders, files });
         for thing in &self.liked_interests {

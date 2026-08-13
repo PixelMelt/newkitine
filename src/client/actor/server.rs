@@ -162,8 +162,15 @@ impl ClientActor {
             ServerResponse::AdminMessage { msg } => {
                 self.emit(ClientEvent::AdminMessage { message: msg });
             }
+            ServerResponse::GetPeerAddress {
+                user, ip_address, ..
+            } => {
+                self.emit(ClientEvent::PeerAddress {
+                    username: user,
+                    ip: ip_address,
+                });
+            }
             ServerResponse::Login(_)
-            | ServerResponse::GetPeerAddress { .. }
             | ServerResponse::IgnoreUser { .. }
             | ServerResponse::UnignoreUser { .. }
             | ServerResponse::ConnectToPeer { .. }

@@ -1,3 +1,5 @@
+use std::net::Ipv4Addr;
+
 use crate::types::{FileInfo, FolderContents, Recommendations, SimilarUser, UserStats, UserStatus};
 
 use super::observation::Observation;
@@ -65,6 +67,10 @@ pub enum ClientEvent {
     UserStats {
         username: String,
         stats: UserStats,
+    },
+    PeerAddress {
+        username: String,
+        ip: Ipv4Addr,
     },
     UserInterests {
         username: String,

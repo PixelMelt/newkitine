@@ -51,15 +51,18 @@ pub async fn set_user_verdict(
     evidence: &str,
     restriction: &str,
     timestamp: i64,
+    convicted_at: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO users_seen (username, first_seen, last_seen, verdict, evidence, restriction)
-         VALUES (?, ?, ?, ?, ?, ?)
+        "INSERT INTO users_seen
+            (username, first_seen, last_seen, verdict, evidence, restriction, convicted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
             last_seen = GREATEST(last_seen, VALUES(last_seen)),
             verdict = VALUES(verdict),
             evidence = VALUES(evidence),
-            restriction = VALUES(restriction)",
+            restriction = VALUES(restriction),
+            convicted_at = COALESCE(convicted_at, VALUES(convicted_at))",
     )
     .bind(username)
     .bind(timestamp)
@@ -67,6 +70,25 @@ pub async fn set_user_verdict(
     .bind(verdict)
     .bind(evidence)
     .bind(restriction)
+    .bind(convicted_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn clear_user_verdict(
+    pool: &sqlx::MySqlPool,
+    username: &str,
+    timestamp: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE users_seen
+         SET verdict = 'clean', restriction = 'none', searches = 0, searches_matched = 0,
+             convicted_at = NULL, counters_reset_at = ?
+         WHERE username = ?",
+    )
+    .bind(timestamp)
+    .bind(username)
     .execute(pool)
     .await?;
     Ok(())
@@ -109,6 +131,30 @@ pub async fn record_user_shares(
     .await?;
     Ok(())
 }
+pub(super) async fn record_address(
+    pool: &MySqlPool,
+    username: &str,
+    ip: &str,
+    country: Option<&str>,
+    timestamp: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO users_seen (username, first_seen, last_seen, last_ip, country)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            last_ip = VALUES(last_ip),
+            country = COALESCE(VALUES(country), country)",
+    )
+    .bind(username)
+    .bind(timestamp)
+    .bind(timestamp)
+    .bind(ip)
+    .bind(country)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(super) async fn last_ip(pool: &MySqlPool, username: &str) -> Option<String> {
     sqlx::query("SELECT last_ip FROM users_seen WHERE username = ?")
         .bind(username)

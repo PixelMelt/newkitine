@@ -750,6 +750,7 @@ impl Downloads {
                 vec![TransferWork::Finished {
                     snapshot: transfer.snapshot(),
                     avg_speed_bps: None,
+                    delivered: true,
                 }]
             }
             Err(error) => self.fail(key, format!("cannot place finished download: {error}")),

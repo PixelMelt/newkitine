@@ -212,6 +212,7 @@ pub fn client_config(
 ) -> newkitine::client::ClientBootstrap {
     newkitine::client::ClientBootstrap {
         scan_cache: download_dir.join("scan-cache.json.gz"),
+        scan_on_startup: true,
         runtime: newkitine::types::RuntimeConfig {
             login: newkitine::types::LoginConfig {
                 server,
@@ -219,14 +220,13 @@ pub fn client_config(
                 password: "secret".into(),
                 listen_port,
             },
-            description: String::new(),
+            description: newkitine::types::DescriptionTemplate::default(),
             auto_reconnect: true,
             transfers: newkitine::types::TransferConfig {
                 incomplete_dir: download_dir.join("incomplete"),
                 download_dir,
                 upload_slots: newkitine::types::DEFAULT_UPLOAD_SLOTS,
                 queue_file_limit: newkitine::types::DEFAULT_QUEUE_FILE_LIMIT,
-                uploads_per_user: newkitine::types::DEFAULT_UPLOADS_PER_USER,
                 upload_limit_kbps: 0,
                 download_limit_kbps: 0,
                 queue_size_limit_mb: 0,

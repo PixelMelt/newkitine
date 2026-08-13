@@ -105,6 +105,18 @@ WebSocket events mutate long-lived replicated stores, where a silently drifted s
 
 The attribute cache is derived data: every entry can be rebuilt from the files themselves. A missing, unreadable, or corrupt cache warns and rescans from scratch; a failed save warns and continues serving the fresh index. This is a deliberate exception to the no-fallbacks rule — failing the scan over a cache problem would turn a performance sidecar into a correctness dependency. Share data itself stays fail-loud: scan errors abort the scan and surface as ShareScanFailed.
 
+## Pushover delivery is best-effort: bounded queue, drop-on-full, warn-on-error
+
+Notifications feed a bounded channel drained by one worker; enqueue is try_reserve with warn + drop, and delivery failures warn and move on. This deliberately differs from the internal event stream's panic-on-Full: Pushover is an external third-party sink, so an outage there — or a DM flood — must not block the ordered event lane or kill the app. The event that triggered the notification is already persisted and projected before the notification is enqueued; nothing diverges when one is dropped. Keys are captured at enqueue time so the worker owns no App reference.
+
 ## Scan lifecycle vocabulary
 
 `Sharing.running` is the single owner of "a scan task is in flight" (set by spawn_scan, cleared by handle_scan_complete). `awaiting_share_index()` = no index && (running || rescan_pending) is the only deferral gate, used for inbound queue requests and outgoing QueueUpload deferral. `send_queue_request` is the only emitter of outgoing QueueUpload in Downloads; `flush_queued_requests` is its drain side. Generation bumps invalidate in-flight results; rescans coalesce rather than run concurrently.
+
+## The description template is parsed at the settings boundary, not validated then rendered
+
+`RuntimeConfig.description` is a `DescriptionTemplate`, not a `String`: `Settings::runtime_config` parses it, so the only paths that build a runtime config — `PUT /api/settings` (400 with the parse error) and boot (`eprintln` + exit) — are also the only validation sites, and the client actor cannot hold a template that could fail to render. A `validate()` beside a `render()` would be two copies of the grammar plus unreachable error arms on the peer-response hot path. Rendering is a single exhaustive match over two private variable enums, so adding a variable is a compile error until it is wired to a context field. The Settings page lists the variable names as prose rather than receiving them over the wire; `the_settings_page_documents_every_description_variable` pins that text against the tables, so a new or renamed variable fails a test instead of silently producing stale help. Migration 9 escapes `$` in stored descriptions precisely because boot exits before the HTTP server starts: an unescaped pre-feature `${` would otherwise lock the user out of the UI that fixes it.
+
+## Scanning shares on startup is opt-in
+
+`scan_on_startup` defaults to false, so a fresh process holds no share index and advertises zero files until a rescan is requested or saved share changes trigger one. The index is rebuilt from disk rather than persisted, so every boot would otherwise pay a full tree walk before the app is useful. An absent index is a supported state, not a missing precondition: login reports (0, 0), searches and browses return empty, and `awaiting_share_index()` stays false so nothing defers waiting for a scan that was never started. Saved share edits still scan regardless of this setting — the flag gates only the boot-time scan.

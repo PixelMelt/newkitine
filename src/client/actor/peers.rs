@@ -147,22 +147,7 @@ impl ClientActor {
                 }));
             }
             PeerMessage::SharedFileListRequest => self.handle_browse_request(username),
-            PeerMessage::UserInfoRequest => {
-                self.emit(ClientEvent::Observed(Observation::UserInfoRequest {
-                    username: username.clone(),
-                }));
-                self.net.peer(
-                    username,
-                    PeerMessage::UserInfoResponse {
-                        description: self.config.description.clone(),
-                        picture: None,
-                        total_uploads: self.uploads.total_slots(),
-                        queue_size: self.uploads.queue_size(),
-                        slots_available: self.uploads.is_new_upload_accepted(),
-                        upload_allowed: Some(0),
-                    },
-                );
-            }
+            PeerMessage::UserInfoRequest => self.respond_to_user_info(username),
             PeerMessage::QueueUpload { file, .. } => {
                 let (updates, accepted) = self.uploads.handle_queue_upload(
                     &mut self.transfer_ids,

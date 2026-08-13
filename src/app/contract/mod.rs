@@ -31,7 +31,7 @@ pub enum AppEvent {
     ServerMessage {
         message: String,
     },
-    Settings(SettingsPayload),
+    Settings(Box<SettingsPayload>),
     Transfer {
         direction: TransferDirection,
         transfer: TransferView,

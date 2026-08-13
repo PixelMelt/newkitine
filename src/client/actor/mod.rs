@@ -1,4 +1,5 @@
 mod peers;
+mod profile;
 mod search;
 mod server;
 mod session;
@@ -75,7 +76,6 @@ pub(crate) async fn run(
             net.clone(),
             config.runtime.transfers.upload_slots,
             config.runtime.transfers.queue_file_limit,
-            config.runtime.transfers.uploads_per_user,
             config.runtime.transfers.queue_size_limit_mb,
             config.runtime.transfers.banned_message.clone(),
         ),
@@ -109,7 +109,11 @@ pub(crate) async fn run(
     } else {
         actor.connect();
     }
-    actor.start_scan();
+    if config.scan_on_startup {
+        actor.start_scan();
+    } else {
+        info!("share scan on startup disabled, shares stay empty until a rescan");
+    }
 
     let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
     loop {

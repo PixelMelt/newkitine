@@ -38,7 +38,16 @@
   }
 
   function verdictMenu(event, user) {
-    const items = [];
+    const items = [
+      {
+        label: 'Clear verdict',
+        action: async () => {
+          await post(`/users/${encodeURIComponent(user.username)}/clear_verdict`, {});
+          refresh();
+        },
+      },
+      { sep: true },
+    ];
     if (user.last_ip) {
       items.push({
         label: `Ban IP ${user.last_ip}`,
@@ -188,8 +197,9 @@
   {#if verdicts.length}
     <h3>Peer Verdicts</h3>
     <p class="hint">
-      Peers judged suspect or leech by client filtering. Adding one as a buddy clears the
-      verdict and lifts any restriction.
+      Peers judged abusive or leech by client filtering. Clearing a verdict lifts the
+      restriction and resets the peer's counters, so they are judged again from scratch after a
+      fresh observation window. Adding one as a buddy exempts them permanently.
     </p>
     <div class="table-scroll">
     <table>
@@ -202,6 +212,7 @@
           <Th bind:sort={verdictSort} key="country">Country</Th>
           <Th bind:sort={verdictSort} key="last_ip">IP</Th>
           <Th bind:sort={verdictSort} key="shared_files">Shared Files</Th>
+          <Th bind:sort={verdictSort} key="convicted_at">Convicted</Th>
           <Th bind:sort={verdictSort} key="last_seen">Last Seen</Th>
         </tr>
       </thead>
@@ -215,6 +226,7 @@
             <td>{user.country ?? ''}</td>
             <td>{user.last_ip ?? ''}</td>
             <td>{user.shared_files ?? ''}</td>
+            <td>{user.convicted_at ? formatDate(user.convicted_at) : ''}</td>
             <td>{formatDate(user.last_seen)}</td>
           </tr>
         {/each}

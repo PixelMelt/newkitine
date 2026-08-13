@@ -82,10 +82,6 @@ impl<T> Registry<T> {
         self.tokens.contains_key(&(username.to_owned(), token))
     }
 
-    pub(super) fn token_count(&self) -> usize {
-        self.tokens.len()
-    }
-
     pub(super) fn conn_of(&self, key: &TransferKey) -> Option<ConnId> {
         self.entries.get(key).and_then(|entry| entry.conn_id)
     }

@@ -12,6 +12,7 @@ use sqlx::MySqlPool;
 use sqlx::Row;
 
 use super::api;
+use super::behavior;
 use super::contract::AppEvent;
 use super::db;
 use super::projection::ProjectionWriter;
@@ -119,7 +120,7 @@ fn record_private_message(app: &App, username: &str, message: ChatMessage) {
 }
 
 pub async fn private_message_received(
-    app: &App,
+    app: &Arc<App>,
     username: String,
     message: String,
     timestamp: u32,
@@ -144,7 +145,15 @@ pub async fn private_message_received(
         .await
         .unwrap_or_else(|error| db::fatal(error));
     tx.commit().await.unwrap_or_else(|error| db::fatal(error));
+    if let Some(keys) = app.settings.pushover_private_messages() {
+        app.pushover.notify(
+            keys,
+            &format!("Private message from {username}"),
+            &message.message,
+        );
+    }
     record_private_message(app, &username, message);
+    behavior::message_received(app, &username).await;
 }
 
 pub async fn room_message_received(app: &App, room: String, username: String, message: String) {

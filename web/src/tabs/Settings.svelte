@@ -10,13 +10,14 @@
     ['uploads', 'Uploads'],
     ['searches', 'Searches'],
     ['filtering', 'Filtering'],
+    ['notifications', 'Notifications'],
     ['profile', 'User Profile'],
     ['ui', 'User Interface'],
   ];
   const filterLevels = [
-    ['open', 'Open', 'Observe and record peer behavior, never restrict anyone.'],
-    ['guarded', 'Guarded', 'Deny peers with hard evidence of faked shares; deprioritize suspicious ones. Real users are never blocked.'],
-    ['strict', 'Strict', "Hold a peers's first download until their shares are checked. Peers sharing nothing or faking their share counts are denied."],
+    ['open', 'Open', 'Never restrict anyone.'],
+    ['guarded', 'Guarded', 'Block search flooding, and repeated same file downloads.'],
+    ['strict', 'Strict', "Block peers sharing nothing or faking their share counts in addition to guarded."],
   ];
   const themes = [
     ['dark', 'Dark'],
@@ -33,6 +34,7 @@
   let ipBans = [];
   let newIpBan = '';
   let ipBanError = '';
+  let testStatus = null;
 
   onMount(async () => {
     ipBans = (await get('/ip_bans')).patterns;
@@ -79,6 +81,16 @@
 
   function selectTheme() {
     applyTheme(draft.theme);
+  }
+
+  async function sendTestNotification() {
+    testStatus = null;
+    try {
+      await post('/pushover/test');
+      testStatus = { message: 'Test notification sent.', failed: false };
+    } catch (error) {
+      testStatus = { message: error.message, failed: true };
+    }
   }
 
   function revert() {
@@ -183,13 +195,22 @@
             <button disabled={$status.scanning} on:click={() => post('/shares/rescan')}>
               {$status.scanning ? 'Scanning…' : 'Rescan Shares Now'}
             </button>
-            <span class="hint">Saved share changes are rescanned automatically.</span>
+            <span class="hint">Saving share or exclusion changes starts a full rescan.</span>
           </div>
           <div class="form-row">
             <label for="set-share-filters">Excluded names</label>
             <textarea id="set-share-filters" rows="4" bind:value={shareFiltersText}
               placeholder="Thumbs.db&#10;desktop.ini"></textarea>
             <span class="hint">One exact file or folder name per line, skipped when scanning.</span>
+          </div>
+          <div class="form-row">
+            <label for="set-scan-startup">
+              <input id="set-scan-startup" type="checkbox" bind:checked={draft.scan_on_startup} />
+              Scan shares on startup
+            </label>
+            <span class="hint">
+              Until a scan runs you share nothing and appear to have no files.
+            </span>
           </div>
           <div class="form-row">
             <label for="set-rescan-daily">
@@ -239,13 +260,9 @@
         {:else if page === 'uploads'}
           <h3>Uploads</h3>
           <div class="form-row">
-            <label for="set-slots">Upload slots</label>
+            <label for="set-slots">Upload slots (concurrent users)</label>
             <input id="set-slots" type="number" min="1" bind:value={draft.upload_slots} />
-          </div>
-          <div class="form-row">
-            <label for="set-peruser">Uploads per user</label>
-            <input id="set-peruser" type="number" min="0" bind:value={draft.uploads_per_user} />
-            <span class="hint">0 = unlimited</span>
+            <span class="hint">each user transfers one file at a time</span>
           </div>
           <div class="form-row">
             <label for="set-queuelimit">Queue limit per user (files)</label>
@@ -260,11 +277,6 @@
             <label for="set-queuemb">Queue limit per user (MiB)</label>
             <input id="set-queuemb" type="number" min="0" bind:value={draft.queue_size_limit_mb} />
             <span class="hint">0 = unlimited</span>
-          </div>
-          <div class="form-row">
-            <label for="set-banned">Ban message</label>
-            <input id="set-banned" style="width: 100%" bind:value={draft.banned_message} />
-            <span class="hint">Sent to banned users when they try to queue a download.</span>
           </div>
           <div class="form-row">
             <label for="set-autoclear-up">
@@ -299,11 +311,6 @@
 
         {:else if page === 'filtering'}
           <h3>Client Filtering</h3>
-          <p class="hint">
-            Restricts clients that take without participating: faked share stats, search
-            scraping, zero shares. Buddies and users you have downloaded from are never
-            restricted, and adding a restricted user as a buddy clears their verdict.
-          </p>
           {#each filterLevels as [id, label, description]}
             <div class="form-row">
               <label>
@@ -313,10 +320,29 @@
               <span class="hint">{description}</span>
             </div>
           {/each}
+          <h3>Denial Messages</h3>
+          <p class="hint">
+            Sent to a peer when they try to queue a download. A peer matching more than one
+            gets the first that applies, in this order.
+          </p>
           <div class="form-row">
-            <label for="set-denied">Denial message</label>
-            <input id="set-denied" style="width: 100%" bind:value={draft.denied_message} />
-            <span class="hint">Sent to denied peers when they try to queue a download.</span>
+            <label for="set-banned">Banned</label>
+            <input id="set-banned" style="width: 100%" bind:value={draft.banned_message} />
+          </div>
+          <div class="form-row">
+            <label for="set-abusive">Abusive</label>
+            <input id="set-abusive" style="width: 100%" bind:value={draft.abusive_message} />
+          </div>
+          <div class="form-row">
+            <label for="set-leech">Leech</label>
+            <input id="set-leech" style="width: 100%" bind:value={draft.leech_message} />
+          </div>
+          <div class="form-row">
+            <label for="set-clear-on-dm">
+              <input id="set-clear-on-dm" type="checkbox"
+                bind:checked={draft.clear_verdict_on_message} />
+              Clear a peer's verdict when they send a private message
+            </label>
           </div>
 
           <h3>IP Bans</h3>
@@ -343,10 +369,52 @@
           {#if ipBanError}<p class="notice">{ipBanError}</p>{/if}
           <p class="hint">Connections from banned addresses are dropped immediately.</p>
 
+        {:else if page === 'notifications'}
+          <h3>Pushover</h3>
+          <p class="hint">
+            Sends push notifications through pushover.net. Register an application there for the API token and user key.
+          </p>
+          <div class="form-row">
+            <label for="set-pushover-token">API token</label>
+            <input id="set-pushover-token" style="width: 100%"
+              bind:value={draft.pushover_token} />
+          </div>
+          <div class="form-row">
+            <label for="set-pushover-user">User key</label>
+            <input id="set-pushover-user" style="width: 100%"
+              bind:value={draft.pushover_user_key} />
+          </div>
+          <div class="form-row">
+            <label for="set-pushover-dms">
+              <input id="set-pushover-dms" type="checkbox"
+                bind:checked={draft.pushover_private_messages} />
+              Send a notification when a private message arrives
+            </label>
+          </div>
+          <div class="form-row">
+            <button on:click={sendTestNotification}>Send Test Notification</button>
+            {#if testStatus}
+              <span class={testStatus.failed ? 'notice' : 'hint'}>{testStatus.message}</span>
+            {/if}
+          </div>
+
         {:else if page === 'profile'}
           <h3>User Profile</h3>
           <p class="hint">Shown to users who view your profile.</p>
           <textarea rows="10" bind:value={draft.description}></textarea>
+          <p class="hint">
+            $&#123;user.name&#125; inserts a value, $&#123;user.is_buddy?Hey buddy:Hi&#125; picks
+            text from a yes/no flag, $$ writes a literal dollar sign. Values and flags are
+            resolved for whoever asked, at the moment they ask.
+          </p>
+          <p class="hint">
+            Values: user.name, user.restriction, user.queued_files, user.active_uploads, me.name,
+            me.shared_files, me.shared_folders, me.queue_size, me.slots, me.free_slots,
+            me.upload_speed.
+          </p>
+          <p class="hint">
+            Flags: user.is_buddy, user.is_ignored, user.is_banned, user.is_privileged.
+          </p>
 
         {:else if page === 'ui'}
           <h3>User Interface</h3>

@@ -39,6 +39,7 @@ pub enum TransferWork {
     Finished {
         snapshot: TransferSnapshot,
         avg_speed_bps: Option<u32>,
+        delivered: bool,
     },
     Removed {
         direction: TransferDirection,
