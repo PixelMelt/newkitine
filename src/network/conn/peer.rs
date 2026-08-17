@@ -270,7 +270,7 @@ async fn read_peer_frames(
         };
         match parsed {
             Ok(message) => {
-                if !is_parsed_message_allowed(&allowed, &message) {
+                if !is_parsed_message_allowed(&allowed, &username, &message) {
                     debug!(code, username, "dropping disallowed peer response");
                     continue;
                 }
@@ -296,11 +296,13 @@ fn is_large_response_allowed(allowed: &SharedAllowed, username: &str, code: u32)
     }
 }
 
-fn is_parsed_message_allowed(allowed: &SharedAllowed, message: &PeerMessage) -> bool {
+fn is_parsed_message_allowed(allowed: &SharedAllowed, username: &str, message: &PeerMessage) -> bool {
     let allowed = allowed.read().unwrap();
     match message {
         PeerMessage::FileSearchResponse { token, .. } => allowed.search_tokens.contains(token),
-        PeerMessage::FolderContentsResponse { .. } => false,
+        PeerMessage::FolderContentsResponse { directory, .. } => allowed
+            .folder_contents
+            .contains(&(username.to_owned(), directory.clone())),
         _ => true,
     }
 }

@@ -219,6 +219,26 @@ impl Actor {
                     .user_info_users
                     .remove(&username);
             }
+            NetworkCommand::AllowFolderContents {
+                username,
+                directory,
+            } => {
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .folder_contents
+                    .insert((username, directory));
+            }
+            NetworkCommand::DisallowFolderContents {
+                username,
+                directory,
+            } => {
+                self.allowed
+                    .write()
+                    .unwrap()
+                    .folder_contents
+                    .remove(&(username, directory));
+            }
             NetworkCommand::CloseConnection(conn_id) => {
                 self.close_conn(conn_id);
             }

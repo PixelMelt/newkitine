@@ -1,5 +1,5 @@
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -14,7 +14,7 @@ use crate::network::ConnId;
 use crate::network::{NetworkCommand, NetworkHandle};
 use crate::protocol::{PeerMessage, ServerRequest};
 use crate::types::{
-    FileAttributes, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
+    FileAttributes, FileInfo, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
 };
 
 const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
@@ -25,6 +25,7 @@ struct Transfer {
     id: TransferId,
     username: String,
     virtual_path: String,
+    folder_path: PathBuf,
     size: u64,
     attributes: FileAttributes,
     phase: TransferPhase,
@@ -45,20 +46,13 @@ impl Transfer {
         (self.username.clone(), self.virtual_path.clone())
     }
 
-    fn basename(&self) -> String {
-        self.virtual_path
-            .rsplit('\\')
-            .next()
-            .unwrap_or(&self.virtual_path)
-            .to_owned()
-    }
-
     fn snapshot(&self) -> TransferSnapshot {
         TransferSnapshot {
             id: self.id,
             direction: TransferDirection::Download,
             username: self.username.clone(),
             virtual_path: self.virtual_path.clone(),
+            folder_path: Some(self.folder_path.display().to_string()),
             size: self.size,
             bytes_done: self.bytes_done,
             status: self.phase.status(),
@@ -87,6 +81,7 @@ pub(in crate::client) struct Downloads {
     username_subfolders: bool,
     placements: mpsc::UnboundedSender<PlacementDone>,
     transfers: Registry<Transfer>,
+    basename_limits: HashMap<PathBuf, usize>,
     pending_queue_requests: Vec<TransferKey>,
     queue_positions_at: Instant,
 }
@@ -106,9 +101,29 @@ impl Downloads {
             username_subfolders,
             placements,
             transfers: Registry::default(),
+            basename_limits: HashMap::new(),
             pending_queue_requests: Vec::new(),
             queue_positions_at: Instant::now(),
         }
+    }
+
+    fn basename_limit(&mut self, dir: &Path) -> usize {
+        if let Some(limit) = self.basename_limits.get(dir) {
+            return *limit;
+        }
+        let limit = files::basename_byte_limit(dir);
+        self.basename_limits.insert(dir.to_path_buf(), limit);
+        limit
+    }
+
+    fn destination(&self, username: &str, virtual_path: &str, root: Option<&str>) -> PathBuf {
+        files::folder_destination(
+            &self.download_dir,
+            self.username_subfolders,
+            username,
+            virtual_path,
+            root,
+        )
     }
 
     pub fn set_dirs(
@@ -120,11 +135,16 @@ impl Downloads {
         self.download_dir = download_dir;
         self.incomplete_dir = incomplete_dir;
         self.username_subfolders = username_subfolders;
+        self.basename_limits.clear();
     }
 
     pub fn seed(&mut self, seed: TransferSnapshot) {
         let phase = TransferPhase::from_seed(&seed);
         let key = (seed.username.clone(), seed.virtual_path.clone());
+        let folder_path = seed.folder_path.map_or_else(
+            || self.destination(&seed.username, &seed.virtual_path, None),
+            PathBuf::from,
+        );
         self.transfers.insert(
             seed.id,
             key,
@@ -132,6 +152,7 @@ impl Downloads {
                 id: seed.id,
                 username: seed.username,
                 virtual_path: seed.virtual_path,
+                folder_path,
                 size: seed.size,
                 attributes: seed.attributes,
                 phase,
@@ -153,11 +174,27 @@ impl Downloads {
         &mut self,
         ids: &mut TransferIds,
         username: String,
-        virtual_path: String,
-        size: u64,
-        attributes: FileAttributes,
+        file: FileInfo,
+        root: Option<&str>,
         defer_requests: bool,
     ) -> (EnqueueResult, Vec<TransferWork>) {
+        let folder_path = self.destination(&username, &file.name, root);
+        self.start(ids, username, file, folder_path, defer_requests)
+    }
+
+    fn start(
+        &mut self,
+        ids: &mut TransferIds,
+        username: String,
+        file: FileInfo,
+        folder_path: PathBuf,
+        defer_requests: bool,
+    ) -> (EnqueueResult, Vec<TransferWork>) {
+        let FileInfo {
+            name: virtual_path,
+            size,
+            attributes,
+        } = file;
         let key = (username.clone(), virtual_path.clone());
         let id = match self.transfers.get(&key) {
             Some(existing) if existing.phase.is_active() => {
@@ -167,10 +204,14 @@ impl Downloads {
             Some(existing) => existing.id,
             None => ids.mint(),
         };
-        let transfer = Transfer {
+        let limit = self.basename_limit(&folder_path);
+        let basename = files::download_basename(&virtual_path, limit);
+        let downloaded = files::complete_file_path(&folder_path, &basename, size);
+        let mut transfer = Transfer {
             id,
             username: username.clone(),
             virtual_path: virtual_path.clone(),
+            folder_path,
             size,
             attributes,
             phase: TransferPhase::Queued,
@@ -185,6 +226,24 @@ impl Downloads {
             activated_at: None,
             speed: SpeedMeter::default(),
         };
+        if let Some(destination) = downloaded {
+            info!(
+                username,
+                virtual_path,
+                ?destination,
+                "file is already downloaded"
+            );
+            transfer.phase = TransferPhase::Finished;
+            transfer.bytes_done = size;
+            transfer.file_path = Some(destination.display().to_string());
+            let finished = TransferWork::Finished {
+                snapshot: transfer.snapshot(),
+                avg_speed_bps: None,
+                delivered: false,
+            };
+            self.transfers.insert(id, key, transfer);
+            return (EnqueueResult::Enqueued, vec![finished]);
+        }
         let queued = TransferWork::Update(transfer.snapshot());
         self.transfers.insert(id, key.clone(), transfer);
         self.net.server(ServerRequest::WatchUser {
@@ -207,20 +266,16 @@ impl Downloads {
         if transfer.phase.is_active() {
             return (RetryResult::AlreadyActive, Vec::new());
         }
-        let (username, virtual_path, size, attributes) = (
+        let (username, folder_path, file) = (
             transfer.username.clone(),
-            transfer.virtual_path.clone(),
-            transfer.size,
-            transfer.attributes.clone(),
+            transfer.folder_path.clone(),
+            FileInfo {
+                name: transfer.virtual_path.clone(),
+                size: transfer.size,
+                attributes: transfer.attributes.clone(),
+            },
         );
-        let (result, work) = self.enqueue(
-            ids,
-            username,
-            virtual_path,
-            size,
-            attributes,
-            defer_requests,
-        );
+        let (result, work) = self.start(ids, username, file, folder_path, defer_requests);
         match result {
             EnqueueResult::Enqueued => (RetryResult::Requeued, work),
             EnqueueResult::AlreadyActive => {
@@ -463,8 +518,10 @@ impl Downloads {
             return Vec::new();
         }
         self.transfers.attach_conn(&key, conn_id);
-        let incomplete_path = files::incomplete_file_path(&self.incomplete_dir, username, &key.1);
         let incomplete_dir = self.incomplete_dir.clone();
+        let limit = self.basename_limit(&incomplete_dir);
+        let incomplete_path =
+            files::incomplete_file_path(&incomplete_dir, username, &key.1, limit);
         let transfer = self.transfers.get_mut(&key).unwrap();
         transfer.activated_at = None;
         transfer.incomplete_path = Some(incomplete_path.clone());
@@ -685,26 +742,24 @@ impl Downloads {
     }
 
     fn finish(&mut self, key: &TransferKey) -> Vec<TransferWork> {
+        let transfer = self.transfers.get(key).unwrap();
+        let destination_dir = transfer.folder_path.clone();
+        let virtual_path = transfer.virtual_path.clone();
+        let limit = self.basename_limit(&destination_dir);
+        let basename = files::download_basename(&virtual_path, limit);
         let transfer = self.transfers.get_mut(key).unwrap();
         transfer.phase = TransferPhase::Placing;
         transfer.bytes_done = transfer.size;
         transfer.speed_bps = 0;
         let update = TransferWork::Update(transfer.snapshot());
-        let username = transfer.username.clone();
-        let basename = transfer.basename();
         let incomplete_path = transfer
             .incomplete_path
             .clone()
             .expect("finishing a download that never opened its incomplete file");
-        let download_dir = if self.username_subfolders {
-            self.download_dir.join(files::clean_file_name(&username))
-        } else {
-            self.download_dir.clone()
-        };
         let placements = self.placements.clone();
         let key = key.clone();
         let task = tokio::task::spawn_blocking(move || {
-            files::place_download(&download_dir, &incomplete_path, &basename)
+            files::place_download(&destination_dir, &incomplete_path, &basename)
         });
         tokio::spawn(async move {
             let result = match task.await {
@@ -783,13 +838,128 @@ mod tests {
         let (result, _) = downloads.enqueue(
             ids,
             "uploader".into(),
-            "Music\\song.mp3".into(),
-            100,
-            FileAttributes::default(),
+            FileInfo {
+                name: "Music\\song.mp3".into(),
+                size: 100,
+                attributes: FileAttributes::default(),
+            },
+            None,
             false,
         );
         assert_eq!(result, EnqueueResult::Enqueued);
         ("uploader".into(), "Music\\song.mp3".into())
+    }
+
+    #[tokio::test]
+    async fn folder_downloads_keep_the_remote_hierarchy() {
+        let (net, _events) = spawn_network();
+        let mut downloads = Downloads::new(
+            net,
+            "/downloads".into(),
+            "/incomplete".into(),
+            true,
+            mpsc::unbounded_channel().0,
+        );
+        let mut ids = TransferIds::new(&[]);
+        let (result, _) = downloads.enqueue(
+            &mut ids,
+            "uploader".into(),
+            FileInfo {
+                name: "share\\Soulseek\\folder1\\sub1\\file4.mp3".into(),
+                size: 100,
+                attributes: FileAttributes::default(),
+            },
+            Some("share\\Soulseek"),
+            true,
+        );
+        assert_eq!(result, EnqueueResult::Enqueued);
+        let key = (
+            "uploader".to_owned(),
+            "share\\Soulseek\\folder1\\sub1\\file4.mp3".to_owned(),
+        );
+        assert_eq!(
+            downloads.transfers.get(&key).unwrap().folder_path,
+            PathBuf::from("/downloads/uploader/Soulseek/folder1/sub1")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_already_downloaded_file_finishes_without_asking_the_peer() {
+        let dir = std::env::temp_dir().join(format!("newkitine-skip-{}", std::process::id()));
+        let destination = dir.join("Album");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("song.mp3"), vec![0u8; 100]).unwrap();
+
+        let (net, mut commands) = crate::network::test_channel();
+        let mut downloads = Downloads::new(
+            net,
+            dir.clone(),
+            "/incomplete".into(),
+            false,
+            mpsc::unbounded_channel().0,
+        );
+        let mut ids = TransferIds::new(&[]);
+        let (result, work) = downloads.enqueue(
+            &mut ids,
+            "uploader".into(),
+            FileInfo {
+                name: "share\\Album\\song.mp3".into(),
+                size: 100,
+                attributes: FileAttributes::default(),
+            },
+            Some("share\\Album"),
+            false,
+        );
+        assert_eq!(result, EnqueueResult::Enqueued);
+        assert!(matches!(
+            work.as_slice(),
+            [TransferWork::Finished {
+                delivered: false,
+                ..
+            }]
+        ));
+        let key = ("uploader".to_owned(), "share\\Album\\song.mp3".to_owned());
+        let transfer = downloads.transfers.get(&key).unwrap();
+        assert_eq!(transfer.phase, TransferPhase::Finished);
+        assert_eq!(
+            transfer.file_path.as_deref(),
+            Some(destination.join("song.mp3").to_str().unwrap())
+        );
+        assert!(commands.try_recv().is_err());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_size_mismatch_still_downloads() {
+        let dir = std::env::temp_dir().join(format!("newkitine-mismatch-{}", std::process::id()));
+        let destination = dir.join("Album");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("song.mp3"), vec![0u8; 64]).unwrap();
+
+        let (net, _events) = spawn_network();
+        let mut downloads = Downloads::new(
+            net,
+            dir.clone(),
+            "/incomplete".into(),
+            false,
+            mpsc::unbounded_channel().0,
+        );
+        let mut ids = TransferIds::new(&[]);
+        let (_, work) = downloads.enqueue(
+            &mut ids,
+            "uploader".into(),
+            FileInfo {
+                name: "share\\Album\\song.mp3".into(),
+                size: 100,
+                attributes: FileAttributes::default(),
+            },
+            Some("share\\Album"),
+            true,
+        );
+        assert!(matches!(work.as_slice(), [TransferWork::Update(_)]));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
@@ -858,9 +1028,12 @@ mod tests {
         let (result, _) = downloads.enqueue(
             &mut ids,
             "uploader".into(),
-            "Music\\song.mp3".into(),
-            100,
-            FileAttributes::default(),
+            FileInfo {
+                name: "Music\\song.mp3".into(),
+                size: 100,
+                attributes: FileAttributes::default(),
+            },
+            None,
             true,
         );
         assert_eq!(result, EnqueueResult::Enqueued);

@@ -1,5 +1,7 @@
 import { writable } from 'svelte/store';
 
+import { notice } from './session.js';
+
 export const buddies = writable({});
 export const banned = writable([]);
 export const ignored = writable([]);
@@ -46,5 +48,8 @@ export const handlers = {
 			delete next[msg.username];
 			return next;
 		});
+	},
+	folder_request_failed: (msg) => {
+		notice(`${msg.username} did not send the contents of ${msg.directory}`);
 	},
 };

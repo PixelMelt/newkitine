@@ -33,6 +33,7 @@ pub struct TransferSnapshot {
     pub direction: TransferDirection,
     pub username: String,
     pub virtual_path: String,
+    pub folder_path: Option<String>,
     pub size: u64,
     pub bytes_done: u64,
     pub status: TransferStatus,

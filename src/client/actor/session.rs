@@ -206,6 +206,7 @@ impl ClientActor {
         self.session.logged_in = false;
         self.session.connected = false;
         self.search_tokens.clear();
+        self.folder_requests.clear();
         let downloads = self.downloads.reset();
         self.emit_transfers(downloads);
         let uploads = self.uploads.reset();

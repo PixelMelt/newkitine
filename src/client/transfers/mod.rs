@@ -1,11 +1,13 @@
 mod downloads;
 mod files;
+mod folders;
 mod queue;
 mod registry;
 mod speed;
 mod uploads;
 
 pub(super) use downloads::Downloads;
+pub(super) use folders::{FolderRequests, destination_root};
 pub(super) use uploads::Uploads;
 
 use crate::types::{TransferDirection, TransferId, TransferSnapshot, TransferStatus};

@@ -91,9 +91,16 @@
     );
   }
 
+  function downloadFolder(username, file) {
+    post('/downloads/folder/request', { username, dir: folderName(file.name) }).catch((error) =>
+      notice(error.message),
+    );
+  }
+
   function rowMenu(event, response, file) {
     openMenu(event, [
       { label: 'Download File', action: () => download(response.username, file) },
+      { label: 'Download Folder', action: () => downloadFolder(response.username, file) },
       { sep: true },
       { label: 'Copy File Path', action: () => navigator.clipboard.writeText(file.name) },
       { sep: true },

@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::client::{ClientEvent, Observation};
 
+use super::contract::AppEvent;
 use super::state::{App, now};
 use super::{behavior, chat, db, interests, peer_history, search, session, users};
 
@@ -61,6 +62,17 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             shares,
             private_shares,
         } => users::shared_file_list(app, username, shares, private_shares).await,
+        ClientEvent::FolderRequestFailed {
+            username,
+            directory,
+        } => {
+            app.projection
+                .write()
+                .broadcast(AppEvent::FolderRequestFailed {
+                    username,
+                    directory,
+                });
+        }
         ClientEvent::UserInfo(info) => users::user_info_received(app, info),
         ClientEvent::PrivateMessage {
             username,

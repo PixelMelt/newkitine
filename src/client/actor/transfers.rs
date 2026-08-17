@@ -1,10 +1,14 @@
 use tokio::sync::oneshot;
 
 use super::ClientActor;
-use crate::client::{AbortResult, EnqueueResult, RetryResult, TransferWork};
+use crate::client::transfers::destination_root;
+use crate::client::{AbortResult, ClientEvent, EnqueueResult, RetryResult, TransferWork};
 use crate::network::ConnId;
 use crate::network::NetworkCommand;
-use crate::types::{FileAttributes, Restriction, TransferDirection, TransferId, TransferStatus};
+use crate::types::{
+    FileAttributes, FileInfo, FolderContents, Restriction, TransferDirection, TransferId,
+    TransferStatus,
+};
 
 use crate::protocol::PeerMessage;
 
@@ -21,19 +25,47 @@ impl ClientActor {
         virtual_path: String,
         size: u64,
         attributes: FileAttributes,
+        root: Option<String>,
         ack: oneshot::Sender<EnqueueResult>,
     ) {
         let defer_requests = self.awaiting_share_index();
         let (result, events) = self.downloads.enqueue(
             &mut self.transfer_ids,
             username,
-            virtual_path,
-            size,
-            attributes,
+            FileInfo {
+                name: virtual_path,
+                size,
+                attributes,
+            },
+            root.as_deref(),
             defer_requests,
         );
         self.emit_transfers(events);
         Self::ack(ack, result);
+    }
+
+    pub(super) fn handle_folder_contents_response(
+        &mut self,
+        username: String,
+        directory: String,
+        folders: Vec<FolderContents>,
+    ) {
+        let Some(files) = self.folder_requests.accept(&username, &directory, folders) else {
+            return;
+        };
+        let root = destination_root(&directory).to_owned();
+        let defer_requests = self.awaiting_share_index();
+        for mut file in files {
+            file.name = format!("{directory}\\{}", file.name);
+            let (_, events) = self.downloads.enqueue(
+                &mut self.transfer_ids,
+                username.clone(),
+                file,
+                Some(&root),
+                defer_requests,
+            );
+            self.emit_transfers(events);
+        }
     }
 
     pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
@@ -100,6 +132,12 @@ impl ClientActor {
     }
 
     pub(super) fn sweep(&mut self) {
+        for (username, directory) in self.folder_requests.sweep() {
+            self.emit(ClientEvent::FolderRequestFailed {
+                username,
+                directory,
+            });
+        }
         let downloads = self.downloads.sweep_request_timeouts();
         self.emit_transfers(downloads);
         let uploads = self.uploads.sweep_request_timeouts(&self.users);
@@ -124,6 +162,15 @@ impl ClientActor {
                 PeerMessage::UserInfoRequest => {
                     self.net
                         .send(NetworkCommand::DisallowUserInfoUser(username.to_owned()));
+                }
+                PeerMessage::FolderContentsRequest { directory, .. } => {
+                    let key = (username.to_owned(), directory.clone());
+                    if let Some((username, directory)) = self.folder_requests.time_out(key) {
+                        self.emit(ClientEvent::FolderRequestFailed {
+                            username,
+                            directory,
+                        });
+                    }
                 }
                 _ => {}
             }

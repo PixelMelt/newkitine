@@ -19,6 +19,7 @@ pub(in crate::app) fn router() -> Router<Arc<App>> {
     Router::new()
         .route("/api/downloads", get(list_downloads).post(enqueue_download))
         .route("/api/downloads/folder", post(enqueue_folder_download))
+        .route("/api/downloads/folder/request", post(request_folder_download))
         .route("/api/downloads/abort", post(abort_download))
         .route("/api/downloads/retry", post(retry_download))
         .route("/api/downloads/clear", post(clear_downloads))
@@ -59,6 +60,7 @@ async fn enqueue_download(
             &body.virtual_path,
             body.size,
             body.attributes,
+            None,
         )
         .await
     {
@@ -122,7 +124,13 @@ async fn enqueue_folder_download(
     for (virtual_path, size, attributes) in files {
         match app
             .client
-            .download(&body.username, &virtual_path, size, attributes)
+            .download(
+                &body.username,
+                &virtual_path,
+                size,
+                attributes,
+                Some(&body.dir),
+            )
             .await
         {
             EnqueueResult::Enqueued => enqueued += 1,
@@ -130,6 +138,20 @@ async fn enqueue_folder_download(
         }
     }
     Json(json!({ "enqueued": enqueued, "already_active": already_active })).into_response()
+}
+
+#[derive(Deserialize)]
+struct FolderRequestBody {
+    username: String,
+    dir: String,
+}
+
+async fn request_folder_download(
+    State(app): State<Arc<App>>,
+    Json(body): Json<FolderRequestBody>,
+) -> StatusCode {
+    app.client.request_folder(&body.username, &body.dir).await;
+    StatusCode::ACCEPTED
 }
 
 #[derive(Deserialize)]

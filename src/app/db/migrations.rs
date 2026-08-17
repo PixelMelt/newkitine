@@ -7,6 +7,7 @@ const BASELINE: &[&str] = &[
         direction ENUM('download','upload') NOT NULL,
         username VARCHAR(190) NOT NULL,
         virtual_path TEXT NOT NULL,
+        folder_path TEXT NULL,
         path_hash CHAR(32) NOT NULL,
         size BIGINT UNSIGNED NOT NULL,
         bytes_done BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -83,7 +84,7 @@ const BASELINE: &[&str] = &[
     )",
 ];
 
-const LATEST_VERSION: i32 = 10;
+const LATEST_VERSION: i32 = 11;
 
 pub async fn init_schema(pool: &MySqlPool) {
     sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL PRIMARY KEY)")
@@ -221,6 +222,17 @@ pub async fn init_schema(pool: &MySqlPool) {
     if applied < 10 {
         release_filter_convictions(pool).await;
         record_migration(pool, 10).await;
+    }
+    if applied < 11 {
+        if !column_exists(pool, "transfers", "folder_path").await {
+            migration_statement(
+                pool,
+                11,
+                "ALTER TABLE transfers ADD COLUMN folder_path TEXT NULL AFTER virtual_path",
+            )
+            .await;
+        }
+        record_migration(pool, 11).await;
     }
 }
 

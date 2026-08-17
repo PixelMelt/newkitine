@@ -104,7 +104,8 @@ async fn client_downloads_file_from_peer() {
             "alice",
             virtual_path,
             payload.len() as u64,
-            FileAttributes::default()
+            FileAttributes::default(),
+            None,
         )
         .await,
         EnqueueResult::Enqueued
@@ -208,7 +209,7 @@ async fn client_downloads_file_from_peer() {
     .await;
 
     let file_path = std::path::PathBuf::from(file_path);
-    assert!(file_path.starts_with(&download_dir));
+    assert_eq!(file_path.parent().unwrap(), download_dir);
     assert_eq!(file_path.file_name().unwrap().to_str().unwrap(), "song.mp3");
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
 }
@@ -288,7 +289,8 @@ async fn client_shares_answers_search_and_uploads() {
                 "eve",
                 &results[0].name,
                 results[0].size,
-                FileAttributes::default()
+                FileAttributes::default(),
+                Some("Music"),
             )
             .await,
         EnqueueResult::Enqueued
@@ -341,6 +343,10 @@ async fn client_shares_answers_search_and_uploads() {
         _ => None,
     })
     .await;
+    assert_eq!(
+        std::path::PathBuf::from(&file_path),
+        download_dir.join("Music/Best Album/unique melody.mp3")
+    );
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
 
     wait_transfer(&mut eve_transfers, |work| match work {
@@ -555,7 +561,7 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         frank
-            .download("eve", &virtual_path, size, FileAttributes::default())
+            .download("eve", &virtual_path, size, FileAttributes::default(), None)
             .await,
         EnqueueResult::Enqueued
     );
@@ -597,7 +603,7 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         frank
-            .download("eve", &virtual_path, size, FileAttributes::default())
+            .download("eve", &virtual_path, size, FileAttributes::default(), None)
             .await,
         EnqueueResult::Enqueued
     );
@@ -746,7 +752,7 @@ async fn retry_download_is_resolved_by_the_client_actor() {
 
     let virtual_path = "Music\\Album\\song.mp3";
     assert_eq!(
-        bob.download("alice", virtual_path, 64, FileAttributes::default())
+        bob.download("alice", virtual_path, 64, FileAttributes::default(), None)
             .await,
         EnqueueResult::Enqueued
     );
@@ -854,7 +860,8 @@ async fn queue_requests_during_scan_are_deferred_until_index_ready() {
                 "eve",
                 "Music\\Album\\song.mp3",
                 payload.len() as u64,
-                FileAttributes::default()
+                FileAttributes::default(),
+                None,
             )
             .await,
         EnqueueResult::Enqueued

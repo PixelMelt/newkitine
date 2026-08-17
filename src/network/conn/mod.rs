@@ -29,6 +29,7 @@ pub struct AllowedResponses {
     pub search_tokens: HashSet<u32>,
     pub shared_list_users: HashSet<String>,
     pub user_info_users: HashSet<String>,
+    pub folder_contents: HashSet<(String, String)>,
 }
 
 pub type SharedAllowed = Arc<RwLock<AllowedResponses>>;

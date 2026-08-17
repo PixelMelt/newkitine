@@ -42,7 +42,12 @@ pub(crate) enum ClientCommand {
         virtual_path: String,
         size: u64,
         attributes: FileAttributes,
+        root: Option<String>,
         ack: oneshot::Sender<EnqueueResult>,
+    },
+    RequestFolder {
+        username: String,
+        directory: String,
     },
     RetryDownload {
         id: TransferId,
@@ -180,6 +185,7 @@ impl Client {
         virtual_path: &str,
         size: u64,
         attributes: FileAttributes,
+        root: Option<&str>,
     ) -> EnqueueResult {
         let (ack, done) = oneshot::channel();
         self.send(ClientCommand::Download {
@@ -187,10 +193,19 @@ impl Client {
             virtual_path: virtual_path.to_owned(),
             size,
             attributes,
+            root: root.map(str::to_owned),
             ack,
         })
         .await;
         done.await.expect("client actor dropped acknowledgement")
+    }
+
+    pub async fn request_folder(&self, username: &str, directory: &str) {
+        self.send(ClientCommand::RequestFolder {
+            username: username.to_owned(),
+            directory: directory.to_owned(),
+        })
+        .await;
     }
 
     pub async fn retry_download(&self, id: TransferId) -> RetryResult {

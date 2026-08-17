@@ -45,6 +45,7 @@ event_tags![
     (UserInfoRemoved, "user_info_removed"),
     (BrowseLoaded, "browse_loaded"),
     (BrowseRemoved, "browse_removed"),
+    (FolderRequestFailed, "folder_request_failed"),
     (PrivateMessage, "private_message"),
     (ChatOpened, "chat_opened"),
     (ChatClosed, "chat_closed"),
@@ -100,6 +101,7 @@ fn transfer_view() -> TransferView {
         direction: TransferDirection::Download,
         username: "peer".into(),
         virtual_path: "Music\\song.mp3".into(),
+        folder_path: Some("/downloads/Music".into()),
         size: 10,
         bytes_done: 5,
         status: TransferStatus::Transferring,
@@ -265,6 +267,10 @@ fn fixture_events() -> Vec<AppEvent> {
         },
         AppEvent::BrowseRemoved {
             username: "peer".into(),
+        },
+        AppEvent::FolderRequestFailed {
+            username: "peer".into(),
+            directory: "Music\\Album".into(),
         },
         AppEvent::PrivateMessage {
             username: "peer".into(),

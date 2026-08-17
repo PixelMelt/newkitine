@@ -60,8 +60,8 @@ pub(super) async fn upsert_transfer(
     let attributes = serde_json::to_string(&view.attributes).unwrap();
     sqlx::query(
         "INSERT INTO transfers
-            (id, direction, username, virtual_path, size, bytes_done, status, failure_reason, file_path, attributes, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, direction, username, virtual_path, folder_path, size, bytes_done, status, failure_reason, file_path, attributes, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
             size = VALUES(size), bytes_done = VALUES(bytes_done), status = VALUES(status),
             failure_reason = VALUES(failure_reason), file_path = VALUES(file_path),
@@ -71,6 +71,7 @@ pub(super) async fn upsert_transfer(
     .bind(view.direction.as_str())
     .bind(&view.username)
     .bind(&view.virtual_path)
+    .bind(&view.folder_path)
     .bind(view.size)
     .bind(view.bytes_done)
     .bind(view.status.as_str())
@@ -85,7 +86,7 @@ pub(super) async fn upsert_transfer(
 
 pub async fn load_transfers(pool: &MySqlPool) -> Vec<TransferView> {
     sqlx::query(
-        "SELECT id, direction, username, virtual_path, size, bytes_done, status, failure_reason, file_path, attributes, updated_at
+        "SELECT id, direction, username, virtual_path, size, bytes_done, status, failure_reason, file_path, attributes, updated_at, folder_path
          FROM transfers ORDER BY updated_at",
     )
     .fetch_all(pool)
@@ -113,6 +114,7 @@ pub async fn load_transfers(pool: &MySqlPool) -> Vec<TransferView> {
             direction,
             username,
             virtual_path,
+            folder_path: row.get(11),
             size: row.get(4),
             bytes_done: row.get(5),
             status,

@@ -166,6 +166,9 @@ impl ClientActor {
             PeerMessage::FolderContentsRequest {
                 token, directory, ..
             } => self.handle_folder_contents_request(username, token, directory),
+            PeerMessage::FolderContentsResponse {
+                directory, folders, ..
+            } => self.handle_folder_contents_response(username, directory, folders),
             _ => {}
         }
     }

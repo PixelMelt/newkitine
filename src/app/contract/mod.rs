@@ -81,6 +81,10 @@ pub enum AppEvent {
     BrowseRemoved {
         username: String,
     },
+    FolderRequestFailed {
+        username: String,
+        directory: String,
+    },
     PrivateMessage {
         username: String,
         message: ChatMessage,

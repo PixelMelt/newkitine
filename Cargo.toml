@@ -15,6 +15,7 @@ path = "src/main.rs"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 flate2 = "1"
+libc = "0.2"
 lofty = "0.24.0"
 maxminddb = "0.29.0"
 md5 = "0.7"

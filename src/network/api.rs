@@ -49,6 +49,14 @@ pub enum NetworkCommand {
     DisallowSharedListUser(String),
     AllowUserInfoUser(String),
     DisallowUserInfoUser(String),
+    AllowFolderContents {
+        username: String,
+        directory: String,
+    },
+    DisallowFolderContents {
+        username: String,
+        directory: String,
+    },
     CloseConnection(ConnId),
     Quit,
 }

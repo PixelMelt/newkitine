@@ -15,7 +15,7 @@ use tokio::time::{Instant, sleep_until};
 use tracing::{debug, info, warn};
 
 use super::ClientCommand;
-use super::transfers::{Downloads, TransferIds, Uploads};
+use super::transfers::{Downloads, FolderRequests, TransferIds, Uploads};
 use super::users::Users;
 use crate::client::{ClientBootstrap, ClientEvent, Observation, TransferWork};
 use crate::network::{NetworkCommand, NetworkEvent, NetworkHandle, spawn as spawn_network};
@@ -37,6 +37,7 @@ struct ClientActor {
     search_tokens: std::collections::HashSet<u32>,
     transfer_ids: TransferIds,
     downloads: Downloads,
+    folder_requests: FolderRequests,
     uploads: Uploads,
     users: Users,
     sharing: Sharing,
@@ -72,6 +73,7 @@ pub(crate) async fn run(
             config.runtime.transfers.download_username_subfolders,
             place_tx,
         ),
+        folder_requests: FolderRequests::new(net.clone()),
         uploads: Uploads::new(
             net.clone(),
             config.runtime.transfers.upload_slots,
@@ -210,8 +212,13 @@ impl ClientActor {
                 virtual_path,
                 size,
                 attributes,
+                root,
                 ack,
-            } => self.enqueue_download(username, virtual_path, size, attributes, ack),
+            } => self.enqueue_download(username, virtual_path, size, attributes, root, ack),
+            ClientCommand::RequestFolder {
+                username,
+                directory,
+            } => self.folder_requests.request(username, directory),
             ClientCommand::RetryDownload { id, ack } => self.retry_download(id, ack),
             ClientCommand::AbortTransfer { direction, id, ack } => {
                 self.abort_transfer(direction, id, ack);

@@ -963,6 +963,7 @@ dependencies = [
  "axum",
  "base64",
  "flate2",
+ "libc",
  "lofty",
  "maxminddb",
  "md5",

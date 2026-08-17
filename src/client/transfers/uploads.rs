@@ -48,6 +48,7 @@ impl UploadTransfer {
             direction: TransferDirection::Upload,
             username: self.username.clone(),
             virtual_path: self.virtual_path.clone(),
+            folder_path: None,
             size: self.size,
             bytes_done: self.bytes_done,
             status: self.phase.status(),
