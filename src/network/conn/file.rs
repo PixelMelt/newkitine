@@ -5,9 +5,9 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
-use tokio::time::Instant;
+use tokio::time::{Instant, sleep_until, timeout};
 
-use super::{ConnControl, ConnEvent, SharedLimits, write_all};
+use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, write_all};
 use crate::network::ConnId;
 use crate::protocol::{FileOffset, FileTransferInit};
 
@@ -52,6 +52,7 @@ pub(super) async fn run_file_loop(
     mut writer: BufWriter<OwnedWriteHalf>,
 ) {
     let mut init_exchanged = false;
+    let deadline = Instant::now() + PEER_IDLE_TIMEOUT;
     let error = loop {
         tokio::select! {
             init_result = reader.read_u32_le(), if !init_exchanged => {
@@ -92,6 +93,7 @@ pub(super) async fn run_file_loop(
                     Some(other) => unreachable!("invalid file control {other:?}"),
                 }
             }
+            _ = sleep_until(deadline) => break Some("file init timed out".into()),
         }
     };
     let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
@@ -120,6 +122,7 @@ async fn run_download(
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
     let mut throttle = Throttle::new();
+    let mut deadline = Instant::now() + PEER_IDLE_TIMEOUT;
     let error = loop {
         if bytes_left == 0 {
             if let Err(error) = file.flush().await {
@@ -146,6 +149,7 @@ async fn run_download(
                 match read_result {
                     Ok(0) => break Some("connection closed".into()),
                     Ok(count) => {
+                        deadline = Instant::now() + PEER_IDLE_TIMEOUT;
                         if let Err(error) = file.write_all(&buffer[..count]).await {
                             let _ = events.send(ConnEvent::FileError { conn_id, error: error.to_string() }).await;
                             break None;
@@ -171,6 +175,7 @@ async fn run_download(
                     Some(other) => unreachable!("invalid download control {other:?}"),
                 }
             }
+            _ = sleep_until(deadline) => break Some("download stalled".into()),
         }
     };
     let _ = file.flush().await;
@@ -190,9 +195,18 @@ async fn run_upload(
         control,
         limits,
     } = task;
-    let offset = match reader.read_u64_le().await {
-        Ok(offset) => offset,
-        Err(error) => {
+    let offset = match timeout(PEER_IDLE_TIMEOUT, reader.read_u64_le()).await {
+        Ok(Ok(offset)) => offset,
+        Err(_) => {
+            let _ = events
+                .send(ConnEvent::Closed {
+                    conn_id,
+                    error: Some("offset read timed out".into()),
+                })
+                .await;
+            return;
+        }
+        Ok(Err(error)) => {
             let _ = events
                 .send(ConnEvent::Closed {
                     conn_id,
@@ -228,11 +242,6 @@ async fn run_upload(
     let mut last_report = Instant::now();
     let mut throttle = Throttle::new();
     let error = loop {
-        match control.try_recv() {
-            Ok(ConnControl::Close) | Err(mpsc::error::TryRecvError::Disconnected) => break None,
-            Ok(other) => unreachable!("invalid upload control {other:?}"),
-            Err(mpsc::error::TryRecvError::Empty) => {}
-        }
         if offset + bytes_sent >= size {
             let _ = events
                 .send(ConnEvent::UploadProgress {
@@ -265,8 +274,17 @@ async fn run_upload(
                 break None;
             }
         };
-        if write_all(writer, &buffer[..count]).await.is_err() {
-            break Some("write failed".into());
+        let written = tokio::select! {
+            written = timeout(PEER_IDLE_TIMEOUT, write_all(writer, &buffer[..count])) => written,
+            ctrl = control.recv() => match ctrl {
+                Some(ConnControl::Close) | None => break None,
+                Some(other) => unreachable!("invalid upload control {other:?}"),
+            },
+        };
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break Some("write failed".into()),
+            Err(_) => break Some("upload stalled".into()),
         }
         bytes_sent += count as u64;
         throttle

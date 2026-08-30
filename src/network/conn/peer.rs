@@ -11,7 +11,8 @@ use tracing::debug;
 
 use super::file::run_file_loop;
 use super::{
-    ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, PeerTask, SharedAllowed, connect, write_all,
+    ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, PEER_IDLE_TIMEOUT, PeerTask, SharedAllowed,
+    connect, write_all,
 };
 use crate::network::ConnId;
 use crate::network::codec::{
@@ -21,7 +22,6 @@ use crate::network::codec::{
 use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage};
 use crate::types::ConnectionType;
 
-const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const GHOST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn run_outgoing_peer(
@@ -183,12 +183,12 @@ async fn run_typed_loop(
         ConnectionType::Peer => {
             let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE_CAPACITY);
             let reader_task = tokio::spawn(read_peer_frames(reader, frames_tx, allowed, username));
-            run_message_loop(conn_id, events, control, frames, writer, reader_task, true).await;
+            run_message_loop(conn_id, events, control, frames, writer, reader_task).await;
         }
         ConnectionType::Distributed => {
             let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE_CAPACITY);
             let reader_task = tokio::spawn(read_distrib_frames(reader, frames_tx));
-            run_message_loop(conn_id, events, control, frames, writer, reader_task, true).await;
+            run_message_loop(conn_id, events, control, frames, writer, reader_task).await;
         }
         ConnectionType::File => {
             run_file_loop(conn_id, events, control, limits, reader, writer).await;
@@ -343,7 +343,6 @@ async fn run_message_loop(
     mut frames: mpsc::Receiver<PeerFrame>,
     mut writer: BufWriter<OwnedWriteHalf>,
     reader_task: JoinHandle<()>,
-    idle_timeout: bool,
 ) {
     let mut deadline = Instant::now() + PEER_IDLE_TIMEOUT;
     let error = loop {
@@ -376,7 +375,7 @@ async fn run_message_loop(
                     Some(other) => unreachable!("invalid message-loop control {other:?}"),
                 }
             }
-            _ = sleep_until(deadline), if idle_timeout => break None,
+            _ = sleep_until(deadline) => break None,
         }
     };
     reader_task.abort();

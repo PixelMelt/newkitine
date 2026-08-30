@@ -22,6 +22,7 @@ use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage, ServerRe
 use crate::types::ConnectionType;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_QUEUE_CAPACITY: usize = 256;
 
 #[derive(Default)]

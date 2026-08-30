@@ -76,10 +76,11 @@ pub async fn search_scrape_users(pool: &MySqlPool) -> Vec<(String, String)> {
 pub async fn repeat_download_users(pool: &MySqlPool, now: i64) -> Vec<(String, String)> {
     sqlx::query(
         "SELECT r.username, MAX(r.copies)
-         FROM (SELECT username, COUNT(*) copies FROM transfer_history
-               WHERE direction = 'upload' AND finished_at > ?
-               GROUP BY username, virtual_path HAVING COUNT(*) > ?) r
-         JOIN users_seen u ON u.username = r.username AND u.verdict = 'clean'
+         FROM (SELECT h.username, COUNT(*) copies FROM transfer_history h
+               JOIN users_seen u ON u.username = h.username AND u.verdict = 'clean'
+               WHERE h.direction = 'upload'
+                 AND h.finished_at > GREATEST(?, COALESCE(u.counters_reset_at, 0))
+               GROUP BY h.username, h.virtual_path HAVING COUNT(*) > ?) r
          GROUP BY r.username",
     )
     .bind(now - REPEAT_WINDOW_DAYS * SECS_PER_DAY)

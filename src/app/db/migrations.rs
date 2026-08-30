@@ -84,7 +84,7 @@ const BASELINE: &[&str] = &[
     )",
 ];
 
-const LATEST_VERSION: i32 = 11;
+const LATEST_VERSION: i32 = 12;
 
 pub async fn init_schema(pool: &MySqlPool) {
     sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL PRIMARY KEY)")
@@ -234,6 +234,58 @@ pub async fn init_schema(pool: &MySqlPool) {
         }
         record_migration(pool, 11).await;
     }
+    if applied < 12 {
+        repair_phantom_deliveries(pool).await;
+        record_migration(pool, 12).await;
+    }
+}
+
+async fn repair_phantom_deliveries(pool: &MySqlPool) {
+    if !index_exists(pool, "transfer_history", "idx_history_path").await {
+        migration_statement(
+            pool,
+            12,
+            "ALTER TABLE transfer_history
+                ADD INDEX idx_history_path (username, virtual_path(180))",
+        )
+        .await;
+    }
+    migration_statement(
+        pool,
+        12,
+        "DELETE FROM transfer_history
+         WHERE direction = 'upload' AND speed_bps = 4294967295",
+    )
+    .await;
+    migration_statement(
+        pool,
+        12,
+        "DELETE FROM transfer_history
+         WHERE direction = 'upload' AND speed_bps IS NULL AND size > 54468608",
+    )
+    .await;
+    migration_statement(
+        pool,
+        12,
+        "DELETE h FROM transfer_history h
+         JOIN (SELECT username, virtual_path, MIN(finished_at) first_at, MAX(speed_bps) best
+               FROM transfer_history
+               WHERE direction = 'upload' AND speed_bps IS NOT NULL
+               GROUP BY username, virtual_path) g
+           ON g.username = h.username AND g.virtual_path = h.virtual_path
+         WHERE h.direction = 'upload' AND h.speed_bps IS NULL
+           AND h.finished_at > g.first_at AND g.best > 0 AND h.size > g.best",
+    )
+    .await;
+    migration_statement(
+        pool,
+        12,
+        "UPDATE users_seen
+         SET verdict = 'clean', restriction = 'none', evidence = NULL,
+             convicted_at = NULL, counters_reset_at = UNIX_TIMESTAMP()
+         WHERE verdict <> 'clean' AND evidence LIKE '%repeat-downloads%'",
+    )
+    .await;
 }
 
 async fn release_filter_convictions(pool: &MySqlPool) {

@@ -600,7 +600,9 @@ impl Downloads {
         conn_id: ConnId,
     ) -> Vec<TransferWork> {
         let key = match self.transfers.key_by_conn(conn_id).cloned().or_else(|| {
-            token.and_then(|token| self.transfers.key_by_token(username, token).cloned())
+            token
+                .and_then(|token| self.transfers.key_by_token(username, token).cloned())
+                .filter(|key| self.transfers.conn_of(key).is_none())
         }) {
             Some(key) => key,
             None => return Vec::new(),

@@ -502,7 +502,9 @@ impl Uploads {
         users: &Users,
     ) -> Vec<TransferWork> {
         let key = match self.transfers.key_by_conn(conn_id).cloned().or_else(|| {
-            token.and_then(|token| self.transfers.key_by_token(username, token).cloned())
+            token
+                .and_then(|token| self.transfers.key_by_token(username, token).cloned())
+                .filter(|key| self.transfers.conn_of(key).is_none())
         }) {
             Some(key) => key,
             None => return Vec::new(),
@@ -511,7 +513,8 @@ impl Uploads {
         let transfer = self.transfers.get(&key).unwrap();
         let updates = match transfer.phase {
             TransferPhase::Transferring if transfer.bytes_done >= transfer.size => {
-                self.finish(&key, true)
+                let delivered = transfer.bytes_done > transfer.started_offset;
+                self.finish(&key, delivered)
             }
             TransferPhase::Transferring => {
                 self.net.peer(
@@ -722,7 +725,7 @@ impl Uploads {
         if delivered && let Some(started_at) = transfer.started_at {
             let elapsed = started_at.elapsed().as_secs_f64();
             let bytes_sent = transfer.bytes_done - transfer.started_offset;
-            if elapsed >= 1.0 && bytes_sent > 0 {
+            if elapsed >= 1.0 {
                 self.upload_speed = (bytes_sent as f64 / elapsed) as u32;
                 avg_speed_bps = Some(self.upload_speed);
             }
@@ -884,5 +887,73 @@ mod tests {
 
         assert_eq!(uploads.queue.active_user_count(), 2);
         assert!(!uploads.is_new_upload_accepted());
+    }
+
+    fn transferring(tag: &str) -> (Uploads, Users, u32, u64, u64) {
+        let (net, _events) = spawn_network();
+        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        let mut ids = TransferIds::new(&[]);
+        let shares = three_track_shares(tag);
+        let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+
+        let (_, accepted) =
+            uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
+        assert!(accepted);
+        let token = uploads.token;
+        let conn_id: ConnId = 7;
+        uploads.handle_file_transfer_init("peer", token, conn_id, &users);
+        let size = uploads
+            .transfers
+            .get(&("peer".to_owned(), TRACKS[0].to_owned()))
+            .unwrap()
+            .size;
+        (uploads, users, token, conn_id, size)
+    }
+
+    fn delivered_of(work: &[TransferWork]) -> Option<bool> {
+        work.iter().find_map(|item| match item {
+            TransferWork::Finished { delivered, .. } => Some(*delivered),
+            _ => None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_peer_resuming_at_the_end_of_the_file_is_not_a_delivery() {
+        let (mut uploads, users, token, conn_id, size) = transferring("resume-end");
+        uploads.handle_upload_progress("peer", token, size, 0);
+        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id, &users);
+        assert_eq!(delivered_of(&work), Some(false));
+        let key = ("peer".to_owned(), TRACKS[0].to_owned());
+        assert_eq!(
+            uploads.transfers.get(&key).unwrap().phase,
+            TransferPhase::Finished
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_resuming_mid_file_is_a_delivery() {
+        let (mut uploads, users, token, conn_id, size) = transferring("resume-mid");
+        uploads.handle_upload_progress("peer", token, size / 2, size - size / 2);
+        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id, &users);
+        assert_eq!(delivered_of(&work), Some(true));
+    }
+
+    #[tokio::test]
+    async fn an_offset_past_the_end_of_the_file_is_not_a_delivery() {
+        let (mut uploads, users, token, conn_id, size) = transferring("resume-past");
+        uploads.handle_upload_progress("peer", token, size + 1, 0);
+        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id, &users);
+        assert_eq!(delivered_of(&work), Some(false));
+        assert_eq!(uploads.upload_speed, 0);
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_file_connection_does_not_finish_the_primary_transfer() {
+        let (mut uploads, users, token, conn_id, size) = transferring("dup-conn");
+        uploads.handle_upload_progress("peer", token, 0, size);
+        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id + 1, &users);
+        assert!(work.is_empty());
+        let key = ("peer".to_owned(), TRACKS[0].to_owned());
+        assert_eq!(uploads.transfers.conn_of(&key), Some(conn_id));
     }
 }
