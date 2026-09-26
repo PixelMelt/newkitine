@@ -17,8 +17,8 @@ use tracing::info;
 use crate::types::{DenialMessages, FilterLevel, Restriction};
 
 use db::{
-    clear_user_verdict, downloaded_from_any, has_downloaded_from, load_verdicts, repeat_deliveries,
-    repeat_delivery, reset_counters, search_scrape_users, set_user_verdict,
+    downloaded_from_any, forgive_user, has_downloaded_from, load_verdicts, repeat_deliveries,
+    repeat_delivery, search_scrape_users, set_user_verdict,
 };
 use policy::{
     CHECK_TIMEOUT_SECS, CONTRADICTION_MIN_FILES, PRESET_STATS, REPEAT_WINDOW_DAYS, SECS_PER_DAY,
@@ -332,12 +332,7 @@ pub async fn message_received(app: &Arc<App>, username: &str) {
 async fn forgive(app: &Arc<App>, username: &str) {
     let _transition = app.behavior.transition.lock().await;
     let released = release(app, username);
-    if released {
-        clear_user_verdict(&app.db, username)
-            .await
-            .unwrap_or_else(|error| fatal(error));
-    }
-    reset_counters(&app.db, username, now())
+    forgive_user(&app.db, username, released, now())
         .await
         .unwrap_or_else(|error| fatal(error));
     if released {

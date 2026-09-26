@@ -129,22 +129,6 @@ pub async fn repeat_delivery(
     .map(|row| row.get(0))
 }
 
-pub async fn reset_counters(
-    pool: &MySqlPool,
-    username: &str,
-    timestamp: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE users_seen SET searches = 0, searches_matched = 0, counters_reset_at = ?
-         WHERE username = ?",
-    )
-    .bind(timestamp)
-    .bind(username)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 pub async fn set_user_verdict(
     pool: &MySqlPool,
     username: &str,
@@ -177,15 +161,31 @@ pub async fn set_user_verdict(
     Ok(())
 }
 
-pub async fn clear_user_verdict(pool: &MySqlPool, username: &str) -> Result<(), sqlx::Error> {
+pub async fn forgive_user(
+    pool: &MySqlPool,
+    username: &str,
+    clear_verdict: bool,
+    timestamp: i64,
+) -> Result<(), sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    if clear_verdict {
+        sqlx::query(
+            "UPDATE users_seen SET verdict = 'clean', restriction = 'none', convicted_at = NULL
+             WHERE username = ?",
+        )
+        .bind(username)
+        .execute(&mut *transaction)
+        .await?;
+    }
     sqlx::query(
-        "UPDATE users_seen SET verdict = 'clean', restriction = 'none', convicted_at = NULL
+        "UPDATE users_seen SET searches = 0, searches_matched = 0, counters_reset_at = ?
          WHERE username = ?",
     )
+    .bind(timestamp)
     .bind(username)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(())
+    transaction.commit().await
 }
 
 pub async fn load_verdicts(pool: &MySqlPool) -> Vec<(String, String, String)> {
