@@ -110,6 +110,7 @@ async fn run_download(
     let mut file = tokio::fs::File::from_std(file);
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
+    let _active = limits.download.join();
     let error = loop {
         if bytes_left == 0 {
             if let Err(error) = file.flush().await {
@@ -232,6 +233,7 @@ async fn run_upload(
     let mut bytes_sent = 0u64;
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
+    let _active = limits.upload.join();
     let error = loop {
         if offset + bytes_sent >= size {
             let _ = events

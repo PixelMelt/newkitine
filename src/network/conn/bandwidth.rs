@@ -12,6 +12,15 @@ pub struct Bandwidth {
     limit_bps: AtomicU64,
     paid_until: Mutex<Instant>,
     changed: Notify,
+    active: AtomicU64,
+}
+
+pub(super) struct Active<'a>(&'a Bandwidth);
+
+impl Drop for Active<'_> {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 pub(super) struct Grant {
@@ -25,6 +34,7 @@ impl Default for Bandwidth {
             limit_bps: AtomicU64::new(0),
             paid_until: Mutex::new(Instant::now()),
             changed: Notify::new(),
+            active: AtomicU64::new(0),
         }
     }
 }
@@ -34,6 +44,11 @@ impl Bandwidth {
         self.limit_bps.store(limit_bps, Ordering::Relaxed);
         *self.paid_until.lock().unwrap() = Instant::now();
         self.changed.notify_waiters();
+    }
+
+    pub(super) fn join(&self) -> Active<'_> {
+        self.active.fetch_add(1, Ordering::Relaxed);
+        Active(self)
     }
 
     pub(super) fn changed(&self) -> Notified<'_> {
@@ -52,7 +67,10 @@ impl Bandwidth {
         let limit_bps = self.limit_bps.load(Ordering::Relaxed);
         let len = match limit_bps {
             0 => max_len,
-            limit => max_len.min((limit / CHUNKS_PER_SECOND).max(1)),
+            limit => {
+                let active = self.active.load(Ordering::Relaxed);
+                max_len.min((limit / (CHUNKS_PER_SECOND * active)).max(1))
+            }
         };
         Grant {
             len: len as usize,
@@ -84,11 +102,21 @@ mod tests {
     }
 
     #[test]
-    fn grants_are_sized_to_a_fraction_of_the_limit() {
+    fn grants_are_sized_to_a_fraction_of_each_transfers_share() {
         let bandwidth = Bandwidth::default();
         bandwidth.set_limit(1024);
+        let first = bandwidth.join();
         assert_eq!(bandwidth.grant(65536).len, 256);
         assert_eq!(bandwidth.grant(100).len, 100);
+        let second = bandwidth.join();
+        assert_eq!(bandwidth.grant(65536).len, 128);
+        let crowd: Vec<_> = (0..1022).map(|_| bandwidth.join()).collect();
+        assert_eq!(bandwidth.grant(65536).len, 1);
+        drop(crowd);
+        drop(second);
+        assert_eq!(bandwidth.grant(65536).len, 256);
+        drop(first);
+        let _only = bandwidth.join();
         bandwidth.set_limit(u32::MAX as u64 * 1024);
         assert_eq!(bandwidth.grant(65536).len, 65536);
     }
@@ -97,6 +125,8 @@ mod tests {
     fn concurrent_transfers_share_one_budget() {
         let bandwidth = Bandwidth::default();
         bandwidth.set_limit(1000);
+        let _first = bandwidth.join();
+        let _second = bandwidth.join();
         let before = Instant::now();
         let first = bandwidth.grant(65536);
         let second = bandwidth.grant(65536);
@@ -111,6 +141,7 @@ mod tests {
     #[test]
     fn a_limit_change_forgives_debt_and_prices_in_flight_grants_at_their_own_rate() {
         let bandwidth = Bandwidth::default();
+        let _active = bandwidth.join();
         let unlimited = bandwidth.grant(65536);
         bandwidth.set_limit(1000);
         bandwidth.charge(&unlimited, 65536);
