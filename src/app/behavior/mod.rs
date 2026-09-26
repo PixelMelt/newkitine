@@ -240,7 +240,9 @@ pub async fn browse_received(app: &Arc<App>, username: &str, file_count: u32) {
         let mut peers = app.behavior.peers.lock().unwrap();
         let peer = touch(&mut peers, username, now());
         let checking = matches!(peer.check, Check::AwaitingBrowse(_));
-        peer.check = Check::Idle;
+        if checking {
+            peer.check = Check::Idle;
+        }
         let stats = peer.stats;
         let stats_files = stats.map(|(files, _)| files);
         if file_count == 0
