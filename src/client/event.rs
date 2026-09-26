@@ -83,6 +83,9 @@ pub enum ClientEvent {
         shares: Vec<FolderContents>,
         private_shares: Vec<FolderContents>,
     },
+    BrowseFailed {
+        username: String,
+    },
     FolderRequestFailed {
         username: String,
         directory: String,

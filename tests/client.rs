@@ -964,6 +964,30 @@ async fn banned_peer_browse_gets_an_empty_share_list() {
 }
 
 #[tokio::test]
+async fn browsing_an_offline_peer_reports_the_failure() {
+    let (server_addr, _registry) = start_fake_server().await;
+    let config = client_config(
+        server_addr,
+        "grace",
+        free_port(),
+        temp_dir("offline-browse-grace-dl"),
+    );
+    let (grace, mut grace_events, _grace_transfers) = Client::spawn(config);
+    wait_client(&mut grace_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    grace.browse_user("nobody").await;
+    wait_client(&mut grace_events, |event| match event {
+        ClientEvent::BrowseFailed { username } if username == "nobody" => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn connect_while_connected_is_ignored() {
     let (server_addr, _registry) = start_fake_server().await;
     let config = client_config(server_addr, "carol", free_port(), temp_dir("downloads"));

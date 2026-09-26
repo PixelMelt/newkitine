@@ -63,6 +63,7 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             shares,
             private_shares,
         } => users::shared_file_list(app, username, shares, private_shares).await,
+        ClientEvent::BrowseFailed { username } => behavior::browse_failed(app, &username).await,
         ClientEvent::FolderRequestFailed {
             username,
             directory,
