@@ -5,21 +5,32 @@ use crate::types::{DescriptionContext, Restriction};
 
 impl ClientActor {
     pub(super) fn respond_to_user_info(&mut self, username: String) {
-        let description = self.render_description(&username);
         self.emit(ClientEvent::Observed(Observation::UserInfoRequest {
             username: username.clone(),
         }));
-        self.net.peer(
-            username,
+        let response = if self.users.is_banned(&username) {
             PeerMessage::UserInfoResponse {
-                description,
+                description: format!(
+                    "You are not allowed to download my shared files.\nReason: {}",
+                    self.config.transfers.banned_message
+                ),
+                picture: None,
+                total_uploads: 0,
+                queue_size: 0,
+                slots_available: false,
+                upload_allowed: Some(0),
+            }
+        } else {
+            PeerMessage::UserInfoResponse {
+                description: self.render_description(&username),
                 picture: None,
                 total_uploads: self.uploads.total_slots(),
                 queue_size: self.uploads.queue_size(),
                 slots_available: self.uploads.is_new_upload_accepted(),
                 upload_allowed: Some(0),
-            },
-        );
+            }
+        };
+        self.net.peer(username, response);
     }
 
     fn render_description(&self, username: &str) -> String {

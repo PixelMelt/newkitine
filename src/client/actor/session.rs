@@ -82,7 +82,8 @@ impl ClientActor {
                 transfers.queue_size_limit_mb,
                 transfers.banned_message,
             );
-            self.uploads.check_queue(&self.users);
+            let updates = self.uploads.check_queue(&self.users);
+            self.emit_transfers(updates);
             self.downloads.set_dirs(
                 transfers.download_dir,
                 transfers.incomplete_dir,
@@ -181,6 +182,8 @@ impl ClientActor {
         }
         self.net.server(ServerRequest::CheckPrivileges);
         self.downloads.request_queued();
+        let uploads = self.uploads.check_queue(&self.users);
+        self.emit_transfers(uploads);
         self.emit(ClientEvent::LoggedIn { username, banner });
     }
 
