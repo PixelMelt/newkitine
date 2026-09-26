@@ -1,4 +1,4 @@
-# 37. The client actor owns outgoing search state
+# 38. The client actor owns outgoing search state
 
 Status: Accepted
 Nicotine+: Matches: Nicotine+ core keeps a `SearchRequest` per token with the sanitized term and included/excluded words, reuses one token per wish, and its search tab opens a wish's results on the first matching response
