@@ -1,5 +1,6 @@
 use super::ClientActor;
 use crate::client::ClientEvent;
+use crate::client::users::Presence;
 use crate::protocol::{ServerRequest, ServerResponse};
 use crate::types::UserStatus;
 
@@ -11,15 +12,29 @@ impl ClientActor {
                 status,
                 privileged,
             } => {
-                self.users.handle_user_status(&user, privileged);
-                if status == UserStatus::Online.as_u32() {
-                    self.downloads.retry_offline(&user);
-                }
+                let status = UserStatus::from_u32(status);
+                let updates = match self
+                    .users
+                    .handle_user_status(&self.net, &user, status, privileged)
+                {
+                    Presence::WentOffline => self.downloads.user_offline(&user),
+                    Presence::CameOnline => self.downloads.user_online(&mut self.users, &user),
+                    Presence::Unchanged => Vec::new(),
+                };
+                self.emit_transfers(updates);
                 self.emit(ClientEvent::UserStatus {
                     username: user,
-                    status: UserStatus::from_u32(status),
+                    status,
                     privileged,
                 });
+            }
+            ServerResponse::ConnectToPeer {
+                user, privileged, ..
+            } => {
+                self.users.set_privileged(&user, privileged);
+            }
+            ServerResponse::AddToPrivileged { user } => {
+                self.users.set_privileged(&user, true);
             }
             ServerResponse::WatchUser {
                 user,
@@ -169,7 +184,6 @@ impl ClientActor {
             ServerResponse::Login(_)
             | ServerResponse::IgnoreUser { .. }
             | ServerResponse::UnignoreUser { .. }
-            | ServerResponse::ConnectToPeer { .. }
             | ServerResponse::ServerPing
             | ServerResponse::SendConnectToken { .. }
             | ServerResponse::UploadSlotsFull { .. }
@@ -189,7 +203,6 @@ impl ClientActor {
             | ServerResponse::SearchInactivityTimeout { .. }
             | ServerResponse::MinParentsInCache { .. }
             | ServerResponse::DistribPingInterval { .. }
-            | ServerResponse::AddToPrivileged { .. }
             | ServerResponse::EmbeddedMessage { .. }
             | ServerResponse::PossibleParents { .. }
             | ServerResponse::RoomTickers { .. }
