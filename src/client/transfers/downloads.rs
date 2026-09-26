@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,7 @@ const QUEUE_POSITION_INTERVAL: Duration = Duration::from_secs(300);
 const CONNECTION_RETRY_INTERVAL: Duration = Duration::from_secs(180);
 const IO_RETRY_INTERVAL: Duration = Duration::from_secs(900);
 const MIN_LIMITED_BATCH: usize = 5;
+const RECOVERY_BATCH: usize = 200;
 
 const USER_OFFLINE: &str = "user is offline";
 const CONNECTION_TIMEOUT: &str = "connection timeout";
@@ -128,6 +129,12 @@ impl Transfer {
     }
 }
 
+#[derive(Debug, Default)]
+struct QueueLimit {
+    batch: usize,
+    held: VecDeque<TransferKey>,
+}
+
 pub(super) type PlacementDone = (TransferKey, std::io::Result<PathBuf>);
 
 pub(in crate::client) struct Downloads {
@@ -138,7 +145,9 @@ pub(in crate::client) struct Downloads {
     placements: mpsc::UnboundedSender<PlacementDone>,
     transfers: Registry<Transfer>,
     basename_limits: HashMap<PathBuf, usize>,
-    queue_limits: HashMap<String, usize>,
+    queue_limits: HashMap<String, QueueLimit>,
+    recovery_queue: VecDeque<TransferKey>,
+    recovery_pending: HashSet<TransferKey>,
     queue_positions_at: Instant,
     connection_retry_at: Instant,
     io_retry_at: Instant,
@@ -161,6 +170,8 @@ impl Downloads {
             transfers: Registry::default(),
             basename_limits: HashMap::new(),
             queue_limits: HashMap::new(),
+            recovery_queue: VecDeque::new(),
+            recovery_pending: HashSet::new(),
             queue_positions_at: Instant::now(),
             connection_retry_at: Instant::now(),
             io_retry_at: Instant::now(),
@@ -403,18 +414,43 @@ impl Downloads {
         self.queue_positions_at = now;
         self.connection_retry_at = now;
         self.io_retry_at = now;
-        let mut queued = Vec::new();
         for transfer in self.transfers.values() {
             if transfer.needs_watch() {
                 users.watch(&self.net, &transfer.username);
             }
-            if transfer.phase == TransferPhase::Queued {
-                queued.push(transfer.key());
+        }
+        let queued = self.keys_where(|transfer| transfer.phase == TransferPhase::Queued);
+        self.schedule_recovery(queued);
+    }
+
+    fn schedule_recovery(&mut self, keys: Vec<TransferKey>) {
+        for key in keys {
+            if self.recovery_pending.insert(key.clone()) {
+                self.recovery_queue.push_back(key);
             }
         }
-        for key in queued {
-            self.send_queue_request(key);
+    }
+
+    pub fn drain_recovery(&mut self, users: &mut Users) -> Vec<TransferWork> {
+        let mut updates = Vec::new();
+        let mut sent = 0;
+        while sent < RECOVERY_BATCH {
+            let Some(key) = self.recovery_queue.pop_front() else {
+                break;
+            };
+            self.recovery_pending.remove(&key);
+            let Some(transfer) = self.transfers.get(&key) else {
+                continue;
+            };
+            match &transfer.phase {
+                TransferPhase::Queued => self.send_queue_request(key),
+                TransferPhase::Limited => updates.extend(self.requeue(users, &key)),
+                phase if recovery(phase).is_some() => updates.extend(self.requeue(users, &key)),
+                _ => continue,
+            }
+            sent += 1;
         }
+        updates
     }
 
     fn send_queue_request(&mut self, key: TransferKey) {
@@ -478,64 +514,70 @@ impl Downloads {
             transfer.queue_place = 0;
             updates.push(TransferWork::Update(transfer.snapshot()));
         }
+        self.recovery_pending.retain(|key| key.0 != username);
+        self.recovery_queue.retain(|key| key.0 != username);
         updates
     }
 
-    pub fn user_online(&mut self, users: &mut Users, username: &str) -> Vec<TransferWork> {
+    pub fn user_online(&mut self, username: &str) {
         let keys = self.keys_where(|transfer| {
             transfer.username == username
                 && (transfer.phase == TransferPhase::Limited || recovery(&transfer.phase).is_some())
         });
-        keys.iter()
-            .flat_map(|key| self.requeue(users, key))
-            .collect()
+        self.schedule_recovery(keys);
     }
 
-    pub fn retry_failed(&mut self, users: &mut Users) -> Vec<TransferWork> {
+    pub fn retry_failed(&mut self) {
         let connection = due(&mut self.connection_retry_at, CONNECTION_RETRY_INTERVAL);
         let io = due(&mut self.io_retry_at, IO_RETRY_INTERVAL);
         if !connection && !io {
-            return Vec::new();
+            return;
         }
         let keys = self.keys_where(|transfer| match recovery(&transfer.phase) {
             Some(Recovery::Connection) => connection,
             Some(Recovery::Io) => io,
             Some(Recovery::UserOnline) | None => false,
         });
-        keys.iter()
-            .flat_map(|key| self.requeue(users, key))
-            .collect()
+        self.schedule_recovery(keys);
     }
 
-    pub fn release_limited(&mut self, users: &mut Users) -> Vec<TransferWork> {
+    pub fn release_limited(&mut self) {
         if self.queue_limits.is_empty() {
-            return Vec::new();
+            return;
         }
         let busy: HashSet<&str> = self
             .transfers
             .values()
             .filter(|transfer| transfer.phase == TransferPhase::Queued)
             .map(|transfer| transfer.username.as_str())
+            .chain(self.recovery_pending.iter().map(|key| key.0.as_str()))
             .collect();
-        let drained: Vec<(String, usize)> = self
+        let drained: Vec<String> = self
             .queue_limits
-            .iter()
-            .filter(|(username, _)| !busy.contains(username.as_str()))
-            .map(|(username, batch)| (username.clone(), *batch))
+            .keys()
+            .filter(|username| !busy.contains(username.as_str()))
+            .cloned()
             .collect();
-        let mut updates = Vec::new();
-        for (username, batch) in drained {
-            let limited = self.keys_where(|transfer| {
-                transfer.username == username && transfer.phase == TransferPhase::Limited
-            });
-            if limited.len() <= batch {
+        for username in drained {
+            let limit = self.queue_limits.get_mut(&username).unwrap();
+            let mut released = Vec::new();
+            while released.len() < limit.batch {
+                let Some(key) = limit.held.pop_front() else {
+                    break;
+                };
+                if self
+                    .transfers
+                    .get(&key)
+                    .is_some_and(|transfer| transfer.phase == TransferPhase::Limited)
+                {
+                    released.push(key);
+                }
+            }
+            if limit.held.is_empty() {
                 self.queue_limits.remove(&username);
             }
-            for key in limited.iter().take(batch) {
-                updates.extend(self.requeue(users, key));
-            }
+            self.schedule_recovery(released);
         }
-        updates
     }
 
     pub fn queue_place(
@@ -774,10 +816,9 @@ impl Downloads {
                     transfer.username == username && transfer.phase == TransferPhase::Queued
                 })
                 .count();
-            self.queue_limits.insert(
-                username.to_owned(),
-                queued.saturating_sub(1).max(MIN_LIMITED_BATCH),
-            );
+            let limit = self.queue_limits.entry(username.to_owned()).or_default();
+            limit.batch = queued.saturating_sub(1).max(MIN_LIMITED_BATCH);
+            limit.held.push_back(key.clone());
             self.transfers.detach(&key);
             let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.phase = TransferPhase::Limited;
@@ -853,6 +894,8 @@ impl Downloads {
 
     pub fn reset(&mut self) -> Vec<TransferWork> {
         self.queue_limits.clear();
+        self.recovery_queue.clear();
+        self.recovery_pending.clear();
         let active: Vec<TransferKey> = self
             .transfers
             .values()
@@ -1262,7 +1305,9 @@ mod tests {
             TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
         );
 
-        let updates = downloads.user_online(&mut users, "uploader");
+        downloads.user_online("uploader");
+        assert!(queue_uploads(&drain(&mut commands)).is_empty());
+        let updates = downloads.drain_recovery(&mut users);
         assert!(
             updates
                 .iter()
@@ -1308,19 +1353,26 @@ mod tests {
         ));
         drain(&mut commands);
 
+        let fresh_key = enqueue_file(&mut downloads, &mut ids, &mut users, "fresh", "c\\1.mp3");
+        drain(&mut commands);
+
         let mut fresh = no_users();
         downloads.start_session(&mut fresh);
         let sent = drain(&mut commands);
-        let watched: Vec<&ServerRequest> = server_requests(&sent)
-            .into_iter()
-            .filter(|request| matches!(request, ServerRequest::WatchUser { .. }))
-            .collect();
+        assert!(queue_uploads(&sent).is_empty());
+        assert!(downloads.drain_recovery(&mut fresh).is_empty());
         assert_eq!(
-            watched,
-            vec![&ServerRequest::WatchUser {
-                user: "away".into()
-            }]
+            queue_uploads(&drain(&mut commands)),
+            vec![fresh_key.1.as_str()]
         );
+        let watched: HashSet<&str> = server_requests(&sent)
+            .into_iter()
+            .filter_map(|request| match request {
+                ServerRequest::WatchUser { user } => Some(user.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(watched, HashSet::from(["away", "fresh"]));
         assert!(downloads.needs_watch("away"));
         assert!(!downloads.needs_watch("rejecter"));
     }
@@ -1355,11 +1407,13 @@ mod tests {
         }
         drain(&mut commands);
 
-        assert!(downloads.release_limited(&mut users).is_empty());
+        downloads.release_limited();
+        assert!(downloads.drain_recovery(&mut users).is_empty());
 
         downloads.handle_transfer_request("uploader", 7, &keys[0].1, Some(100));
         drain(&mut commands);
-        let released = downloads.release_limited(&mut users);
+        downloads.release_limited();
+        let released = downloads.drain_recovery(&mut users);
         assert_eq!(released.len(), MIN_LIMITED_BATCH);
         let sent = drain(&mut commands);
         let requested = queue_uploads(&sent);
@@ -1368,14 +1422,26 @@ mod tests {
             .map(|key| key.1.as_str())
             .collect();
         assert_eq!(requested, expected);
-        assert!(downloads.release_limited(&mut users).is_empty());
+        downloads.release_limited();
+        assert!(downloads.drain_recovery(&mut users).is_empty());
 
         for key in &keys[1..=MIN_LIMITED_BATCH] {
-            let _ = downloads.handle_upload_denied("uploader", &key.1, "Cancelled");
+            let _ = downloads.handle_upload_denied(
+                "uploader",
+                &key.1,
+                TransferRejectReason::TOO_MANY_MEGABYTES,
+            );
         }
-        let released = downloads.release_limited(&mut users);
-        assert_eq!(released.len(), 2);
-        assert!(downloads.queue_limits.is_empty());
+        downloads.release_limited();
+        let released = downloads.drain_recovery(&mut users);
+        assert_eq!(released.len(), MIN_LIMITED_BATCH);
+        let sent = drain(&mut commands);
+        let rotated: Vec<&str> = keys[MIN_LIMITED_BATCH + 1..]
+            .iter()
+            .chain(&keys[1..=3])
+            .map(|key| key.1.as_str())
+            .collect();
+        assert_eq!(queue_uploads(&sent), rotated);
     }
 
     #[tokio::test]
@@ -1416,7 +1482,8 @@ mod tests {
 
         downloads.start_session(&mut users);
         drain(&mut commands);
-        assert!(downloads.retry_failed(&mut users).is_empty());
+        downloads.retry_failed();
+        assert!(downloads.drain_recovery(&mut users).is_empty());
 
         let past = |interval: Duration| {
             Instant::now()
@@ -1424,7 +1491,8 @@ mod tests {
                 .unwrap()
         };
         downloads.connection_retry_at = past(CONNECTION_RETRY_INTERVAL);
-        let retried = downloads.retry_failed(&mut users);
+        downloads.retry_failed();
+        let retried = downloads.drain_recovery(&mut users);
         assert_eq!(retried.len(), 2);
         assert_eq!(
             queue_uploads(&drain(&mut commands)),
@@ -1433,7 +1501,8 @@ mod tests {
         assert!(matches!(phase(&downloads, &io), TransferPhase::Failed(_)));
 
         downloads.io_retry_at = past(IO_RETRY_INTERVAL);
-        let retried = downloads.retry_failed(&mut users);
+        downloads.retry_failed();
+        let retried = downloads.drain_recovery(&mut users);
         assert_eq!(retried.len(), 1);
         assert_eq!(queue_uploads(&drain(&mut commands)), vec![io.1.as_str()]);
         assert_eq!(
@@ -1444,5 +1513,39 @@ mod tests {
             phase(&downloads, &offline),
             TransferPhase::Failed(USER_OFFLINE.into())
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_is_paced_and_dropped_when_the_uploader_leaves() {
+        let (mut downloads, mut commands) = recording_downloads();
+        let mut ids = TransferIds::new(&[]);
+        let mut users = no_users();
+        let total = RECOVERY_BATCH + 50;
+        for index in 0..total {
+            let key = enqueue_file(
+                &mut downloads,
+                &mut ids,
+                &mut users,
+                "uploader",
+                &format!("a\\{index}.mp3"),
+            );
+            let _ = downloads.handle_peer_connection_error(
+                "uploader",
+                &[PeerMessage::QueueUpload {
+                    file: key.1,
+                    legacy_client: false,
+                }],
+                true,
+            );
+            drain(&mut commands);
+        }
+        downloads.user_online("uploader");
+        assert_eq!(downloads.drain_recovery(&mut users).len(), RECOVERY_BATCH);
+        assert_eq!(queue_uploads(&drain(&mut commands)).len(), RECOVERY_BATCH);
+        let _ = downloads.user_offline("uploader");
+        assert!(downloads.drain_recovery(&mut users).is_empty());
+        downloads.user_online("uploader");
+        assert_eq!(downloads.drain_recovery(&mut users).len(), RECOVERY_BATCH);
+        assert_eq!(downloads.drain_recovery(&mut users).len(), 50);
     }
 }

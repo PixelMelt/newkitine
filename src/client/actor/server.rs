@@ -13,15 +13,17 @@ impl ClientActor {
                 privileged,
             } => {
                 let status = UserStatus::from_u32(status);
-                let updates = match self
+                match self
                     .users
                     .handle_user_status(&self.net, &user, status, privileged)
                 {
-                    Presence::WentOffline => self.downloads.user_offline(&user),
-                    Presence::CameOnline => self.downloads.user_online(&mut self.users, &user),
-                    Presence::Unchanged => Vec::new(),
-                };
-                self.emit_transfers(updates);
+                    Presence::WentOffline => {
+                        let updates = self.downloads.user_offline(&user);
+                        self.emit_transfers(updates);
+                    }
+                    Presence::CameOnline => self.downloads.user_online(&user),
+                    Presence::Unchanged => {}
+                }
                 self.emit(ClientEvent::UserStatus {
                     username: user,
                     status,
@@ -43,6 +45,9 @@ impl ClientActor {
                 stats,
                 country: _,
             } => {
+                if !user_exists {
+                    self.users.forget_watch(&user);
+                }
                 self.emit(ClientEvent::WatchedUser {
                     username: user,
                     exists: user_exists,

@@ -148,10 +148,10 @@ impl ClientActor {
         self.emit_transfers(uploads);
         if self.session.logged_in {
             self.downloads.request_queue_positions();
-            let retried = self.downloads.retry_failed(&mut self.users);
-            self.emit_transfers(retried);
-            let released = self.downloads.release_limited(&mut self.users);
-            self.emit_transfers(released);
+            self.downloads.retry_failed();
+            self.downloads.release_limited();
+            let recovered = self.downloads.drain_recovery(&mut self.users);
+            self.emit_transfers(recovered);
         }
     }
 

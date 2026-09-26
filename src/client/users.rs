@@ -140,6 +140,10 @@ impl Users {
         request_watch(net, username);
     }
 
+    pub fn forget_watch(&mut self, username: &str) {
+        self.watched.remove(username);
+    }
+
     pub fn add_buddy(&mut self, net: &NetworkHandle, username: String) {
         if !self.buddies.insert(username.clone()) {
             return;

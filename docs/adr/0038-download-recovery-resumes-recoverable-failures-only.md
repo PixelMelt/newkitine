@@ -1,4 +1,4 @@
-# 37. Download recovery resumes recoverable failures only
+# 38. Download recovery resumes recoverable failures only
 
 Status: Accepted
 Nicotine+: Diverges: Nicotine+ re-enqueues every failed download when its uploader comes online
@@ -11,7 +11,9 @@ Uploaders drop their upload queue when they disconnect or restart and rely on do
 
 The client actor mirrors all of this except the breadth of the online resume. A download failure is classified from its persisted reason into offline, connection (`connection timeout`, `connection closed`, `request timed out`, `upload failed`, `Pending shutdown.`), I/O (`local file error`, `cannot place finished download`, `File read error.`), or terminal (every other peer rejection). Only the first three are watched, rewritten to offline when the uploader goes offline, and resumed when the uploader comes back; connection and I/O failures also retry on their timers from the periodic sweep. Terminal rejections such as `File not shared.` or `Banned` stay failed until the user retries them by hand.
 
-Queue-limit refusals (`Too many files`, `Too many megabytes`, `User limit of …`) move the download to a `Limited` phase that the projection shows as queued. The sweep releases up to `max(5, queued - 1)` of them once the user has no queued download left, the batch size Nicotine+ records at refusal time.
+Queue-limit refusals (`Too many files`, `Too many megabytes`, `User limit of …`) move the download to a `Limited` phase that the projection shows as queued. The sweep releases up to `max(5, queued - 1)` of them once the user has no queued download left, the batch size Nicotine+ records at refusal time; a refused-again download goes to the back of that user's line, as it does in Nicotine+.
+
+Automatic recovery never sends synchronously. Resumes, timer retries, released batches and the login re-request of queued downloads go through one outbox that the 5 s sweep drains at most 200 per tick, because the network command channel and the persistence queue are bounded and overflow is fatal (ADR 0009, ADR 0012, ADR 0018). An uploader going offline drops their entries from the outbox.
 
 Watches are owned by `Users`: one `WatchUser` plus `GetUserStatus` per user per session regardless of how many files are enqueued, and removing a buddy keeps the watch while a download still needs it.
 
