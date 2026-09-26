@@ -419,7 +419,7 @@ fn embedded_distributed_search_unpacks_inline() {
         DistributedMessage::Search(DistributedSearch::parse(&inner).unwrap())
     );
 
-    let mut legacy = vec![3, 0, 0, 0];
+    let mut legacy = vec![0, 0, 0, 3];
     legacy.extend_from_slice(&inner);
     assert_eq!(DistributedMessage::parse(93, &legacy).unwrap(), parsed);
 }
