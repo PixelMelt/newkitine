@@ -91,7 +91,11 @@ impl ClientActor {
     ) {
         let ids = match direction {
             TransferDirection::Download => self.downloads.clear(&statuses),
-            TransferDirection::Upload => self.uploads.clear(&statuses),
+            TransferDirection::Upload => {
+                let (ids, updates) = self.uploads.clear(&statuses, &self.users);
+                self.emit_transfers(updates);
+                ids
+            }
         };
         if !ids.is_empty() {
             self.emit_transfer_work(TransferWork::Removed { direction, ids });
@@ -120,7 +124,14 @@ impl ClientActor {
             self.emit_transfers(updates);
         }
         self.users.set_restriction(username, restriction);
-        self.uploads.check_queue(&self.users);
+        let updates = self.uploads.check_queue(&self.users);
+        self.emit_transfers(updates);
+    }
+
+    pub(super) fn ban_user(&mut self, username: String) {
+        self.users.banned.insert(username.clone());
+        let updates = self.uploads.ban(&username, &self.users);
+        self.emit_transfers(updates);
     }
 
     pub(super) fn deny_file(&mut self, username: String, virtual_path: String, ttl: Duration) {
@@ -143,6 +154,12 @@ impl ClientActor {
         self.emit_transfers(uploads);
         if self.session.logged_in {
             self.downloads.request_queue_positions();
+            let queued = self.uploads.sweep_queue(
+                &mut self.transfer_ids,
+                self.sharing.index.as_ref(),
+                &self.users,
+            );
+            self.emit_transfers(queued);
         }
     }
 

@@ -78,7 +78,8 @@ impl ClientActor {
                 }
             }
             PeerMessage::PlaceInQueueRequest { file, .. } => {
-                self.uploads.handle_place_in_queue_request(&username, &file);
+                self.uploads
+                    .handle_place_in_queue_request(&username, &file, &self.users);
             }
             PeerMessage::SharedFileListResponse {
                 shares,

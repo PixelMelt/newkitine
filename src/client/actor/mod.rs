@@ -236,9 +236,7 @@ impl ClientActor {
             ClientCommand::RemoveBuddy { username } => {
                 self.users.remove_buddy(&self.net, &username);
             }
-            ClientCommand::BanUser { username } => {
-                self.users.banned.insert(username);
-            }
+            ClientCommand::BanUser { username } => self.ban_user(username),
             ClientCommand::UnbanUser { username } => {
                 self.users.banned.remove(&username);
             }
