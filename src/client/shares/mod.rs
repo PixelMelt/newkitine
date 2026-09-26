@@ -1,3 +1,4 @@
+mod audio;
 mod cache;
 mod scan;
 mod wire;
@@ -209,6 +210,10 @@ impl SharesIndex {
             public_browse_frame,
             buddy_browse_frame,
         }
+    }
+
+    pub fn empty() -> Self {
+        Self::from_catalog(ShareCatalog::empty())
     }
 
     pub fn counts(&self) -> (u32, u32) {

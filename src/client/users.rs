@@ -14,6 +14,7 @@ pub(super) struct Users {
     restrictions: HashMap<String, Restriction>,
     file_denials: HashMap<String, HashMap<String, Instant>>,
     privileged: HashSet<String>,
+    login_username: String,
 }
 
 impl Users {
@@ -31,7 +32,12 @@ impl Users {
             restrictions: HashMap::new(),
             file_denials: HashMap::new(),
             privileged: HashSet::new(),
+            login_username: String::new(),
         }
+    }
+
+    pub fn set_login_username(&mut self, username: String) {
+        self.login_username = username;
     }
 
     pub fn set_ip_bans(&mut self, patterns: Vec<String>) {
@@ -90,7 +96,7 @@ impl Users {
     }
 
     pub fn is_buddy(&self, username: &str) -> bool {
-        self.buddies.contains(username)
+        username != self.login_username && self.buddies.contains(username)
     }
 
     pub fn is_banned(&self, username: &str) -> bool {
@@ -159,6 +165,21 @@ mod tests {
         assert!(!users.is_file_denied("other", "a\\b.mp3"));
         users.clear_file_denials("peer");
         assert!(!users.is_file_denied("peer", "a\\b.mp3"));
+    }
+
+    #[test]
+    fn own_username_is_never_a_buddy() {
+        let mut users = Users::new(
+            HashSet::from(["me".to_owned(), "friend".to_owned()]),
+            HashSet::new(),
+            HashSet::new(),
+            Vec::new(),
+        );
+        users.set_login_username("me".into());
+        assert!(!users.is_buddy("me"));
+        assert!(users.is_buddy("friend"));
+        users.set_login_username("other".into());
+        assert!(users.is_buddy("me"));
     }
 
     #[test]

@@ -1013,3 +1013,108 @@ async fn connect_while_connected_is_ignored() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn removing_every_share_installs_an_empty_index_without_a_cache() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("unshare-all-music");
+    std::fs::write(share_dir.join("song.mp3"), b"payload".repeat(100)).unwrap();
+    let eve_dir = temp_dir("unshare-all-eve-dl");
+    let mut eve_config = client_config(server_addr, "eve", free_port(), eve_dir.clone());
+    eve_config.runtime.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    let (eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config.clone());
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled { files: 1, .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::ShareScanFinished => Some(()),
+        _ => None,
+    })
+    .await;
+
+    std::fs::remove_file(&eve_config.scan_cache).unwrap();
+    let mut runtime = eve_config.runtime.clone();
+    runtime.shared_folders = Vec::new();
+    eve.apply_config(runtime).await;
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled {
+            folders: 0,
+            files: 0,
+        } => Some(()),
+        ClientEvent::SharesInstalled { folders, files } => {
+            panic!("expected an empty index, got {folders}/{files}")
+        }
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dropped_browse_retries_do_not_extend_the_coalesce_window() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("coalesce-music");
+    std::fs::write(share_dir.join("song.mp3"), b"payload".repeat(100)).unwrap();
+    let mut eve_config =
+        client_config(server_addr, "eve", free_port(), temp_dir("coalesce-eve-dl"));
+    eve_config.runtime.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    let (_eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config);
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let frank_config = client_config(
+        server_addr,
+        "frank",
+        free_port(),
+        temp_dir("coalesce-frank-dl"),
+    );
+    let (frank, mut frank_events, _frank_transfers) = Client::spawn(frank_config);
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    frank.browse_user("eve").await;
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SharedFileList { username, .. } if username == "eve" => Some(()),
+        _ => None,
+    })
+    .await;
+    let started = std::time::Instant::now();
+    loop {
+        frank.browse_user("eve").await;
+        wait_client(&mut eve_events, |event| match event {
+            ClientEvent::Observed(Observation::BrowseRequest { username })
+                if username == "frank" =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+        if started.elapsed() >= Duration::from_millis(900) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SharedFileList { username, .. } if username == "eve" => Some(()),
+        _ => None,
+    })
+    .await;
+}

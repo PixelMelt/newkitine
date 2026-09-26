@@ -11,7 +11,7 @@ use tracing::{error, warn};
 
 use crate::types::FileAttributes;
 
-use super::wire::{write_attributes_to, write_string_to, write_u32_to};
+use super::wire::{write_string_to, write_u32_to};
 use super::{ShareCatalog, ShareCatalogFile};
 
 const FORMAT_VERSION: u32 = 1;
@@ -43,12 +43,17 @@ pub fn save(path: &Path, catalog: &ShareCatalog) {
     let result = write(&tmp, catalog).and_then(|()| fs::rename(&tmp, path));
     if let Err(error) = result {
         error!(path = %path.display(), %error, "cannot persist share catalog cache");
+        if let Err(error) = fs::remove_file(&tmp)
+            && error.kind() != ErrorKind::NotFound
+        {
+            warn!(path = %tmp.display(), %error, "cannot remove partial share catalog cache");
+        }
     }
 }
 
 fn write(path: &Path, catalog: &ShareCatalog) -> io::Result<()> {
     let mut writer = BufWriter::new(GzEncoder::new(File::create(path)?, Compression::fast()));
-    encode(&mut writer, catalog);
+    encode(&mut writer, catalog)?;
     writer
         .into_inner()
         .map_err(|error| error.into_error())?
@@ -57,27 +62,49 @@ fn write(path: &Path, catalog: &ShareCatalog) -> io::Result<()> {
     Ok(())
 }
 
-fn encode(writer: &mut impl Write, catalog: &ShareCatalog) {
-    write_u32_to(writer, FORMAT_VERSION);
-    write_u32_to(writer, catalog.folders.len() as u32);
+fn encode(writer: &mut impl Write, catalog: &ShareCatalog) -> io::Result<()> {
+    write_u32_to(writer, FORMAT_VERSION)?;
+    write_u32_to(writer, catalog.folders.len() as u32)?;
     for folder in &catalog.folders {
-        write_string_to(writer, &folder.virtual_path);
-        write_bytes_to(writer, folder.real_path.as_os_str().as_bytes());
-        writer.write_all(&[folder.buddy_only as u8]).unwrap();
-        write_u32_to(writer, folder.files.len() as u32);
+        write_string_to(writer, &folder.virtual_path)?;
+        write_bytes_to(writer, folder.real_path.as_os_str().as_bytes())?;
+        writer.write_all(&[folder.buddy_only as u8])?;
+        write_u32_to(writer, folder.files.len() as u32)?;
         for file in catalog.folder_files(folder) {
-            write_string_to(writer, &file.name);
-            write_bytes_to(writer, file.real_name.as_bytes());
-            writer.write_all(&file.size.to_le_bytes()).unwrap();
-            writer.write_all(&file.mtime.to_le_bytes()).unwrap();
-            write_attributes_to(writer, &file.attributes);
+            write_string_to(writer, &file.name)?;
+            write_bytes_to(writer, file.real_name.as_bytes())?;
+            writer.write_all(&file.size.to_le_bytes())?;
+            writer.write_all(&file.mtime.to_le_bytes())?;
+            write_attributes_to(writer, &file.attributes)?;
         }
     }
+    Ok(())
 }
 
-fn write_bytes_to(writer: &mut impl Write, value: &[u8]) {
-    write_u32_to(writer, value.len() as u32);
-    writer.write_all(value).unwrap();
+fn write_bytes_to(writer: &mut impl Write, value: &[u8]) -> io::Result<()> {
+    write_u32_to(writer, value.len() as u32)?;
+    writer.write_all(value)
+}
+
+fn write_attributes_to(writer: &mut impl Write, attributes: &FileAttributes) -> io::Result<()> {
+    let values = [
+        (0u32, attributes.bitrate),
+        (1, attributes.length),
+        (2, attributes.vbr),
+        (4, attributes.sample_rate),
+        (5, attributes.bit_depth),
+    ];
+    write_u32_to(
+        writer,
+        values.iter().filter(|(_, value)| value.is_some()).count() as u32,
+    )?;
+    for (kind, value) in values {
+        if let Some(value) = value {
+            write_u32_to(writer, kind)?;
+            write_u32_to(writer, value)?;
+        }
+    }
+    Ok(())
 }
 
 fn decode(reader: &mut impl Read) -> io::Result<ShareCatalog> {
@@ -229,6 +256,20 @@ mod tests {
             assert_eq!(left.mtime, right.mtime);
             assert_eq!(left.attributes, right.attributes);
         }
+    }
+
+    #[test]
+    fn write_failure_is_an_error_not_a_panic() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(ErrorKind::StorageFull, "disk full"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(encode(&mut Full, &sample()).is_err());
     }
 
     #[test]

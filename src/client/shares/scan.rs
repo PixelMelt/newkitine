@@ -5,13 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
-use lofty::config::ParseOptions;
-use lofty::prelude::AudioFile;
-use lofty::probe::Probe;
 use tracing::{info, warn};
 
-use crate::types::{FileAttributes, SharedFolder, UINT32_LIMIT};
+use crate::types::{FileAttributes, SharedFolder};
 
+use super::audio::{has_audio_extension, is_missing_vbr, read_attributes};
 use super::{ShareCatalog, ShareCatalogFile};
 
 #[derive(Debug, thiserror::Error)]
@@ -33,8 +31,6 @@ pub enum ScanError {
         path: PathBuf,
         error: std::io::Error,
     },
-    #[error("duplicate virtual path {path}")]
-    DuplicateVirtualPath { path: String },
     #[error("scan superseded by a newer scan")]
     Superseded,
     #[error("scan task panicked: {reason}")]
@@ -44,12 +40,6 @@ pub enum ScanError {
 const BACKSLASH_SENTINEL: &str = "@@BACKSLASH@@";
 const ATTRIBUTE_WORKER_CAP: usize = 12;
 const PROGRESS_INTERVAL: u64 = 1000;
-
-const AUDIO_EXTENSIONS: &[&str] = &[
-    "aac", "ac3", "afc", "aif", "aifc", "aiff", "ape", "au", "bwav", "bwf", "dff", "dsd", "dsf",
-    "dts", "flac", "m4a", "m4b", "mka", "mp1", "mp2", "mp3", "mp+", "mpc", "oga", "ogg", "opus",
-    "spx", "tak", "tta", "wav", "wma", "wv",
-];
 
 type AttributeCache<'a> = HashMap<&'a Path, HashMap<&'a OsStr, &'a ShareCatalogFile>>;
 
@@ -74,7 +64,6 @@ struct Miss {
 
 struct Merger {
     catalog: ShareCatalog,
-    virtual_paths: HashSet<String>,
     misses: Vec<Miss>,
 }
 
@@ -158,14 +147,15 @@ pub fn walk(
     };
     let mut merger = Merger {
         catalog: ShareCatalog::empty(),
-        virtual_paths: HashSet::new(),
         misses: Vec::new(),
     };
+    let mut virtual_paths = HashSet::new();
     for shared in shared_folders {
         walk_root(
             shared,
             &share_filters,
             &cache,
+            &mut virtual_paths,
             cancelled,
             &progress,
             |folder| merger.add_folder(shared.buddy_only, folder),
@@ -173,7 +163,6 @@ pub fn walk(
     }
     let Merger {
         mut catalog,
-        virtual_paths: _,
         misses,
     } = merger;
 
@@ -196,24 +185,36 @@ fn walk_root(
     shared: &SharedFolder,
     share_filters: &HashSet<&str>,
     cache: &AttributeCache,
+    virtual_paths: &mut HashSet<String>,
     cancelled: &AtomicBool,
     progress: &Progress,
-    mut add_folder: impl FnMut(RawFolder) -> Result<(), ScanError>,
+    mut add_folder: impl FnMut(RawFolder),
 ) -> Result<(), ScanError> {
     let root = fs::canonicalize(&shared.path).map_err(|error| ScanError::Root {
         path: shared.path.clone(),
         error,
     })?;
-    let mut stack = vec![(root, shared.virtual_name.clone())];
-    while let Some((real_dir, virtual_dir)) = stack.pop() {
+    let mut visited = HashSet::new();
+    let mut stack = vec![(root.clone(), root, shared.virtual_name.clone())];
+    while let Some((real_dir, canonical_dir, virtual_dir)) = stack.pop() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(ScanError::Superseded);
         }
+        if visited.contains(&canonical_dir) {
+            warn!(path = %real_dir.display(), target = %canonical_dir.display(), "skipping folder already shared under this share");
+            continue;
+        }
+        if !virtual_paths.insert(virtual_dir.clone()) {
+            warn!(path = %real_dir.display(), virtual_path = %virtual_dir, "skipping folder with a duplicate virtual path");
+            continue;
+        }
+        visited.insert(canonical_dir.clone());
         let entries = fs::read_dir(&real_dir).map_err(|error| ScanError::Folder {
             path: real_dir.clone(),
             error,
         })?;
         let cached_files = cache.get(real_dir.as_path());
+        let mut names = HashSet::new();
         let mut files = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|error| ScanError::Folder {
@@ -225,26 +226,49 @@ fn walk_root(
             if name.starts_with('.') || share_filters.contains(name.as_str()) {
                 continue;
             }
-            let file_type = entry.file_type().map_err(|error| ScanError::Metadata {
+            let entry_type = entry.file_type().map_err(|error| ScanError::Metadata {
                 path: entry.path(),
                 error,
             })?;
-            if file_type.is_symlink() {
-                warn!(path = %entry.path().display(), "skipping symlink in shared folder");
-                continue;
-            }
+            let target = if entry_type.is_symlink() {
+                match fs::metadata(entry.path()) {
+                    Ok(metadata) => Some(metadata),
+                    Err(error) => {
+                        warn!(path = %entry.path().display(), %error, "skipping unresolvable symlink in shared folder");
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let file_type = target.as_ref().map_or(entry_type, fs::Metadata::file_type);
             let name = name.replace('\\', BACKSLASH_SENTINEL);
             if file_type.is_dir() {
-                stack.push((entry.path(), format!("{virtual_dir}\\{name}")));
+                let canonical = if target.is_some() {
+                    fs::canonicalize(entry.path()).map_err(|error| ScanError::Metadata {
+                        path: entry.path(),
+                        error,
+                    })?
+                } else {
+                    canonical_dir.join(&real_name)
+                };
+                stack.push((entry.path(), canonical, format!("{virtual_dir}\\{name}")));
                 continue;
             }
             if !file_type.is_file() {
                 continue;
             }
-            let metadata = entry.metadata().map_err(|error| ScanError::Metadata {
-                path: entry.path(),
-                error,
-            })?;
+            if !names.insert(name.clone()) {
+                warn!(path = %entry.path().display(), folder = %virtual_dir, name, "skipping file with a duplicate virtual path");
+                continue;
+            }
+            let metadata = match target {
+                Some(metadata) => metadata,
+                None => entry.metadata().map_err(|error| ScanError::Metadata {
+                    path: entry.path(),
+                    error,
+                })?,
+            };
             let size = metadata.len();
             let mtime = unix_mtime(&metadata);
             let attributes = if size <= 128 || !has_audio_extension(&name) {
@@ -252,7 +276,11 @@ fn walk_root(
             } else {
                 cached_files
                     .and_then(|files| files.get(real_name.as_os_str()))
-                    .filter(|cached| cached.size == size && cached.mtime == mtime)
+                    .filter(|cached| {
+                        cached.size == size
+                            && cached.mtime == mtime
+                            && !is_missing_vbr(&cached.attributes)
+                    })
                     .map(|cached| cached.attributes.clone())
             };
             if attributes.is_some() {
@@ -270,21 +298,18 @@ fn walk_root(
             virtual_path: virtual_dir,
             real_path: real_dir,
             files,
-        })?;
+        });
     }
     Ok(())
 }
 
 impl Merger {
-    fn add_folder(&mut self, buddy_only: bool, folder: RawFolder) -> Result<(), ScanError> {
+    fn add_folder(&mut self, buddy_only: bool, folder: RawFolder) {
         let RawFolder {
             virtual_path,
             real_path,
             mut files,
         } = folder;
-        if !self.virtual_paths.insert(virtual_path.clone()) {
-            return Err(ScanError::DuplicateVirtualPath { path: virtual_path });
-        }
         files.sort_by(|a, b| a.name.cmp(&b.name));
         let first_index = self.catalog.files.len() as u32;
         for (offset, file) in files.iter().enumerate() {
@@ -309,7 +334,6 @@ impl Merger {
                 )
             }),
         );
-        Ok(())
     }
 }
 
@@ -339,7 +363,7 @@ fn read_missing_attributes(
                     let Some(miss) = misses.get(position) else {
                         break;
                     };
-                    let attributes = audio_attributes(&miss.path);
+                    let attributes = read_attributes(&miss.path);
                     progress.add();
                     results.send((position, attributes)).unwrap();
                 }
@@ -358,34 +382,6 @@ fn unix_mtime(metadata: &fs::Metadata) -> u64 {
         .expect("mtime unavailable on this platform")
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
-}
-
-fn audio_attributes(path: &Path) -> FileAttributes {
-    let mut attributes = FileAttributes::default();
-    let parse_options = ParseOptions::new().read_tags(false).read_cover_art(false);
-    let Ok(tagged) = Probe::open(path).and_then(|probe| probe.options(parse_options).read()) else {
-        return attributes;
-    };
-    let properties = tagged.properties();
-    attributes.bitrate = properties.audio_bitrate().filter(|&value| value > 0);
-    attributes.sample_rate = properties.sample_rate().filter(|&value| value > 0);
-    attributes.bit_depth = properties
-        .bit_depth()
-        .map(u32::from)
-        .filter(|&value| value > 0);
-    let duration = properties.duration().as_secs();
-    if duration < UINT32_LIMIT {
-        attributes.length = Some(duration as u32);
-    }
-    attributes
-}
-
-fn has_audio_extension(name: &str) -> bool {
-    name.rsplit_once('.').is_some_and(|(_, ext)| {
-        AUDIO_EXTENSIONS
-            .iter()
-            .any(|audio| audio.eq_ignore_ascii_case(ext))
-    })
 }
 
 #[cfg(test)]
@@ -699,6 +695,7 @@ mod tests {
                 unix_mtime(&metadata),
                 FileAttributes {
                     bitrate: Some(320),
+                    vbr: Some(0),
                     ..Default::default()
                 },
             ),
@@ -1001,5 +998,139 @@ mod tests {
         assert_eq!(search(&index, "sample", false, &[]).len(), 3);
         let capped = index.search("sample", false, &[], 2, 1);
         assert_eq!(capped.len(), 2);
+    }
+
+    fn music_share(path: PathBuf) -> Vec<SharedFolder> {
+        vec![SharedFolder {
+            virtual_name: "Music".into(),
+            path,
+            buddy_only: false,
+        }]
+    }
+
+    #[test]
+    fn cached_lossy_attributes_without_vbr_are_reread() {
+        let base = temp_base();
+        let dir = base.join("music");
+        fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("song.mp3");
+        fs::write(&song, b"g".repeat(300)).unwrap();
+        let metadata = fs::metadata(&song).unwrap();
+        let cache_path = cache_path(&base);
+        cache_with(
+            &cache_path,
+            &dir,
+            ShareCatalogFile::new(
+                "song.mp3".into(),
+                "song.mp3".into(),
+                300,
+                unix_mtime(&metadata),
+                FileAttributes {
+                    bitrate: Some(320),
+                    ..Default::default()
+                },
+            ),
+        );
+
+        let index = scan(&music_share(dir), &[], &cache_path, &AtomicBool::new(false)).unwrap();
+
+        let (_, _, attributes) = index.resolve("Music\\song.mp3", false).unwrap();
+        assert_eq!(*attributes, FileAttributes::default());
+    }
+
+    #[test]
+    fn lossy_equal_folder_names_are_skipped_not_fatal() {
+        use std::os::unix::ffi::OsStrExt;
+        let base = temp_base();
+        let music = base.join("music");
+        for raw in [&b"album\xff"[..], &b"album\xfe"[..]] {
+            let dir = music.join(OsStr::from_bytes(raw));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("track.flac"), b"t".repeat(10)).unwrap();
+        }
+
+        let index = scan(
+            &music_share(music),
+            &[],
+            &cache_path(&base),
+            &AtomicBool::new(false),
+        )
+        .expect("duplicate virtual folder must not fail the scan");
+
+        assert_eq!(index.counts(), (2, 1));
+        assert!(
+            index
+                .resolve("Music\\album\u{fffd}\\track.flac", false)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn lossy_equal_file_names_are_shared_once() {
+        use std::os::unix::ffi::OsStrExt;
+        let base = temp_base();
+        let music = base.join("music");
+        fs::create_dir_all(&music).unwrap();
+        fs::write(
+            music.join(OsStr::from_bytes(b"song\xff.flac")),
+            b"a".repeat(10),
+        )
+        .unwrap();
+        fs::write(
+            music.join(OsStr::from_bytes(b"song\xfe.flac")),
+            b"b".repeat(20),
+        )
+        .unwrap();
+
+        let index = scan(
+            &music_share(music),
+            &[],
+            &cache_path(&base),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(index.counts(), (1, 1));
+        let contents = index.folder_contents("Music", false);
+        assert_eq!(contents[0].files.len(), 1);
+    }
+
+    #[test]
+    fn symlinks_are_followed_with_loop_protection() {
+        use std::os::unix::fs::symlink;
+        let base = temp_base();
+        let music = base.join("music");
+        let outside = base.join("outside");
+        fs::create_dir_all(music.join("real")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("linked.flac"), b"l".repeat(30)).unwrap();
+        fs::write(outside.join("single.flac"), b"s".repeat(40)).unwrap();
+        symlink(&outside, music.join("linked dir")).unwrap();
+        symlink(outside.join("single.flac"), music.join("real/single.flac")).unwrap();
+        symlink(&music, music.join("real/loop")).unwrap();
+        symlink(base.join("missing"), music.join("dangling")).unwrap();
+
+        let index = scan(
+            &music_share(music.clone()),
+            &[],
+            &cache_path(&base),
+            &AtomicBool::new(false),
+        )
+        .expect("symlinks must not fail the scan");
+
+        let (path, size, _) = index
+            .resolve("Music\\linked dir\\linked.flac", false)
+            .unwrap();
+        assert_eq!(size, 30);
+        assert_eq!(
+            path,
+            fs::canonicalize(&music)
+                .unwrap()
+                .join("linked dir/linked.flac")
+        );
+        let (_, size, _) = index.resolve("Music\\real\\single.flac", false).unwrap();
+        assert_eq!(size, 40);
+        assert!(index.folder_contents("Music\\real\\loop", false).is_empty());
+        assert_eq!(index.counts(), (3, 3));
     }
 }

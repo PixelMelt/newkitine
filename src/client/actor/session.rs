@@ -72,6 +72,8 @@ impl ClientActor {
 
     pub(super) fn apply_config(&mut self, config: RuntimeConfig) {
         let old = std::mem::replace(&mut self.config, config);
+        self.users
+            .set_login_username(self.config.login.username.clone());
         if self.config.transfers != old.transfers {
             let transfers = self.config.transfers.clone();
             self.uploads.set_limits(

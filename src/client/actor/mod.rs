@@ -92,6 +92,9 @@ pub(crate) async fn run(
         config: config.runtime,
     };
 
+    actor
+        .users
+        .set_login_username(actor.config.login.username.clone());
     for seed in config.transfers {
         match seed.direction {
             TransferDirection::Download => actor.downloads.seed(seed),
