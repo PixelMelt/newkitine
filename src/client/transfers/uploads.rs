@@ -689,7 +689,14 @@ impl Uploads {
         let Some(key) = self.transfers.key_of(id).cloned() else {
             return (AbortResult::NotFound, Vec::new());
         };
-        let transfer = self.transfers.get(&key).unwrap();
+        let transfer = self.transfers.get_mut(&key).unwrap();
+        if transfer.is_timed_out() {
+            transfer.phase = TransferPhase::Aborted;
+            return (
+                AbortResult::Aborted,
+                vec![TransferWork::Update(transfer.snapshot())],
+            );
+        }
         if !transfer.phase.is_active() {
             return (AbortResult::Aborted, Vec::new());
         }
@@ -1423,6 +1430,21 @@ mod tests {
         assert_eq!(
             phase_of(&uploads, "gone", TRACKS[0]),
             TransferPhase::Failed("user is offline".into())
+        );
+
+        let _ = uploads.handle_peer_connection_error("peer", &[request(TRACKS[0])], false, &users);
+        let id = uploads
+            .transfers
+            .get(&("peer".to_owned(), TRACKS[0].to_owned()))
+            .unwrap()
+            .id;
+        let (_, updates) = uploads.abort(id, &users);
+        assert_eq!(updates.len(), 1);
+        uploads.retried_at -= TIMED_OUT_RETRY_INTERVAL;
+        let _ = uploads.sweep_queue(&mut ids, Some(&shares), &users);
+        assert_eq!(
+            phase_of(&uploads, "peer", TRACKS[0]),
+            TransferPhase::Aborted
         );
     }
 
