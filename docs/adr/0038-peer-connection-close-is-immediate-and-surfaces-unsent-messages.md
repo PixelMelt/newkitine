@@ -1,4 +1,4 @@
-# 37. Peer connection close is immediate and surfaces unsent messages
+# 38. Peer connection close is immediate and surfaces unsent messages
 
 Status: Accepted
 Nicotine+: Matches: Nicotine+ clears a closing connection's buffers, re-routes later sends to a new connection, and reports unprocessed messages through `peer-connection-closed`
