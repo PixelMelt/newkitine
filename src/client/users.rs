@@ -13,6 +13,15 @@ pub(super) enum Presence {
     Unchanged,
 }
 
+fn request_watch(net: &NetworkHandle, username: &str) {
+    net.server(ServerRequest::WatchUser {
+        user: username.to_owned(),
+    });
+    net.server(ServerRequest::GetUserStatus {
+        user: username.to_owned(),
+    });
+}
+
 pub(super) struct Users {
     pub buddies: HashSet<String>,
     pub banned: HashSet<String>,
@@ -128,16 +137,16 @@ impl Users {
             return;
         }
         self.watched.insert(username.to_owned(), None);
-        net.server(ServerRequest::WatchUser {
-            user: username.to_owned(),
-        });
-        net.server(ServerRequest::GetUserStatus {
-            user: username.to_owned(),
-        });
+        request_watch(net, username);
     }
 
     pub fn add_buddy(&mut self, net: &NetworkHandle, username: String) {
-        if self.buddies.insert(username.clone()) {
+        if !self.buddies.insert(username.clone()) {
+            return;
+        }
+        if self.watched.contains_key(&username) {
+            request_watch(net, &username);
+        } else {
             self.watch(net, &username);
         }
     }
@@ -275,6 +284,28 @@ mod tests {
             }]
         );
         users.watch(&net, "kept");
+        assert!(sent_requests(&mut commands).is_empty());
+    }
+
+    #[test]
+    fn befriending_a_watched_uploader_refreshes_its_details() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        users.watch(&net, "uploader");
+        sent_requests(&mut commands);
+        users.add_buddy(&net, "uploader".into());
+        assert_eq!(
+            sent_requests(&mut commands),
+            vec![
+                ServerRequest::WatchUser {
+                    user: "uploader".into()
+                },
+                ServerRequest::GetUserStatus {
+                    user: "uploader".into()
+                },
+            ]
+        );
+        users.add_buddy(&net, "uploader".into());
         assert!(sent_requests(&mut commands).is_empty());
     }
 
