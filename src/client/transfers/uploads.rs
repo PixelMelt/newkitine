@@ -51,6 +51,10 @@ impl UploadTransfer {
         (self.username.clone(), self.virtual_path.clone())
     }
 
+    fn is_timed_out(&self) -> bool {
+        matches!(&self.phase, TransferPhase::Failed(reason) if reason == CONNECTION_TIMEOUT)
+    }
+
     fn snapshot(&self) -> TransferSnapshot {
         TransferSnapshot {
             id: self.id,
@@ -349,7 +353,19 @@ impl Uploads {
 
     pub fn ban(&mut self, username: &str, users: &Users) -> Vec<TransferWork> {
         let reason = self.banned_message.clone();
-        self.deny_all(username, &reason, users)
+        let mut updates = self.deny_all(username, &reason, users);
+        let retryable: Vec<TransferKey> = self
+            .transfers
+            .values()
+            .filter(|transfer| transfer.username == username && transfer.is_timed_out())
+            .map(UploadTransfer::key)
+            .collect();
+        for key in &retryable {
+            let transfer = self.transfers.get_mut(key).unwrap();
+            transfer.phase = TransferPhase::Failed(reason.clone());
+            updates.push(TransferWork::Update(transfer.snapshot()));
+        }
+        updates
     }
 
     pub fn deny_all(&mut self, username: &str, reason: &str, users: &Users) -> Vec<TransferWork> {
@@ -484,10 +500,10 @@ impl Uploads {
             return Vec::new();
         }
         if let Some(reason) = reason {
-            let mut updates = if reason == TransferRejectReason::COMPLETE {
-                self.finish(&key, 0)
-            } else {
-                self.fail(&key, reason.to_owned())
+            let mut updates = match reason {
+                TransferRejectReason::COMPLETE => self.finish(&key, 0),
+                CONNECTION_TIMEOUT => self.fail(&key, TransferRejectReason::CANCELLED.into()),
+                reason => self.fail(&key, reason.to_owned()),
             };
             updates.extend(self.check_queue(users));
             return updates;
@@ -807,9 +823,7 @@ impl Uploads {
         let timed_out: Vec<TransferKey> = self
             .transfers
             .values()
-            .filter(|transfer| {
-                matches!(&transfer.phase, TransferPhase::Failed(reason) if reason == CONNECTION_TIMEOUT)
-            })
+            .filter(|transfer| transfer.is_timed_out())
             .map(UploadTransfer::key)
             .collect();
         let mut updates = Vec::new();
@@ -1409,6 +1423,45 @@ mod tests {
         assert_eq!(
             phase_of(&uploads, "gone", TRACKS[0]),
             TransferPhase::Failed("user is offline".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn only_local_timeouts_are_retried_and_a_ban_retires_them() {
+        let (net, _events) = spawn_network();
+        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        let mut ids = TransferIds::new(&[]);
+        let shares = three_track_shares("retry-ban");
+        let mut users = users();
+        let _ = uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
+        let _ = uploads.handle_queue_upload(&mut ids, "liar", TRACKS[0], Some(&shares), &users);
+        let token = uploads.token;
+        let _ = uploads.handle_transfer_response("liar", token, Some(CONNECTION_TIMEOUT), &users);
+        assert_eq!(
+            phase_of(&uploads, "liar", TRACKS[0]),
+            TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
+        );
+        let request = PeerMessage::TransferRequest {
+            direction: TransferDirection::Upload,
+            token: 0,
+            file: TRACKS[0].to_owned(),
+            filesize: None,
+        };
+        let _ = uploads.handle_peer_connection_error("peer", &[request], false, &users);
+
+        users.banned.insert("peer".into());
+        let updates = uploads.ban("peer", &users);
+        assert_eq!(updates.len(), 1);
+        users.banned.remove("peer");
+        uploads.retried_at -= TIMED_OUT_RETRY_INTERVAL;
+        let _ = uploads.sweep_queue(&mut ids, Some(&shares), &users);
+        assert_eq!(
+            phase_of(&uploads, "peer", TRACKS[0]),
+            TransferPhase::Failed("Banned".into())
+        );
+        assert_eq!(
+            phase_of(&uploads, "liar", TRACKS[0]),
+            TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
         );
     }
 
