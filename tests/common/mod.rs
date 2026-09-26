@@ -101,14 +101,14 @@ async fn handle_fake_client(stream: TcpStream, registry: Registry) {
             3 => {
                 let target = read_string(payload, &mut offset);
                 let registry = registry.lock().await;
-                let port = registry
-                    .get(&target)
-                    .filter(|client| !client.hidden)
-                    .map(|client| client.port)
-                    .unwrap_or(0);
+                let (ip, port) = match registry.get(&target) {
+                    Some(client) if client.hidden => ("127.0.0.1", 0),
+                    Some(client) => ("127.0.0.1", client.port),
+                    None => ("0.0.0.0", 0),
+                };
                 let mut w = MessageWriter::new();
                 w.write_string(&target);
-                w.write_ip("127.0.0.1".parse().unwrap());
+                w.write_ip(ip.parse().unwrap());
                 w.write_u32(port as u32);
                 w.write_u32(0);
                 w.write_u32(0);

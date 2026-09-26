@@ -134,11 +134,14 @@ pub async fn reset_counters(
     username: &str,
     timestamp: i64,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users_seen SET counters_reset_at = ? WHERE username = ?")
-        .bind(timestamp)
-        .bind(username)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE users_seen SET searches = 0, searches_matched = 0, counters_reset_at = ?
+         WHERE username = ?",
+    )
+    .bind(timestamp)
+    .bind(username)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -174,18 +177,11 @@ pub async fn set_user_verdict(
     Ok(())
 }
 
-pub async fn clear_user_verdict(
-    pool: &MySqlPool,
-    username: &str,
-    timestamp: i64,
-) -> Result<(), sqlx::Error> {
+pub async fn clear_user_verdict(pool: &MySqlPool, username: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE users_seen
-         SET verdict = 'clean', restriction = 'none', searches = 0, searches_matched = 0,
-             convicted_at = NULL, counters_reset_at = ?
+        "UPDATE users_seen SET verdict = 'clean', restriction = 'none', convicted_at = NULL
          WHERE username = ?",
     )
-    .bind(timestamp)
     .bind(username)
     .execute(pool)
     .await?;

@@ -1,6 +1,7 @@
 use crate::types::{DenialMessages, FilterLevel, Restriction};
 
 pub const SWEEP_SECS: u64 = 900;
+pub const CHECK_TIMEOUT_SECS: u64 = 120;
 pub const SEARCH_RATE_PER_DAY: u32 = 500;
 pub const MIN_OBSERVATION_DAYS: i64 = 7;
 pub const REPEAT_DOWNLOAD_LIMIT: u32 = 3;

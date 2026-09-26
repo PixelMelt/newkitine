@@ -1,4 +1,4 @@
-use sqlx::{MySqlPool, Row};
+use sqlx::{Executor, MySql, MySqlPool, Row};
 use tracing::info;
 
 const BASELINE: &[&str] = &[
@@ -126,99 +126,77 @@ pub async fn init_schema(pool: &MySqlPool) {
         record_migration(pool, 4).await;
     }
     if applied < 5 {
-        migration_statement(
+        data_migration(
             pool,
             5,
-            "UPDATE users_seen SET verdict = 'clean', evidence = NULL, restriction = 'none'
+            &[
+                "UPDATE users_seen SET verdict = 'clean', evidence = NULL, restriction = 'none'
              WHERE verdict = 'suspect' AND evidence = 'search-flood'",
+                "UPDATE users_seen SET verdict = 'abusive' WHERE verdict = 'suspect'",
+            ],
         )
         .await;
-        migration_statement(
-            pool,
-            5,
-            "UPDATE users_seen SET verdict = 'abusive' WHERE verdict = 'suspect'",
-        )
-        .await;
-        record_migration(pool, 5).await;
     }
     if applied < 6 {
-        migration_statement(
+        data_migration(
             pool,
             6,
-            "UPDATE settings SET data = JSON_SET(
+            &[
+                "UPDATE settings SET data = JSON_SET(
                 JSON_REMOVE(data, '$.denied_message'),
                 '$.abusive_message', JSON_UNQUOTE(JSON_EXTRACT(data, '$.denied_message')),
                 '$.leech_message', JSON_UNQUOTE(JSON_EXTRACT(data, '$.denied_message')))
              WHERE id = 1 AND JSON_EXTRACT(data, '$.denied_message') IS NOT NULL",
-        )
-        .await;
-        migration_statement(
-            pool,
-            6,
-            "UPDATE settings SET data = JSON_SET(data, '$.description',
+                "UPDATE settings SET data = JSON_SET(data, '$.description',
                 REPLACE(REPLACE(JSON_UNQUOTE(JSON_EXTRACT(data, '$.description')),
                     '\\\\r\\\\n', CHAR(10)), '\\\\n', CHAR(10)))
              WHERE id = 1 AND JSON_EXTRACT(data, '$.description') IS NOT NULL",
+            ],
         )
         .await;
-        record_migration(pool, 6).await;
     }
     if applied < 7 {
-        migration_statement(
+        data_migration(
             pool,
             7,
-            "UPDATE users_seen SET verdict = CASE
+            &[
+                "UPDATE users_seen SET verdict = CASE
                 WHEN evidence LIKE '%search-flood%' OR evidence LIKE '%repeat-downloads%'
                     THEN 'abusive'
                 WHEN evidence LIKE '%zero-share%' OR evidence LIKE '%preset-stats%'
                     OR evidence LIKE '%browse-contradicts-stats%' THEN 'leech'
                 ELSE 'clean' END
              WHERE FIND_IN_SET('queue-flood', evidence)",
-        )
-        .await;
-        migration_statement(
-            pool,
-            7,
-            "UPDATE users_seen SET evidence = NULLIF(
+                "UPDATE users_seen SET evidence = NULLIF(
                 TRIM(BOTH ',' FROM REPLACE(CONCAT(',', evidence, ','), ',queue-flood,', ',')), '')
              WHERE FIND_IN_SET('queue-flood', evidence)",
-        )
-        .await;
-        migration_statement(
-            pool,
-            7,
-            "UPDATE users_seen SET restriction = 'none'
+                "UPDATE users_seen SET restriction = 'none'
              WHERE verdict = 'clean' AND restriction <> 'none'",
+            ],
         )
         .await;
-        record_migration(pool, 7).await;
     }
     if applied < 8 {
-        migration_statement(
+        data_migration(
             pool,
             8,
-            "UPDATE users_seen SET verdict = 'clean', evidence = NULL, restriction = 'none'
+            &[
+                "UPDATE users_seen SET verdict = 'clean', evidence = NULL, restriction = 'none'
              WHERE evidence LIKE 'search-flood:0.0.0.0:%'",
+                "UPDATE users_seen SET last_ip = NULL WHERE last_ip = '0.0.0.0'",
+            ],
         )
         .await;
-        migration_statement(
-            pool,
-            8,
-            "UPDATE users_seen SET last_ip = NULL WHERE last_ip = '0.0.0.0'",
-        )
-        .await;
-        record_migration(pool, 8).await;
     }
     if applied < 9 {
-        migration_statement(
+        data_migration(
             pool,
             9,
-            "UPDATE settings SET data = JSON_SET(data, '$.description',
+            &["UPDATE settings SET data = JSON_SET(data, '$.description',
                 REPLACE(JSON_UNQUOTE(JSON_EXTRACT(data, '$.description')), '$', '$$'))
-             WHERE id = 1 AND JSON_EXTRACT(data, '$.description') IS NOT NULL",
+             WHERE id = 1 AND JSON_EXTRACT(data, '$.description') IS NOT NULL"],
         )
         .await;
-        record_migration(pool, 9).await;
     }
     if applied < 10 {
         release_filter_convictions(pool).await;
@@ -396,20 +374,33 @@ async fn index_exists(pool: &MySqlPool, table: &str, index: &str) -> bool {
     count > 0
 }
 
-async fn migration_statement(pool: &MySqlPool, version: i32, statement: &str) {
+async fn migration_statement<'e>(
+    executor: impl Executor<'e, Database = MySql>,
+    version: i32,
+    statement: &str,
+) {
     sqlx::query(statement)
-        .execute(pool)
+        .execute(executor)
         .await
         .unwrap_or_else(|error| panic!("schema migration {version} failed: {error}"));
 }
 
-async fn record_migration(pool: &MySqlPool, version: i32) {
+async fn record_migration<'e>(executor: impl Executor<'e, Database = MySql>, version: i32) {
     sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
         .bind(version)
-        .execute(pool)
+        .execute(executor)
         .await
         .expect("record schema version");
     info!(version, "applied schema migration");
+}
+
+async fn data_migration(pool: &MySqlPool, version: i32, statements: &[&str]) {
+    let mut transaction = pool.begin().await.expect("begin schema migration");
+    for statement in statements {
+        migration_statement(&mut *transaction, version, statement).await;
+    }
+    record_migration(&mut *transaction, version).await;
+    transaction.commit().await.expect("commit schema migration");
 }
 
 async fn migrate_transfer_status(pool: &MySqlPool) {

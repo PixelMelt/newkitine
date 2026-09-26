@@ -157,6 +157,9 @@ impl ClientActor {
                 PeerMessage::SharedFileListRequest => {
                     self.net
                         .send(NetworkCommand::DisallowSharedListUser(username.to_owned()));
+                    self.emit(ClientEvent::BrowseFailed {
+                        username: username.to_owned(),
+                    });
                 }
                 PeerMessage::UserInfoRequest => {
                     self.net
