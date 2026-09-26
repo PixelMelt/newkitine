@@ -387,24 +387,31 @@ impl Actor {
         let Some((conn_id, username, queued)) = self.indirect.drain_queue(init_id) else {
             return;
         };
-        let Some(conn) = self.peers.get_mut(conn_id) else {
-            return;
-        };
         let mut sent_file_init = None;
-        let mut controls = Vec::with_capacity(queued.len());
-        for item in queued {
-            controls.push(match item {
-                QueuedItem::Peer(message) => ConnControl::Send(message.to_bytes()),
+        let mut queued = queued.into_iter();
+        while let Some(conn) = self.peers.get_mut(conn_id) {
+            let Some(item) = queued.next() else {
+                break;
+            };
+            let control = match item {
+                QueuedItem::Peer(message) => ConnControl::SendPeer(message),
                 QueuedItem::Frame(bytes) => ConnControl::Send(bytes),
                 QueuedItem::FileInit(token) => {
                     conn.file_token = Some(token);
                     sent_file_init = Some(token);
                     ConnControl::SendFileInit(token)
                 }
-            });
-        }
-        for control in controls {
+            };
             self.push_conn(conn_id, control);
+        }
+        let unsent: Vec<PeerMessage> = queued
+            .filter_map(|item| match item {
+                QueuedItem::Peer(message) => Some(message),
+                _ => None,
+            })
+            .collect();
+        if !unsent.is_empty() {
+            self.emit_unsent(username.clone(), unsent);
         }
         if let Some(token) = sent_file_init
             && self.peers.contains(conn_id)

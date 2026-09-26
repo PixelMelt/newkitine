@@ -45,3 +45,4 @@ To add one: next number, one decision per file, sections Context / Decision / Co
 | [0035](0035-installing-an-index-re-validates-active-uploads.md) | Installing an index re-validates active uploads | Accepted | Stricter than Nicotine+, which does not re-check uploads against a new share list |
 | [0036](0036-repeat-downloads-are-capped-per-file-not-convicted-per-user.md) | Repeat downloads are capped per file, not convicted per user | Accepted | No counterpart |
 | [0037](0037-speed-limits-are-one-shared-budget-per-direction.md) | Speed limits are one shared budget per direction | Accepted | Matches the default total limit; Nicotine+ divides it by the active transfer count instead of sharing a budget |
+| [0038](0038-peer-connection-close-is-immediate-and-surfaces-unsent-messages.md) | Peer connection close is immediate and surfaces unsent messages | Accepted | Matches: Nicotine+ clears closing buffers, re-routes later sends and reports unprocessed messages |

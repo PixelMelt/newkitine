@@ -421,18 +421,13 @@ mod tests {
 
         fn conn(&mut self, username: &str) -> (ConnId, mpsc::Receiver<ConnControl>) {
             let (control, rx) = mpsc::channel(64);
-            let conn_id = self.actor.peers.add(Conn {
+            let conn_id = self.actor.peers.add(Conn::established(
                 control,
-                identity: Some(PeerIdentity {
+                PeerIdentity {
                     username: username.to_owned(),
                     conn_type: ConnectionType::Distributed,
-                }),
-                init_id: None,
-                established: true,
-                file_token: None,
-                pierce_token: None,
-                ip: None,
-            });
+                },
+            ));
             (conn_id, rx)
         }
 

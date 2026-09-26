@@ -1,13 +1,13 @@
 use std::io::SeekFrom;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use super::bandwidth::{Bandwidth, Grant};
-use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, write_all};
+use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, SocketReader, write_all};
 use crate::network::ConnId;
 use crate::protocol::{FileOffset, FileTransferInit};
 
@@ -16,7 +16,7 @@ pub(super) async fn run_file_loop(
     events: mpsc::Sender<ConnEvent>,
     mut control: mpsc::Receiver<ConnControl>,
     limits: SharedLimits,
-    mut reader: BufReader<OwnedReadHalf>,
+    mut reader: SocketReader,
     mut writer: BufWriter<OwnedWriteHalf>,
 ) {
     let mut init_exchanged = false;
@@ -88,10 +88,7 @@ async fn take_turn(
     }
 }
 
-async fn read_granted(
-    reader: &mut BufReader<OwnedReadHalf>,
-    buffer: &mut [u8],
-) -> std::io::Result<usize> {
+async fn read_granted(reader: &mut SocketReader, buffer: &mut [u8]) -> std::io::Result<usize> {
     if reader.buffer().is_empty() {
         reader.get_mut().read(buffer).await
     } else {
@@ -108,7 +105,7 @@ struct TransferTask<'a> {
 
 async fn run_download(
     task: TransferTask<'_>,
-    reader: &mut BufReader<OwnedReadHalf>,
+    reader: &mut SocketReader,
     file: std::fs::File,
     mut bytes_left: u64,
 ) {
@@ -189,7 +186,7 @@ async fn run_download(
 async fn run_upload(
     task: TransferTask<'_>,
     writer: &mut BufWriter<OwnedWriteHalf>,
-    reader: &mut BufReader<OwnedReadHalf>,
+    reader: &mut SocketReader,
     file: std::fs::File,
     size: u64,
 ) {
@@ -321,7 +318,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::network::conn::TransferLimits;
+    use crate::network::conn::{SharedTraffic, TransferLimits, split_tracked};
 
     fn temp_path(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -344,16 +341,11 @@ mod tests {
             .await
             .unwrap();
         let (stream, _) = listener.accept().await.unwrap();
-        let (read_half, write_half) = stream.into_split();
+        let (reader, writer) = split_tracked(stream, SharedTraffic::default());
         let (events_tx, events) = mpsc::channel(256);
         let (control, control_rx) = mpsc::channel(8);
         let task = tokio::spawn(run_file_loop(
-            1,
-            events_tx,
-            control_rx,
-            limits,
-            BufReader::new(read_half),
-            BufWriter::new(write_half),
+            1, events_tx, control_rx, limits, reader, writer,
         ));
         Harness {
             peer,
