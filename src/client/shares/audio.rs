@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
@@ -17,7 +17,8 @@ const AUDIO_EXTENSIONS: &[&str] = &[
     "spx", "tak", "tta", "wav", "wma", "wv",
 ];
 
-const MPEG_FRAME_SEARCH_BYTES: u64 = 16 * 1024;
+const MPEG_READ_CHUNK: u64 = 16 * 1024;
+const XING_SPAN: usize = 4 + 32 + 16;
 
 pub(super) fn has_audio_extension(name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(_, ext)| {
@@ -92,16 +93,36 @@ fn mpeg_has_xing_header(path: &Path) -> io::Result<bool> {
         0
     };
     file.seek(SeekFrom::Start(audio_start))?;
-    let mut window = Vec::new();
-    file.take(MPEG_FRAME_SEARCH_BYTES)
-        .read_to_end(&mut window)?;
-    Ok(first_frame_is_xing(&window))
+    first_frame_is_xing(&mut BufReader::new(file))
 }
 
-fn first_frame_is_xing(window: &[u8]) -> bool {
-    let Some(start) = window.windows(4).position(is_mpeg_frame_header) else {
-        return false;
-    };
+fn first_frame_is_xing(reader: &mut impl Read) -> io::Result<bool> {
+    let mut window = Vec::new();
+    let mut searched = 0;
+    loop {
+        let read = reader
+            .by_ref()
+            .take(MPEG_READ_CHUNK)
+            .read_to_end(&mut window)?;
+        let found = window[searched..]
+            .windows(4)
+            .position(is_mpeg_frame_header)
+            .map(|offset| searched + offset);
+        match found {
+            Some(start) if read == 0 || window.len() >= start + XING_SPAN => {
+                return Ok(xing_at(&window, start));
+            }
+            Some(start) => searched = start,
+            None if read == 0 => return Ok(false),
+            None => {
+                window.drain(..window.len().saturating_sub(3));
+                searched = 0;
+            }
+        }
+    }
+}
+
+fn xing_at(window: &[u8], start: usize) -> bool {
     let header = &window[start..start + 4];
     let mpeg1 = (header[1] >> 3) & 0x03 == 0x03;
     let mono = (header[3] >> 6) == 0x03;
@@ -149,26 +170,39 @@ mod tests {
         data
     }
 
+    fn xing(data: &[u8]) -> bool {
+        first_frame_is_xing(&mut io::Cursor::new(data)).unwrap()
+    }
+
     #[test]
     fn xing_header_marks_vbr() {
-        assert!(first_frame_is_xing(&frame(b"Xing", 0x0f, 1000, 4_000_000)));
+        assert!(xing(&frame(b"Xing", 0x0f, 1000, 4_000_000)));
+    }
+
+    #[test]
+    fn xing_header_after_long_padding_and_across_chunks() {
+        for padding in [16 * 1024, 16 * 1024 - 2, 16 * 1024 - 20, 40_000] {
+            let mut data = vec![0u8; padding];
+            data.extend(frame(b"Xing", 0x0f, 1000, 4_000_000));
+            assert!(xing(&data), "padding {padding}");
+        }
     }
 
     #[test]
     fn info_header_is_cbr() {
-        assert!(!first_frame_is_xing(&frame(b"Info", 0x0f, 1000, 4_000_000)));
+        assert!(!xing(&frame(b"Info", 0x0f, 1000, 4_000_000)));
     }
 
     #[test]
     fn xing_header_without_counts_is_not_vbr() {
-        assert!(!first_frame_is_xing(&frame(b"Xing", 0x0c, 0, 0)));
-        assert!(!first_frame_is_xing(&frame(b"Xing", 0x0f, 0, 4_000_000)));
+        assert!(!xing(&frame(b"Xing", 0x0c, 0, 0)));
+        assert!(!xing(&frame(b"Xing", 0x0f, 0, 4_000_000)));
     }
 
     #[test]
     fn plain_frame_is_not_vbr() {
-        assert!(!first_frame_is_xing(&[0xff, 0xfb, 0x90, 0x44, 0, 0, 0, 0]));
-        assert!(!first_frame_is_xing(b"not audio at all"));
+        assert!(!xing(&[0xff, 0xfb, 0x90, 0x44, 0, 0, 0, 0]));
+        assert!(!xing(b"not audio at all"));
     }
 
     #[test]

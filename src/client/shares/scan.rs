@@ -200,7 +200,7 @@ fn walk_root(
         if cancelled.load(Ordering::Relaxed) {
             return Err(ScanError::Superseded);
         }
-        if !visited.insert(canonical_dir.clone()) {
+        if visited.contains(&canonical_dir) {
             warn!(path = %real_dir.display(), target = %canonical_dir.display(), "skipping folder already shared under this share");
             continue;
         }
@@ -208,6 +208,7 @@ fn walk_root(
             warn!(path = %real_dir.display(), virtual_path = %virtual_dir, "skipping folder with a duplicate virtual path");
             continue;
         }
+        visited.insert(canonical_dir.clone());
         let entries = fs::read_dir(&real_dir).map_err(|error| ScanError::Folder {
             path: real_dir.clone(),
             error,
