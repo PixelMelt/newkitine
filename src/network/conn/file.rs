@@ -6,6 +6,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 
+use super::bandwidth::{Bandwidth, Grant};
 use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, write_all};
 use crate::network::ConnId;
 use crate::protocol::{FileOffset, FileTransferInit};
@@ -66,19 +67,24 @@ pub(super) async fn run_file_loop(
     let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
 }
 
-async fn closed_while_throttled(
+async fn take_turn(
+    bandwidth: &Bandwidth,
     control: &mut mpsc::Receiver<ConnControl>,
-    resume_at: Option<Instant>,
-) -> bool {
-    let Some(resume_at) = resume_at else {
-        return false;
-    };
-    tokio::select! {
-        _ = sleep_until(resume_at) => false,
-        ctrl = control.recv() => match ctrl {
-            Some(ConnControl::Close) | None => true,
-            Some(other) => unreachable!("invalid transfer control {other:?}"),
-        },
+    max_len: u64,
+) -> Option<Grant> {
+    loop {
+        let changed = bandwidth.changed();
+        let Some(wait_until) = bandwidth.wait_until() else {
+            return Some(bandwidth.grant(max_len));
+        };
+        tokio::select! {
+            _ = sleep_until(wait_until) => return Some(bandwidth.grant(max_len)),
+            _ = changed => {}
+            ctrl = control.recv() => match ctrl {
+                Some(ConnControl::Close) | None => return None,
+                Some(other) => unreachable!("invalid transfer control {other:?}"),
+            },
+        }
     }
 }
 
@@ -104,7 +110,6 @@ async fn run_download(
     let mut file = tokio::fs::File::from_std(file);
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
-    let mut resume_at = None;
     let error = loop {
         if bytes_left == 0 {
             if let Err(error) = file.flush().await {
@@ -125,12 +130,17 @@ async fn run_download(
             let _ = events.send(ConnEvent::FileDone { conn_id }).await;
             break None;
         }
-        if closed_while_throttled(control, resume_at.take()).await {
+        let Some(grant) = take_turn(
+            &limits.download,
+            control,
+            bytes_left.min(buffer.len() as u64),
+        )
+        .await
+        else {
             break None;
-        }
-        let max_read = bytes_left.min(limits.download.chunk_len(buffer.len()) as u64) as usize;
+        };
         tokio::select! {
-            read_result = reader.read(&mut buffer[..max_read]) => {
+            read_result = reader.read(&mut buffer[..grant.len]) => {
                 match read_result {
                     Ok(0) => break Some("connection closed".into()),
                     Ok(count) => {
@@ -139,7 +149,7 @@ async fn run_download(
                             break None;
                         }
                         bytes_left -= count as u64;
-                        resume_at = limits.download.charge(count as u64);
+                        limits.download.charge(&grant, count as u64);
                         if bytes_left > 0 && last_report.elapsed() >= Duration::from_secs(1) {
                             last_report = Instant::now();
                             let _ = events.send(ConnEvent::DownloadProgress {
@@ -222,7 +232,6 @@ async fn run_upload(
     let mut bytes_sent = 0u64;
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
-    let mut resume_at = None;
     let error = loop {
         if offset + bytes_sent >= size {
             let _ = events
@@ -235,12 +244,13 @@ async fn run_upload(
             let _ = events.send(ConnEvent::FileDone { conn_id }).await;
             break None;
         }
-        if closed_while_throttled(control, resume_at.take()).await {
+        let remaining = size - offset - bytes_sent;
+        let Some(grant) =
+            take_turn(&limits.upload, control, remaining.min(buffer.len() as u64)).await
+        else {
             break None;
-        }
-        let max_read =
-            (size - offset - bytes_sent).min(limits.upload.chunk_len(buffer.len()) as u64) as usize;
-        let count = match file.read(&mut buffer[..max_read]).await {
+        };
+        let count = match file.read(&mut buffer[..grant.len]).await {
             Ok(0) => {
                 let _ = events
                     .send(ConnEvent::FileError {
@@ -274,7 +284,7 @@ async fn run_upload(
             Err(_) => break Some("upload stalled".into()),
         }
         bytes_sent += count as u64;
-        resume_at = limits.upload.charge(count as u64);
+        limits.upload.charge(&grant, count as u64);
         if last_report.elapsed() >= Duration::from_secs(1) {
             last_report = Instant::now();
             let _ = events

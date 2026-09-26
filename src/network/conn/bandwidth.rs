@@ -2,6 +2,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
 use tokio::time::Instant;
 
 const CHUNKS_PER_SECOND: u64 = 4;
@@ -9,6 +11,12 @@ const CHUNKS_PER_SECOND: u64 = 4;
 pub struct Bandwidth {
     limit_bps: AtomicU64,
     paid_until: Mutex<Instant>,
+    changed: Notify,
+}
+
+pub(super) struct Grant {
+    pub(super) len: usize,
+    limit_bps: u64,
 }
 
 impl Default for Bandwidth {
@@ -16,6 +24,7 @@ impl Default for Bandwidth {
         Self {
             limit_bps: AtomicU64::new(0),
             paid_until: Mutex::new(Instant::now()),
+            changed: Notify::new(),
         }
     }
 }
@@ -23,24 +32,41 @@ impl Default for Bandwidth {
 impl Bandwidth {
     pub fn set_limit(&self, limit_bps: u64) {
         self.limit_bps.store(limit_bps, Ordering::Relaxed);
+        *self.paid_until.lock().unwrap() = Instant::now();
+        self.changed.notify_waiters();
     }
 
-    pub(super) fn chunk_len(&self, buffer_len: usize) -> usize {
-        match self.limit_bps.load(Ordering::Relaxed) {
-            0 => buffer_len,
-            limit => buffer_len.min((limit / CHUNKS_PER_SECOND).max(1) as usize),
+    pub(super) fn changed(&self) -> Notified<'_> {
+        self.changed.notified()
+    }
+
+    pub(super) fn wait_until(&self) -> Option<Instant> {
+        if self.limit_bps.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let paid_until = *self.paid_until.lock().unwrap();
+        (paid_until > Instant::now()).then_some(paid_until)
+    }
+
+    pub(super) fn grant(&self, max_len: u64) -> Grant {
+        let limit_bps = self.limit_bps.load(Ordering::Relaxed);
+        let len = match limit_bps {
+            0 => max_len,
+            limit => max_len.min((limit / CHUNKS_PER_SECOND).max(1)),
+        };
+        Grant {
+            len: len as usize,
+            limit_bps,
         }
     }
 
-    pub(super) fn charge(&self, count: u64) -> Option<Instant> {
-        let limit = self.limit_bps.load(Ordering::Relaxed);
-        if limit == 0 {
-            return None;
+    pub(super) fn charge(&self, grant: &Grant, count: u64) {
+        if grant.limit_bps == 0 {
+            return;
         }
         let mut paid_until = self.paid_until.lock().unwrap();
         let start = (*paid_until).max(Instant::now());
-        *paid_until = start + Duration::from_secs_f64(count as f64 / limit as f64);
-        Some(*paid_until)
+        *paid_until = start + Duration::from_secs_f64(count as f64 / grant.limit_bps as f64);
     }
 }
 
@@ -49,19 +75,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unlimited_never_waits_and_reads_full_buffers() {
+    fn unlimited_never_waits_and_grants_the_full_request() {
         let bandwidth = Bandwidth::default();
-        assert_eq!(bandwidth.charge(1 << 20), None);
-        assert_eq!(bandwidth.chunk_len(65536), 65536);
+        let grant = bandwidth.grant(65536);
+        assert_eq!(grant.len, 65536);
+        bandwidth.charge(&grant, 65536);
+        assert_eq!(bandwidth.wait_until(), None);
     }
 
     #[test]
-    fn chunks_are_sized_to_a_fraction_of_the_limit() {
+    fn grants_are_sized_to_a_fraction_of_the_limit() {
         let bandwidth = Bandwidth::default();
         bandwidth.set_limit(1024);
-        assert_eq!(bandwidth.chunk_len(65536), 256);
-        bandwidth.set_limit(10 << 20);
-        assert_eq!(bandwidth.chunk_len(65536), 65536);
+        assert_eq!(bandwidth.grant(65536).len, 256);
+        assert_eq!(bandwidth.grant(100).len, 100);
+        bandwidth.set_limit(u32::MAX as u64 * 1024);
+        assert_eq!(bandwidth.grant(65536).len, 65536);
     }
 
     #[test]
@@ -69,23 +98,31 @@ mod tests {
         let bandwidth = Bandwidth::default();
         bandwidth.set_limit(1000);
         let before = Instant::now();
-        let first = bandwidth.charge(500).unwrap();
-        let second = bandwidth.charge(500).unwrap();
-        let third = bandwidth.charge(1000).unwrap();
-        assert!(first >= before + Duration::from_millis(500));
-        assert_eq!(second - first, Duration::from_millis(500));
-        assert_eq!(third - second, Duration::from_secs(1));
+        let first = bandwidth.grant(65536);
+        let second = bandwidth.grant(65536);
+        bandwidth.charge(&first, 250);
+        let after_first = bandwidth.wait_until().unwrap();
+        bandwidth.charge(&second, 250);
+        let after_second = bandwidth.wait_until().unwrap();
+        assert!(after_first >= before + Duration::from_millis(250));
+        assert_eq!(after_second - after_first, Duration::from_millis(250));
     }
 
     #[test]
-    fn limit_changes_apply_to_the_next_charge() {
+    fn a_limit_change_forgives_debt_and_prices_in_flight_grants_at_their_own_rate() {
         let bandwidth = Bandwidth::default();
+        let unlimited = bandwidth.grant(65536);
         bandwidth.set_limit(1000);
-        let first = bandwidth.charge(1000).unwrap();
+        bandwidth.charge(&unlimited, 65536);
+        assert_eq!(bandwidth.wait_until(), None);
+        let slow = bandwidth.grant(65536);
+        bandwidth.charge(&slow, slow.len as u64);
+        assert!(bandwidth.wait_until().is_some());
         bandwidth.set_limit(4000);
-        let second = bandwidth.charge(1000).unwrap();
-        assert_eq!(second - first, Duration::from_millis(250));
+        assert_eq!(bandwidth.wait_until(), None);
         bandwidth.set_limit(0);
-        assert_eq!(bandwidth.charge(1000), None);
+        let fast = bandwidth.grant(65536);
+        bandwidth.charge(&fast, 65536);
+        assert_eq!(bandwidth.wait_until(), None);
     }
 }
