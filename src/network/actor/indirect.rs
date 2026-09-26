@@ -392,8 +392,12 @@ impl Actor {
         };
         let mut sent_file_init = None;
         let mut queued = queued.into_iter();
-        for item in queued.by_ref() {
-            let Some(conn) = self.peers.get_mut(conn_id) else {
+        while let Some(conn) = self
+            .peers
+            .get_mut(conn_id)
+            .filter(|conn| !conn.control.is_closed())
+        {
+            let Some(item) = queued.next() else {
                 break;
             };
             let control = match item {

@@ -99,18 +99,15 @@ impl Actor {
             return;
         };
         let is_send = matches!(control, ConnControl::Send(_) | ConnControl::SendPeer(_));
-        let (rejected, error) = match conn.control.try_send(control) {
+        let (rejected, overflowed) = match conn.control.try_send(control) {
             Ok(()) => {
                 if is_send {
                     conn.sends_pushed += 1;
                 }
                 return;
             }
-            Err(mpsc::error::TrySendError::Full(rejected)) => {
-                warn!(conn_id, "connection outbound queue overflowed, dropping");
-                (rejected, "outbound queue overflowed")
-            }
-            Err(mpsc::error::TrySendError::Closed(rejected)) => (rejected, "connection closed"),
+            Err(mpsc::error::TrySendError::Full(rejected)) => (rejected, true),
+            Err(mpsc::error::TrySendError::Closed(rejected)) => (rejected, false),
         };
         if let ConnControl::SendPeer(message) = rejected {
             let username = conn
@@ -121,7 +118,22 @@ impl Actor {
                 .clone();
             self.emit_unsent(username, vec![message]);
         }
-        self.handle_conn_closed(conn_id, Some(error.into()));
+        if overflowed {
+            warn!(conn_id, "connection outbound queue overflowed, dropping");
+            self.handle_conn_closed(conn_id, Some("outbound queue overflowed".into()));
+        } else {
+            self.detach_conn_routing(conn_id);
+        }
+    }
+
+    fn detach_conn_routing(&mut self, conn_id: ConnId) {
+        if let Some(init_id) = self
+            .peers
+            .get_mut(conn_id)
+            .and_then(|conn| conn.init_id.take())
+        {
+            self.detach_init_conn(init_id, conn_id, None);
+        }
     }
 
     pub(super) fn emit_unsent(&self, username: String, unsent: Vec<PeerMessage>) {
@@ -133,12 +145,7 @@ impl Actor {
     }
 
     pub(super) fn close_conn(&mut self, conn_id: ConnId) {
-        let Some(conn) = self.peers.get_mut(conn_id) else {
-            return;
-        };
-        if let Some(init_id) = conn.init_id.take() {
-            self.detach_init_conn(init_id, conn_id, None);
-        }
+        self.detach_conn_routing(conn_id);
         self.push_conn(conn_id, ConnControl::Close);
     }
 

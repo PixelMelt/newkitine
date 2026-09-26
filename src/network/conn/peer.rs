@@ -5,6 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, timeout};
 use tracing::debug;
@@ -399,6 +400,7 @@ async fn run_message_loop(
     let mut writer_task = tokio::spawn(write_frames(writer, outgoing_rx, traffic.clone()));
     traffic.touch();
     let mut deadline = traffic.last_active() + PEER_IDLE_TIMEOUT;
+    let mut unsent = Vec::new();
     let error = loop {
         tokio::select! {
             frame = frames.recv() => {
@@ -415,14 +417,20 @@ async fn run_message_loop(
                 }
             }
             ctrl = control.recv() => {
-                let bytes = match ctrl {
-                    Some(ConnControl::Send(bytes)) => bytes,
-                    Some(ConnControl::SendPeer(message)) => message.to_bytes(),
+                let (bytes, message) = match ctrl {
+                    Some(ConnControl::Send(bytes)) => (bytes, None),
+                    Some(ConnControl::SendPeer(message)) => (message.to_bytes(), Some(message)),
                     Some(ConnControl::Close) | None => break None,
                     Some(other) => unreachable!("invalid message-loop control {other:?}"),
                 };
-                if outgoing.try_send(bytes).is_err() {
-                    break Some("outbound queue overflowed".into());
+                if let Err(error) = outgoing.try_send(bytes) {
+                    unsent.extend(message);
+                    break match error {
+                        TrySendError::Full(_) => Some("outbound queue overflowed".into()),
+                        TrySendError::Closed(_) => {
+                            Some((&mut writer_task).await.expect("peer writer task panicked"))
+                        }
+                    };
                 }
             }
             written = &mut writer_task => {
@@ -440,7 +448,6 @@ async fn run_message_loop(
     reader_task.abort();
     writer_task.abort();
     control.close();
-    let mut unsent = Vec::new();
     while let Ok(control) = control.try_recv() {
         if let ConnControl::SendPeer(message) = control {
             unsent.push(message);

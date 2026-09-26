@@ -11,7 +11,7 @@ A peer message connection wrote each frame with `write_all().await` inside its `
 
 Writes run on their own task behind a bounded queue; each write must make progress within the 60 s peer idle timeout. Inactivity is measured at the socket: every byte read and every byte written refreshes the connection's last-activity time, which `Traffic` shares between the connection task and the actor.
 
-`Close` is immediate. The reader and writer tasks are aborted and any bytes already handed to the writer are dropped, as Nicotine+ clears `out_buffer`. The actor detaches a connection from its peer-init routing the moment it asks it to close, so later sends open a new connection. Peer messages the connection never took off its control queue, and messages the actor could not push because the task had already gone, are reported as `PeerConnectionError` with those messages as `unsent`.
+`Close` is immediate. The reader and writer tasks are aborted and any bytes already handed to the writer are dropped, as Nicotine+ clears `out_buffer`. The actor detaches a connection from its peer-init routing the moment it asks it to close or finds its task already gone, so later sends open a new connection; the connection itself stays registered until its `Closed` event, so responses it delivered first are still handled. Peer messages the connection never took off its control queue, and messages the actor could not push because the task had already gone, are reported as `PeerConnectionError` with those messages as `unsent`.
 
 After a search result, the actor closes the connection only when it is quiescent: every byte received has been delivered as a frame and every send the actor pushed has been written. Connections to our own username are never closed this way.
 
