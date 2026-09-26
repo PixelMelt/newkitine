@@ -145,6 +145,13 @@ async fn run_download(
         }
         let max_read = buffer.len().min(bytes_left as usize);
         tokio::select! {
+            biased;
+            ctrl = control.recv() => {
+                match ctrl {
+                    Some(ConnControl::Close) | None => break None,
+                    Some(other) => unreachable!("invalid download control {other:?}"),
+                }
+            }
             read_result = reader.read(&mut buffer[..max_read]) => {
                 match read_result {
                     Ok(0) => break Some("connection closed".into()),
@@ -167,12 +174,6 @@ async fn run_download(
                         }
                     }
                     Err(error) => break Some(error.to_string()),
-                }
-            }
-            ctrl = control.recv() => {
-                match ctrl {
-                    Some(ConnControl::Close) | None => break None,
-                    Some(other) => unreachable!("invalid download control {other:?}"),
                 }
             }
             _ = sleep_until(deadline) => break Some("download stalled".into()),

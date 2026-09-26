@@ -69,14 +69,18 @@ impl ClientActor {
             });
             return;
         }
-        let root = destination_root(&directory).to_owned();
-        for mut file in files {
-            file.name = format!("{directory}\\{}", file.name);
-            let (_, events) =
-                self.downloads
-                    .enqueue(&mut self.transfer_ids, username.clone(), file, Some(&root));
-            self.emit_transfers(events);
-        }
+        let root = destination_root(&directory);
+        let files = files
+            .into_iter()
+            .map(|mut file| {
+                file.name = format!("{directory}\\{}", file.name);
+                file
+            })
+            .collect();
+        let events = self
+            .downloads
+            .enqueue_folder(&mut self.transfer_ids, username, files, root);
+        self.emit_transfers(events);
     }
 
     pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {

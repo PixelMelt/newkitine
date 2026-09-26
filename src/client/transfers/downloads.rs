@@ -72,6 +72,12 @@ impl Transfer {
     }
 }
 
+enum Admission {
+    AlreadyActive,
+    Finished(TransferWork),
+    Queued(TransferWork),
+}
+
 pub(super) type PlacementDone = (TransferKey, std::io::Result<PathBuf>);
 
 pub(in crate::client) struct Downloads {
@@ -179,6 +185,42 @@ impl Downloads {
         self.start(ids, username, file, folder_path)
     }
 
+    pub fn enqueue_folder(
+        &mut self,
+        ids: &mut TransferIds,
+        username: String,
+        files: Vec<FileInfo>,
+        root: &str,
+    ) -> Vec<TransferWork> {
+        let mut work = Vec::with_capacity(files.len());
+        let mut requests = Vec::new();
+        for file in files {
+            let folder_path = self.destination(&username, &file.name, Some(root));
+            let virtual_path = file.name.clone();
+            match self.admit(ids, username.clone(), file, folder_path) {
+                Admission::AlreadyActive => {}
+                Admission::Finished(finished) => work.push(finished),
+                Admission::Queued(queued) => {
+                    work.push(queued);
+                    requests.push(PeerMessage::QueueUpload {
+                        file: virtual_path,
+                        legacy_client: false,
+                    });
+                }
+            }
+        }
+        if !requests.is_empty() {
+            self.net.server(ServerRequest::WatchUser {
+                user: username.clone(),
+            });
+            self.net.send(NetworkCommand::SendPeerMessages {
+                username,
+                messages: requests,
+            });
+        }
+        work
+    }
+
     fn start(
         &mut self,
         ids: &mut TransferIds,
@@ -186,6 +228,27 @@ impl Downloads {
         file: FileInfo,
         folder_path: PathBuf,
     ) -> (EnqueueResult, Vec<TransferWork>) {
+        let key = (username.clone(), file.name.clone());
+        match self.admit(ids, username, file, folder_path) {
+            Admission::AlreadyActive => (EnqueueResult::AlreadyActive, Vec::new()),
+            Admission::Finished(finished) => (EnqueueResult::Enqueued, vec![finished]),
+            Admission::Queued(queued) => {
+                self.net.server(ServerRequest::WatchUser {
+                    user: key.0.clone(),
+                });
+                self.send_queue_request(key);
+                (EnqueueResult::Enqueued, vec![queued])
+            }
+        }
+    }
+
+    fn admit(
+        &mut self,
+        ids: &mut TransferIds,
+        username: String,
+        file: FileInfo,
+        folder_path: PathBuf,
+    ) -> Admission {
         let FileInfo {
             name: virtual_path,
             size,
@@ -195,7 +258,7 @@ impl Downloads {
         let id = match self.transfers.get(&key) {
             Some(existing) if existing.phase.is_active() => {
                 debug!(username, virtual_path, "download already in progress");
-                return (EnqueueResult::AlreadyActive, Vec::new());
+                return Admission::AlreadyActive;
             }
             Some(existing) => existing.id,
             None => ids.mint(),
@@ -238,15 +301,11 @@ impl Downloads {
                 delivered_bytes: 0,
             };
             self.transfers.insert(id, key, transfer);
-            return (EnqueueResult::Enqueued, vec![finished]);
+            return Admission::Finished(finished);
         }
         let queued = TransferWork::Update(transfer.snapshot());
-        self.transfers.insert(id, key.clone(), transfer);
-        self.net.server(ServerRequest::WatchUser {
-            user: username.clone(),
-        });
-        self.send_queue_request(key);
-        (EnqueueResult::Enqueued, vec![queued])
+        self.transfers.insert(id, key, transfer);
+        Admission::Queued(queued)
     }
 
     pub fn retry(
@@ -1225,5 +1284,30 @@ mod tests {
             .downloads
             .handle_file_transfer_init("uploader", 8, 2);
         assert!(!harness.downloads.transfers.get(&key).unwrap().retry_attempt);
+    }
+
+    #[tokio::test]
+    async fn a_folder_is_requested_in_one_batch() {
+        let mut harness = Harness::new("folder-batch");
+        let files = (0..900)
+            .map(|index| FileInfo {
+                name: format!("share\\Album\\{index}.mp3"),
+                size: 100,
+                attributes: FileAttributes::default(),
+            })
+            .collect();
+        let work = harness.downloads.enqueue_folder(
+            &mut harness.ids,
+            "uploader".into(),
+            files,
+            "share\\Album",
+        );
+        assert_eq!(work.len(), 900);
+        let commands = harness.drain();
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(
+            &commands[1],
+            NetworkCommand::SendPeerMessages { messages, .. } if messages.len() == 900
+        ));
     }
 }
