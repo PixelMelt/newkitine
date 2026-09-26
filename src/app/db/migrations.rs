@@ -225,7 +225,6 @@ pub async fn init_schema(pool: &MySqlPool) {
     }
     if applied < 14 {
         normalize_stored_interests(pool).await;
-        record_migration(pool, 14).await;
     }
 }
 
@@ -268,6 +267,7 @@ async fn normalize_stored_interests(pool: &MySqlPool) {
                 .unwrap_or_else(interests_migration_failed);
         }
     }
+    record_migration(&mut *tx, 14).await;
     tx.commit().await.unwrap_or_else(interests_migration_failed);
 }
 
