@@ -28,12 +28,12 @@ pub(super) enum QueuedItem {
 }
 
 pub(super) struct Init {
-    pub(super) username: String,
-    pub(super) conn_type: ConnectionType,
-    indirect_token: u32,
-    pub(super) queued: Vec<QueuedItem>,
+    username: String,
+    conn_type: ConnectionType,
+    indirect_token: Option<u32>,
+    queued: Vec<QueuedItem>,
     pub(super) conn_id: Option<ConnId>,
-    pub(super) established: bool,
+    established: bool,
     created: Instant,
 }
 
@@ -131,10 +131,6 @@ impl Indirect {
         self.inits.get(&init_id)
     }
 
-    fn contains(&self, init_id: InitId) -> bool {
-        self.inits.contains_key(&init_id)
-    }
-
     pub(super) fn existing_attempt(
         &self,
         username: &str,
@@ -148,14 +144,23 @@ impl Indirect {
             .copied()
     }
 
-    pub(super) fn attempt_by_token(&self, token: u32) -> Option<InitId> {
-        self.inits_by_token.get(&token).copied()
-    }
-
     fn push_queued(&mut self, init_id: InitId, item: QueuedItem) -> bool {
         let init = self.inits.get_mut(&init_id).unwrap();
         init.queued.push(item);
         init.established
+    }
+
+    fn insert(&mut self, init: Init) -> InitId {
+        let init_id = self.next_init_id();
+        if let Some(token) = init.indirect_token {
+            self.inits_by_token.insert(token, init_id);
+        }
+        if init.conn_type != ConnectionType::File {
+            self.inits_by_user
+                .insert((init.username.clone(), init.conn_type), init_id);
+        }
+        self.inits.insert(init_id, init);
+        init_id
     }
 
     fn register(
@@ -165,24 +170,28 @@ impl Indirect {
         item: Option<QueuedItem>,
     ) -> (InitId, u32) {
         let indirect_token = self.next_indirect_token();
-        let init_id = self.next_init_id();
-        self.inits.insert(
-            init_id,
-            Init {
-                username: username.clone(),
-                conn_type,
-                indirect_token,
-                queued: item.into_iter().collect(),
-                conn_id: None,
-                established: false,
-                created: Instant::now(),
-            },
-        );
-        self.inits_by_token.insert(indirect_token, init_id);
-        if conn_type != ConnectionType::File {
-            self.inits_by_user.insert((username, conn_type), init_id);
-        }
+        let init_id = self.insert(Init {
+            username,
+            conn_type,
+            indirect_token: Some(indirect_token),
+            queued: item.into_iter().collect(),
+            conn_id: None,
+            established: false,
+            created: Instant::now(),
+        });
         (init_id, indirect_token)
+    }
+
+    fn register_pierce(&mut self, username: String, conn_type: ConnectionType) -> InitId {
+        self.insert(Init {
+            username,
+            conn_type,
+            indirect_token: None,
+            queued: Vec::new(),
+            conn_id: None,
+            established: false,
+            created: Instant::now(),
+        })
     }
 
     fn pend_address(&mut self, username: String, init_id: InitId) {
@@ -198,29 +207,49 @@ impl Indirect {
             .unwrap_or_default()
     }
 
-    fn set_conn(&mut self, init_id: InitId, conn_id: ConnId) {
-        if let Some(init) = self.inits.get_mut(&init_id) {
-            init.conn_id = Some(conn_id);
+    fn unpend_address(&mut self, username: &str, init_id: InitId) {
+        if let Some(pending) = self.inits_pending_address.get_mut(username) {
+            pending.retain(|&id| id != init_id);
+            if pending.is_empty() {
+                self.inits_pending_address.remove(username);
+            }
         }
+    }
+
+    fn set_conn(&mut self, init_id: InitId, conn_id: ConnId) {
+        let previous = self
+            .inits
+            .get_mut(&init_id)
+            .unwrap()
+            .conn_id
+            .replace(conn_id);
+        assert!(
+            previous.is_none(),
+            "direct connection attempt would replace an existing connection"
+        );
+    }
+
+    fn clear_conn(&mut self, init_id: InitId) {
+        self.inits.get_mut(&init_id).unwrap().conn_id = None;
     }
 
     pub(super) fn mark_established(&mut self, init_id: InitId, conn_id: ConnId) -> bool {
         match self.inits.get_mut(&init_id) {
-            Some(init) => {
+            Some(init) if init.conn_id == Some(conn_id) => {
                 init.established = true;
-                init.conn_id = Some(conn_id);
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
-    fn replace_conn(&mut self, init_id: InitId, conn_id: ConnId) -> Option<ConnId> {
-        self.inits
-            .get_mut(&init_id)
-            .unwrap()
-            .conn_id
-            .replace(conn_id)
+    fn establish_pierced(&mut self, init_id: InitId, conn_id: ConnId) -> Option<ConnId> {
+        let init = self.inits.get_mut(&init_id).unwrap();
+        init.established = true;
+        let previous = init.conn_id.replace(conn_id);
+        let username = init.username.clone();
+        self.unpend_address(&username, init_id);
+        previous
     }
 
     fn drain_queue(&mut self, init_id: InitId) -> Option<(ConnId, String, Vec<QueuedItem>)> {
@@ -238,77 +267,52 @@ impl Indirect {
         username: String,
         conn_type: ConnectionType,
         conn_id: ConnId,
-    ) -> InitId {
-        let key = (username.clone(), conn_type);
-        let mut inherited = Vec::new();
-        if let Some(&prev_id) = self.inits_by_user.get(&key)
-            && let Some(prev) = self.inits.get_mut(&prev_id)
-        {
-            inherited = std::mem::take(&mut prev.queued);
-            self.remove_init(prev_id);
-        }
-        let init_id = self.next_init_id();
-        self.inits.insert(
-            init_id,
-            Init {
-                username,
-                conn_type,
-                indirect_token: 0,
-                queued: inherited,
-                conn_id: Some(conn_id),
-                established: true,
-                created: Instant::now(),
-            },
-        );
-        self.inits_by_user.insert(key, init_id);
-        init_id
+    ) -> (InitId, Option<ConnId>) {
+        let previous = self
+            .inits_by_user
+            .get(&(username.clone(), conn_type))
+            .copied()
+            .map(|prev_id| self.remove_init(prev_id).unwrap());
+        let (queued, previous_conn) = match previous {
+            Some(prev) => (prev.queued, prev.conn_id),
+            None => (Vec::new(), None),
+        };
+        let init_id = self.insert(Init {
+            username,
+            conn_type,
+            indirect_token: None,
+            queued,
+            conn_id: Some(conn_id),
+            established: true,
+            created: Instant::now(),
+        });
+        (init_id, previous_conn)
     }
 
-    fn claim_pierce(&mut self, token: u32) -> Option<InitId> {
-        self.inits_by_token.remove(&token)
+    fn retire_token(&mut self, token: u32) -> Option<InitId> {
+        let init_id = self.inits_by_token.remove(&token)?;
+        self.inits.get_mut(&init_id).unwrap().indirect_token = None;
+        Some(init_id)
     }
 
-    fn detach_conn(&mut self, init_id: InitId, conn_id: ConnId) -> Option<String> {
-        let init = self.inits.get_mut(&init_id)?;
-        if init.conn_id != Some(conn_id) {
-            return None;
-        }
-        if init.established {
-            self.remove_init(init_id);
-            None
-        } else {
-            init.conn_id = None;
-            Some(init.username.clone())
-        }
-    }
-
-    fn expired(&self) -> Vec<InitId> {
+    fn expired_tokens(&self) -> Vec<u32> {
         self.inits
-            .iter()
-            .filter(|(_, init)| {
-                !init.established && init.created.elapsed() > INDIRECT_REQUEST_TIMEOUT
-            })
-            .map(|(&id, _)| id)
+            .values()
+            .filter(|init| init.created.elapsed() > INDIRECT_REQUEST_TIMEOUT)
+            .filter_map(|init| init.indirect_token)
             .collect()
     }
 
-    pub(super) fn remove_init(&mut self, init_id: InitId) -> Option<Init> {
+    fn remove_init(&mut self, init_id: InitId) -> Option<Init> {
         let init = self.inits.remove(&init_id)?;
-        self.inits_by_token.remove(&init.indirect_token);
-        if let Some(existing) = self
-            .inits_by_user
-            .get(&(init.username.clone(), init.conn_type))
-            && *existing == init_id
-        {
-            self.inits_by_user
-                .remove(&(init.username.clone(), init.conn_type));
+        if let Some(token) = init.indirect_token {
+            self.inits_by_token.remove(&token);
         }
-        if let Some(pending) = self.inits_pending_address.get_mut(&init.username) {
-            pending.retain(|&id| id != init_id);
-            if pending.is_empty() {
-                self.inits_pending_address.remove(&init.username);
-            }
+        let key = (init.username.clone(), init.conn_type);
+        if self.inits_by_user.get(&key) == Some(&init_id) {
+            self.inits_by_user.remove(&key);
         }
+        self.unpend_address(&init.username, init_id);
         Some(init)
     }
 
@@ -368,13 +372,6 @@ impl Actor {
             return;
         };
         let init = self.indirect.get(init_id).unwrap();
-        if addr.port() == 0 {
-            debug!(
-                username = init.username,
-                "skipping direct connection, invalid port"
-            );
-            return;
-        }
         let username = init.username.clone();
         let conn_type = init.conn_type;
         let first_message = PeerInitMessage::PeerInit {
@@ -420,16 +417,8 @@ impl Actor {
         }
     }
 
-    pub(super) fn fail_init(&mut self, init_id: InitId, is_offline: bool) {
-        let Some(init) = self.indirect.remove_init(init_id) else {
-            return;
-        };
-        if init.established {
-            return;
-        }
-        if let Some(conn_id) = init.conn_id {
-            self.close_conn(conn_id);
-        }
+    fn fail_init(&mut self, init_id: InitId, is_offline: bool) {
+        let init = self.indirect.remove_init(init_id).unwrap();
         let unsent = init
             .queued
             .into_iter()
@@ -445,22 +434,47 @@ impl Actor {
         });
     }
 
+    fn indirect_request_failed(&mut self, token: u32) {
+        let Some(init_id) = self.indirect.retire_token(token) else {
+            return;
+        };
+        if self.indirect.get(init_id).unwrap().conn_id.is_none() {
+            self.fail_init(init_id, false);
+        }
+    }
+
     pub(super) fn detach_init_conn(
         &mut self,
         init_id: InitId,
         conn_id: ConnId,
         error: Option<&str>,
     ) {
-        if let Some(username) = self.indirect.detach_conn(init_id, conn_id)
-            && let Some(error) = error
-        {
-            debug!(username, error, "direct connection attempt failed");
+        let Some(init) = self.indirect.get(init_id) else {
+            return;
+        };
+        if init.conn_id != Some(conn_id) {
+            return;
+        }
+        if init.established {
+            self.indirect.remove_init(init_id);
+            return;
+        }
+        if let Some(error) = error {
+            debug!(
+                username = init.username,
+                error, "direct connection attempt failed"
+            );
+        }
+        if init.indirect_token.is_some() {
+            self.indirect.clear_conn(init_id);
+        } else {
+            self.fail_init(init_id, false);
         }
     }
 
     pub(super) fn sweep_indirect_requests(&mut self) {
-        for init_id in self.indirect.expired() {
-            self.fail_init(init_id, false);
+        for token in self.indirect.expired_tokens() {
+            self.indirect_request_failed(token);
         }
     }
 
@@ -477,38 +491,44 @@ impl Actor {
             .is_some()
         {
             debug!(username, "existing connection, ignoring indirect request");
-        } else {
-            self.spawn_outgoing_peer(
-                addr,
-                username,
-                PeerInitMessage::PierceFireWall {
-                    token: pierce_token,
-                },
-                conn_type,
-                None,
-            );
+            return;
+        }
+        let init_id = (conn_type != ConnectionType::File)
+            .then(|| self.indirect.register_pierce(username.clone(), conn_type));
+        let conn_id = self.spawn_outgoing_peer(
+            addr,
+            username,
+            PeerInitMessage::PierceFireWall {
+                token: pierce_token,
+            },
+            conn_type,
+            init_id,
+        );
+        if let Some(init_id) = init_id {
+            self.indirect.set_conn(init_id, conn_id);
         }
     }
 
     pub(super) fn handle_cant_connect(&mut self, token: u32) {
-        if let Some(init_id) = self.indirect.attempt_by_token(token) {
-            self.fail_init(init_id, false);
-        }
+        self.indirect_request_failed(token);
     }
 
-    pub(super) fn handle_peer_address(&mut self, user: &str, ip_address: Ipv4Addr, port: u16) {
+    pub(super) fn handle_peer_address(&mut self, user: &str, ip_address: Ipv4Addr, port: u32) {
         let user_offline = ip_address == Ipv4Addr::UNSPECIFIED;
-        let addr = SocketAddrV4::new(ip_address, port);
+        let addr = u16::try_from(port)
+            .ok()
+            .filter(|&port| port != 0)
+            .map(|port| SocketAddrV4::new(ip_address, port));
         for init_id in self.indirect.take_pending_address(user) {
-            if user_offline {
-                self.fail_init(init_id, true);
-            } else if self.indirect.contains(init_id) {
-                self.connect_direct(init_id, addr);
+            match addr {
+                _ if user_offline => self.fail_init(init_id, true),
+                Some(addr) => self.connect_direct(init_id, addr),
+                None => debug!(user, port, "skipping direct connection, invalid port"),
             }
         }
         if self.server.username() != Some(user) {
             self.indirect
-                .record_address(user, (!user_offline && port != 0).then_some(addr));
+                .record_address(user, addr.filter(|_| !user_offline));
         }
     }
 
@@ -532,11 +552,17 @@ impl Actor {
                 });
                 debug!(username, ?conn_type, %addr, "incoming direct connection");
 
-                if conn_type != ConnectionType::File {
-                    let init_id =
+                if conn_type != ConnectionType::File
+                    && self.server.username() != Some(username.as_str())
+                {
+                    let (init_id, previous) =
                         self.indirect
                             .adopt_incoming(username.clone(), conn_type, conn_id);
                     self.peers.get_mut(conn_id).unwrap().init_id = Some(init_id);
+                    if let Some(previous) = previous {
+                        debug!(username, ?conn_type, "discarding existing connection");
+                        self.close_conn(previous);
+                    }
                     self.flush_init_queue(init_id);
                 }
                 self.emit(NetworkEvent::PeerConnected {
@@ -550,7 +576,7 @@ impl Actor {
                 }
             }
             PeerInitMessage::PierceFireWall { token } => {
-                let Some(init_id) = self.indirect.claim_pierce(token) else {
+                let Some(init_id) = self.indirect.retire_token(token) else {
                     debug!(token, "indirect connection attempt expired, closing");
                     self.close_conn(conn_id);
                     return;
@@ -558,22 +584,19 @@ impl Actor {
                 let init = self.indirect.get(init_id).unwrap();
                 let username = init.username.clone();
                 let conn_type = init.conn_type;
-                let previous = init.conn_id;
+                let direct_established = init.established;
                 debug!(username, token, "indirect connection established");
 
-                if let Some(previous) = previous
-                    && self.peers.is_established(previous)
-                {
+                let conn = self.peers.get_mut(conn_id).unwrap();
+                conn.identity = Some(PeerIdentity {
+                    username: username.clone(),
+                    conn_type,
+                });
+                if direct_established {
                     debug!(
                         username,
                         "direct connection already established, keeping it"
                     );
-                    if let Some(conn) = self.peers.get_mut(conn_id) {
-                        conn.identity = Some(PeerIdentity {
-                            username: username.clone(),
-                            conn_type,
-                        });
-                    }
                     self.push_conn(
                         conn_id,
                         ConnControl::AssumeIdentity {
@@ -584,19 +607,10 @@ impl Actor {
                     return;
                 }
 
-                if let Some(previous) = self.indirect.replace_conn(init_id, conn_id) {
-                    if let Some(conn) = self.peers.get_mut(previous) {
-                        conn.init_id = None;
-                    }
+                conn.init_id = Some(init_id);
+                if let Some(previous) = self.indirect.establish_pierced(init_id, conn_id) {
                     self.close_conn(previous);
                 }
-                self.indirect.mark_established(init_id, conn_id);
-                let conn = self.peers.get_mut(conn_id).unwrap();
-                conn.identity = Some(PeerIdentity {
-                    username: username.clone(),
-                    conn_type,
-                });
-                conn.init_id = Some(init_id);
                 self.push_conn(
                     conn_id,
                     ConnControl::AssumeIdentity {
