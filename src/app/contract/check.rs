@@ -29,6 +29,7 @@ event_tags![
     (ConnCount, "conn_count"),
     (LoginFailed, "login_failed"),
     (ServerMessage, "server_message"),
+    (Relogged, "relogged"),
     (Settings, "settings"),
     (Transfer, "transfer"),
     (TransfersRemoved, "transfers_removed"),
@@ -163,7 +164,7 @@ fn user_info_view() -> UserInfoView {
 
 fn message() -> ChatMessage {
     ChatMessage {
-        id: Some(7),
+        id: 7,
         sender: "peer".into(),
         message: "hi".into(),
         timestamp: 1,
@@ -222,6 +223,7 @@ fn fixture_events() -> Vec<AppEvent> {
         AppEvent::ServerMessage {
             message: "hello".into(),
         },
+        AppEvent::Relogged,
         AppEvent::Settings(Box::new(settings_payload())),
         AppEvent::Transfer {
             direction: TransferDirection::Download,

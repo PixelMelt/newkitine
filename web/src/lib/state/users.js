@@ -2,53 +2,42 @@ import { writable } from 'svelte/store';
 
 import { notice } from './session.js';
 
-export const buddies = writable({});
+export const buddies = writable(new Map());
 export const banned = writable([]);
 export const ignored = writable([]);
-export const userInfos = writable({});
-export const browses = writable({});
+export const userInfos = writable(new Map());
+export const browses = writable(new Map());
+
+function removeKey(key) {
+	return (map) => {
+		map.delete(key);
+		return map;
+	};
+}
 
 export function applySnapshot(msg) {
-	buddies.set(Object.fromEntries(msg.buddies.map((b) => [b.username, b])));
+	buddies.set(new Map(msg.buddies.map((b) => [b.username, b])));
 	banned.set(msg.banned);
 	ignored.set(msg.ignored);
-	browses.set(msg.browses);
-	userInfos.set(Object.fromEntries(msg.user_infos.map((info) => [info.username, info])));
+	browses.set(new Map(Object.entries(msg.browses)));
+	userInfos.set(new Map(msg.user_infos.map((info) => [info.username, info])));
 }
 
 export const handlers = {
 	buddy: (msg) => {
-		buddies.update((map) => ({ ...map, [msg.buddy.username]: msg.buddy }));
+		buddies.update((map) => map.set(msg.buddy.username, msg.buddy));
 	},
-	buddy_removed: (msg) => {
-		buddies.update((map) => {
-			const next = { ...map };
-			delete next[msg.username];
-			return next;
-		});
-	},
+	buddy_removed: (msg) => buddies.update(removeKey(msg.username)),
 	banned: (msg) => banned.set(msg.users),
 	ignored: (msg) => ignored.set(msg.users),
 	user_info: (msg) => {
-		userInfos.update((map) => ({ ...map, [msg.info.username]: msg.info }));
+		userInfos.update((map) => map.set(msg.info.username, msg.info));
 	},
-	user_info_removed: (msg) => {
-		userInfos.update((map) => {
-			const next = { ...map };
-			delete next[msg.username];
-			return next;
-		});
-	},
+	user_info_removed: (msg) => userInfos.update(removeKey(msg.username)),
 	browse_loaded: (msg) => {
-		browses.update((map) => ({ ...map, [msg.username]: msg.received_at }));
+		browses.update((map) => map.set(msg.username, msg.received_at));
 	},
-	browse_removed: (msg) => {
-		browses.update((map) => {
-			const next = { ...map };
-			delete next[msg.username];
-			return next;
-		});
-	},
+	browse_removed: (msg) => browses.update(removeKey(msg.username)),
 	folder_request_failed: (msg) => {
 		notice(`${msg.username} did not send the contents of ${msg.directory}`);
 	},

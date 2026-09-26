@@ -19,7 +19,7 @@
   const asName = { username: (name) => name };
 
   $: list = sortRows(
-    Object.values($buddies).sort((a, b) => a.username.localeCompare(b.username)),
+    [...$buddies.values()].sort((a, b) => a.username.localeCompare(b.username)),
     sort,
     { speed: (b) => b.stats.avgspeed, files: (b) => b.stats.files },
   );

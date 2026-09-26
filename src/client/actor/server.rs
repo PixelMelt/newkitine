@@ -158,6 +158,7 @@ impl ClientActor {
             ServerResponse::AdminMessage { msg } => {
                 self.emit(ClientEvent::AdminMessage { message: msg });
             }
+            ServerResponse::Relogged => self.emit(ClientEvent::Relogged),
             ServerResponse::GetPeerAddress {
                 user, ip_address, ..
             } => {
@@ -173,7 +174,6 @@ impl ClientActor {
             | ServerResponse::ServerPing
             | ServerResponse::SendConnectToken { .. }
             | ServerResponse::UploadSlotsFull { .. }
-            | ServerResponse::Relogged
             | ServerResponse::SimilarRecommendations { .. }
             | ServerResponse::MyRecommendations { .. }
             | ServerResponse::PlaceInLineRequest { .. }

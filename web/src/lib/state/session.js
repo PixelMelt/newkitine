@@ -38,6 +38,7 @@ export const handlers = {
 	conn_count: (msg) => status.update((s) => ({ ...s, peer_connections: msg.count })),
 	login_failed: (msg) => notice(`login failed: ${msg.reason} ${msg.detail ?? ''}`),
 	server_message: (msg) => notice(`server: ${msg.message}`),
+	relogged: () => notice('Someone logged in to your Soulseek account elsewhere'),
 	settings: (msg) => {
 		settings.set({ settings: msg.settings, locked: msg.locked, gluetun: msg.gluetun });
 		applyTheme(msg.settings.theme);

@@ -66,9 +66,7 @@ pub fn apply_settings(app: &App, server: String, listen_port: u16, username: &st
     update_status(app, |status| {
         status.server = server;
         status.listen_port = listen_port;
-        if !status.logged_in {
-            status.username = username.to_owned();
-        }
+        status.username = username.to_owned();
     });
 }
 
@@ -155,6 +153,11 @@ pub fn share_scan_failed(app: &App, error: String) {
 
 pub fn privileges(app: &App, seconds: u32) {
     update_status(app, |status| status.privileges_secs = seconds);
+}
+
+pub fn relogged(app: &App) {
+    tracing::warn!("someone logged in to this soulseek account elsewhere");
+    app.projection.write().broadcast(AppEvent::Relogged);
 }
 
 pub fn server_message(app: &App, message: String) {

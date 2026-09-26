@@ -1,5 +1,5 @@
 <script>
-  import { privateChats, chatPartners, loadChatHistory, status } from '../lib/stores.js';
+  import { privateChats, chatPartners, ensureChatHistory, status } from '../lib/stores.js';
   import { activeTab, chatTarget, noAutofill } from '../lib/ui.js';
   import { post, del } from '../lib/api.js';
   import { formatTime } from '../lib/format.js';
@@ -10,19 +10,15 @@
   let selected = null;
   let newUser = '';
   let draft = '';
-  let unread = {};
-  let counts = {};
-  const requested = new Set();
+  let unread = Object.create(null);
+  let counts = Object.create(null);
 
-  $: messages = selected ? ($privateChats[selected] ?? []) : [];
+  $: messages = selected ? ($privateChats.get(selected) ?? []) : [];
   $: if (!$chatPartners.includes(selected) && $chatPartners.length) selected = $chatPartners[0];
-  $: if (selected && !$privateChats[selected] && !requested.has(selected)) {
-    requested.add(selected);
-    loadChatHistory(selected);
-  }
+  $: if (selected) ensureChatHistory(selected);
 
   $: {
-    for (const [user, msgs] of Object.entries($privateChats)) {
+    for (const [user, msgs] of $privateChats) {
       if (counts[user] !== undefined && msgs.length > counts[user]
           && !(user === selected && $activeTab === 'chat')) {
         unread[user] = true;

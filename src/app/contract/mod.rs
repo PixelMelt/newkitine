@@ -31,6 +31,7 @@ pub enum AppEvent {
     ServerMessage {
         message: String,
     },
+    Relogged,
     Settings(Box<SettingsPayload>),
     Transfer {
         direction: TransferDirection,

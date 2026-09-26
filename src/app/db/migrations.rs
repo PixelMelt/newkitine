@@ -85,7 +85,7 @@ const BASELINE: &[&str] = &[
     )",
 ];
 
-const LATEST_VERSION: i32 = 13;
+const LATEST_VERSION: i32 = 14;
 
 pub async fn init_schema(pool: &MySqlPool) {
     sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL PRIMARY KEY)")
@@ -242,6 +242,23 @@ pub async fn init_schema(pool: &MySqlPool) {
     if applied < 13 {
         record_delivered_bytes(pool).await;
         record_migration(pool, 13).await;
+    }
+    if applied < 14 {
+        migration_statement(
+            pool,
+            14,
+            "UPDATE IGNORE interests SET thing = LOWER(TRIM(thing))
+             WHERE BINARY thing <> BINARY LOWER(TRIM(thing))",
+        )
+        .await;
+        migration_statement(
+            pool,
+            14,
+            "DELETE FROM interests
+             WHERE BINARY thing <> BINARY LOWER(TRIM(thing)) OR TRIM(thing) = ''",
+        )
+        .await;
+        record_migration(pool, 14).await;
     }
 }
 

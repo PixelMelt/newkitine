@@ -20,7 +20,7 @@ use super::state::{App, now};
 
 #[derive(Clone, serde::Serialize)]
 pub struct ChatMessage {
-    pub id: Option<u64>,
+    pub id: u64,
     pub sender: String,
     pub message: String,
     pub timestamp: i64,
@@ -70,19 +70,30 @@ pub async fn insert_chat(
     executor: impl sqlx::MySqlExecutor<'_>,
     kind: &str,
     target: &str,
-    message: &ChatMessage,
-) -> Result<u64, sqlx::Error> {
+    sender: String,
+    message: String,
+    timestamp: i64,
+) -> Result<ChatMessage, sqlx::Error> {
     let result = sqlx::query(
         "INSERT INTO chat_messages (kind, target, sender, message, timestamp) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(kind)
     .bind(target)
-    .bind(&message.sender)
-    .bind(&message.message)
-    .bind(message.timestamp)
+    .bind(&sender)
+    .bind(&message)
+    .bind(timestamp)
     .execute(executor)
     .await?;
-    Ok(result.last_insert_id())
+    Ok(ChatMessage {
+        id: result.last_insert_id(),
+        sender,
+        message,
+        timestamp,
+    })
+}
+
+fn outgoing_text(message: &str) -> String {
+    message.replace('\r', "").replace('\n', " ")
 }
 
 pub async fn load_chat(pool: &MySqlPool, kind: &str, target: &str, limit: u32) -> Vec<ChatMessage> {
@@ -98,7 +109,7 @@ pub async fn load_chat(pool: &MySqlPool, kind: &str, target: &str, limit: u32) -
     .expect("load chat")
     .into_iter()
     .map(|row| ChatMessage {
-        id: Some(row.get(0)),
+        id: row.get(0),
         sender: row.get(1),
         message: row.get(2),
         timestamp: row.get(3),
@@ -125,22 +136,22 @@ pub async fn private_message_received(
     message: String,
     timestamp: u32,
 ) {
-    let mut message = ChatMessage {
-        id: None,
-        sender: username.clone(),
-        message,
-        timestamp: timestamp as i64,
-    };
     let _mutation = app.list_mutation.lock().await;
     let mut tx = app
         .db
         .begin()
         .await
         .unwrap_or_else(|error| db::fatal(error));
-    let id = insert_chat(&mut *tx, "private", &username, &message)
-        .await
-        .unwrap_or_else(|error| db::fatal(error));
-    message.id = Some(id);
+    let message = insert_chat(
+        &mut *tx,
+        "private",
+        &username,
+        username.clone(),
+        message,
+        timestamp as i64,
+    )
+    .await
+    .unwrap_or_else(|error| db::fatal(error));
     db::add_to_list(&mut *tx, "chat", &username)
         .await
         .unwrap_or_else(|error| db::fatal(error));
@@ -165,16 +176,9 @@ pub async fn room_message_received(app: &App, room: String, username: String, me
         );
         return;
     }
-    let mut message = ChatMessage {
-        id: None,
-        sender: username,
-        message,
-        timestamp: now(),
-    };
-    let id = insert_chat(&app.db, "room", &room, &message)
+    let message = insert_chat(&app.db, "room", &room, username, message, now())
         .await
         .unwrap_or_else(|error| db::fatal(error));
-    message.id = Some(id);
     app.projection
         .write()
         .broadcast(AppEvent::RoomMessage { room, message });
@@ -350,20 +354,23 @@ async fn send_private_message(
     }
     let _mutation = app.list_mutation.lock().await;
     let sender = app.projection.read().session.status().username.clone();
-    let mut message = ChatMessage {
-        id: None,
-        sender,
-        message: body.message,
-        timestamp: now(),
-    };
     let mut tx = match app.db.begin().await {
         Ok(tx) => tx,
         Err(error) => return api::db_failed(error),
     };
-    match insert_chat(&mut *tx, "private", &username, &message).await {
-        Ok(id) => message.id = Some(id),
+    let message = match insert_chat(
+        &mut *tx,
+        "private",
+        &username,
+        sender,
+        outgoing_text(&body.message),
+        now(),
+    )
+    .await
+    {
+        Ok(message) => message,
         Err(error) => return api::db_failed(error),
-    }
+    };
     if let Err(error) = db::add_to_list(&mut *tx, "chat", &username).await {
         return api::db_failed(error);
     }
@@ -432,6 +439,19 @@ async fn say_room(
     if let Err(status) = api::require_login(&app) {
         return status;
     }
-    app.client.say_room(&room, &body.message).await;
+    app.client
+        .say_room(&room, &outgoing_text(&body.message))
+        .await;
     StatusCode::ACCEPTED
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outgoing_text;
+
+    #[test]
+    fn outgoing_text_drops_carriage_returns_and_flattens_newlines() {
+        assert_eq!(outgoing_text("one\r\ntwo\nthree\r"), "one two three");
+        assert_eq!(outgoing_text("plain"), "plain");
+    }
 }

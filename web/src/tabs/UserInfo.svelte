@@ -8,10 +8,10 @@
 
   let selected = null;
   let newUser = '';
-  let closed = {};
+  let closed = Object.create(null);
 
-  $: users = Object.keys($userInfos).filter((user) => !closed[user]).sort();
-  $: info = selected ? $userInfos[selected] : null;
+  $: users = [...$userInfos.keys()].filter((user) => !closed[user]).sort();
+  $: info = selected ? $userInfos.get(selected) : null;
 
   $: if ($userInfoTarget) {
     const target = $userInfoTarget;
@@ -23,7 +23,7 @@
     selected = username;
     delete closed[username];
     closed = closed;
-    if (!$userInfos[username]) request(username);
+    if (!$userInfos.has(username)) request(username);
   }
 
   function request(username) {
