@@ -270,7 +270,10 @@ async fn search_result_connection_stays_open_while_data_is_pending() {
     bytes.extend_from_slice(head);
     stream.write_all(&bytes).await.unwrap();
 
-    assert_eq!(next_peer_message(&mut alice.events).await, search_response(7));
+    assert_eq!(
+        next_peer_message(&mut alice.events).await,
+        search_response(7)
+    );
     tokio::time::sleep(Duration::from_millis(300)).await;
     stream.write_all(tail).await.unwrap();
     assert_eq!(next_peer_message(&mut alice.events).await, queue_upload());
@@ -287,7 +290,10 @@ async fn idle_search_result_connection_is_closed() {
         .write_all(&search_response(7).to_bytes())
         .await
         .unwrap();
-    assert_eq!(next_peer_message(&mut alice.events).await, search_response(7));
+    assert_eq!(
+        next_peer_message(&mut alice.events).await,
+        search_response(7)
+    );
 
     let mut buffer = [0u8; 16];
     let read = timeout(Duration::from_secs(5), stream.read(&mut buffer))
@@ -311,7 +317,9 @@ async fn close_interrupts_a_write_blocked_on_a_peer_that_stopped_reading() {
     .await;
 
     for _ in 0..8 {
-        alice.handle.peer_frame("mallory", vec![0u8; 4 * 1024 * 1024]);
+        alice
+            .handle
+            .peer_frame("mallory", vec![0u8; 4 * 1024 * 1024]);
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
     alice.handle.send(NetworkCommand::CloseConnection(conn_id));
