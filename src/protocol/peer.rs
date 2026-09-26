@@ -122,20 +122,11 @@ fn read_file_attributes(r: &mut MessageReader) -> Result<FileAttributes, Protoco
 }
 
 fn write_file_attributes(w: &mut MessageWriter, attrs: &FileAttributes) {
-    let pairs = [
-        (0u32, attrs.bitrate),
-        (1, attrs.length),
-        (2, attrs.vbr),
-        (4, attrs.sample_rate),
-        (5, attrs.bit_depth),
-    ];
-    let count = pairs.iter().filter(|(_, v)| v.is_some()).count();
-    w.write_u32(count as u32);
-    for (attr_id, value) in pairs {
-        if let Some(value) = value {
-            w.write_u32(attr_id);
-            w.write_u32(value);
-        }
+    let pairs = attrs.wire_pairs();
+    w.write_u32(pairs.iter().flatten().count() as u32);
+    for (attr_id, value) in pairs.into_iter().flatten() {
+        w.write_u32(attr_id);
+        w.write_u32(value);
     }
 }
 

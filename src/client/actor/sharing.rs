@@ -116,13 +116,17 @@ impl ClientActor {
         let cache_path = self.sharing.scan_cache.clone();
         let cancel = self.sharing.cancel.clone();
         let results = self.sharing.scan_results.clone();
-        let walk = job.walk && !shared_folders.is_empty();
         let task = tokio::task::spawn_blocking({
             let results = results.clone();
             move || {
                 let send = |update: ScanUpdate| {
                     let _ = results.send((generation, update));
                 };
+                if shared_folders.is_empty() {
+                    send(ScanUpdate::Index(Box::new(SharesIndex::empty())));
+                    send(ScanUpdate::Done(Ok(())));
+                    return;
+                }
                 let cached = shares::load_catalog(&cache_path);
                 if job.install_cached && !cached.folders.is_empty() {
                     let restricted = shares::restrict(&cached, &shared_folders);
@@ -130,7 +134,7 @@ impl ClientActor {
                         restricted,
                     ))));
                 }
-                if !walk {
+                if !job.walk {
                     send(ScanUpdate::Done(Ok(())));
                     return;
                 }
@@ -273,14 +277,10 @@ impl ClientActor {
         self.sharing
             .browse_times
             .retain(|_, at| now.duration_since(*at) < BROWSE_COALESCE_WINDOW);
-        if self
-            .sharing
-            .browse_times
-            .insert(username.clone(), now)
-            .is_some()
-        {
+        if self.sharing.browse_times.contains_key(&username) {
             return;
         }
+        self.sharing.browse_times.insert(username.clone(), now);
         let frame = match (&self.sharing.index, self.users.is_banned(&username)) {
             (Some(index), false) => index.browse_frame(self.users.is_buddy(&username)).to_vec(),
             _ => self.sharing.empty_browse_frame.clone(),
