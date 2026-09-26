@@ -1,6 +1,8 @@
 use sqlx::{MySqlPool, Row};
 use tracing::info;
 
+use crate::app::interests::normalize_interest;
+
 const BASELINE: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS transfers (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -244,21 +246,41 @@ pub async fn init_schema(pool: &MySqlPool) {
         record_migration(pool, 13).await;
     }
     if applied < 14 {
-        migration_statement(
-            pool,
-            14,
-            "UPDATE IGNORE interests SET thing = LOWER(TRIM(thing))
-             WHERE BINARY thing <> BINARY LOWER(TRIM(thing))",
-        )
-        .await;
-        migration_statement(
-            pool,
-            14,
-            "DELETE FROM interests
-             WHERE BINARY thing <> BINARY LOWER(TRIM(thing)) OR TRIM(thing) = ''",
-        )
-        .await;
+        normalize_stored_interests(pool).await;
         record_migration(pool, 14).await;
+    }
+}
+
+async fn normalize_stored_interests(pool: &MySqlPool) {
+    let rows: Vec<(String, String)> = sqlx::query("SELECT kind, thing FROM interests")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_else(|error| panic!("schema migration 14 failed: {error}"))
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    for (kind, thing) in rows {
+        let normalized = normalize_interest(&thing);
+        if normalized.as_deref() == Some(thing.as_str()) {
+            continue;
+        }
+        sqlx::query(
+            "DELETE FROM interests
+             WHERE kind = ? AND CAST(thing AS BINARY) = CAST(? AS BINARY)",
+        )
+        .bind(&kind)
+        .bind(&thing)
+        .execute(pool)
+        .await
+        .unwrap_or_else(|error| panic!("schema migration 14 failed: {error}"));
+        if let Some(normalized) = normalized {
+            sqlx::query("INSERT IGNORE INTO interests (kind, thing) VALUES (?, ?)")
+                .bind(&kind)
+                .bind(&normalized)
+                .execute(pool)
+                .await
+                .unwrap_or_else(|error| panic!("schema migration 14 failed: {error}"));
+        }
     }
 }
 

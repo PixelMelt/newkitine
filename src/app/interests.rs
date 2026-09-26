@@ -173,7 +173,7 @@ struct InterestBody {
     thing: String,
 }
 
-fn normalize_interest(thing: &str) -> Option<String> {
+pub(super) fn normalize_interest(thing: &str) -> Option<String> {
     let thing = thing.trim().to_lowercase();
     (!thing.is_empty()).then_some(thing)
 }
