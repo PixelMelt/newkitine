@@ -1,10 +1,28 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::time::Instant;
 
 use crate::network::NetworkHandle;
 use crate::protocol::ServerRequest;
-use crate::types::Restriction;
+use crate::types::{Restriction, UserStatus};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Presence {
+    WentOffline,
+    CameOnline,
+    Unchanged,
+}
+
+const WATCH_BATCH: usize = 100;
+
+fn request_watch(net: &NetworkHandle, username: &str) {
+    net.server(ServerRequest::WatchUser {
+        user: username.to_owned(),
+    });
+    net.server(ServerRequest::GetUserStatus {
+        user: username.to_owned(),
+    });
+}
 
 pub(super) struct Users {
     pub buddies: HashSet<String>,
@@ -15,6 +33,8 @@ pub(super) struct Users {
     file_denials: HashMap<String, HashMap<String, Instant>>,
     privileged: HashSet<String>,
     login_username: String,
+    watched: HashMap<String, Option<UserStatus>>,
+    unsent_watches: VecDeque<String>,
 }
 
 impl Users {
@@ -33,6 +53,8 @@ impl Users {
             file_denials: HashMap::new(),
             privileged: HashSet::new(),
             login_username: String::new(),
+            watched: HashMap::new(),
+            unsent_watches: VecDeque::new(),
         }
     }
 
@@ -111,33 +133,93 @@ impl Users {
         self.privileged.contains(username)
     }
 
-    pub fn watch_buddies(&self, net: &NetworkHandle) {
-        for buddy in &self.buddies {
-            net.server(ServerRequest::WatchUser {
-                user: buddy.clone(),
-            });
+    pub fn start_session(&mut self, own_username: &str) {
+        self.watched.clear();
+        self.unsent_watches.clear();
+        self.watch(own_username);
+        let buddies: Vec<String> = self.buddies.iter().cloned().collect();
+        for buddy in &buddies {
+            self.watch(buddy);
         }
+    }
+
+    pub fn watch(&mut self, username: &str) {
+        if self.watched.contains_key(username) {
+            return;
+        }
+        self.watched.insert(username.to_owned(), None);
+        self.unsent_watches.push_back(username.to_owned());
+    }
+
+    pub fn send_watches(&mut self, net: &NetworkHandle) {
+        let mut sent = 0;
+        while sent < WATCH_BATCH {
+            let Some(username) = self.unsent_watches.pop_front() else {
+                break;
+            };
+            if self.watched.contains_key(&username) {
+                request_watch(net, &username);
+                sent += 1;
+            }
+        }
+    }
+
+    pub fn forget_watch(&mut self, username: &str) {
+        self.watched.remove(username);
     }
 
     pub fn add_buddy(&mut self, net: &NetworkHandle, username: String) {
-        if self.buddies.insert(username.clone()) {
-            net.server(ServerRequest::WatchUser { user: username });
+        if !self.buddies.insert(username.clone()) {
+            return;
         }
+        self.watched.entry(username.clone()).or_insert(None);
+        request_watch(net, &username);
     }
 
-    pub fn remove_buddy(&mut self, net: &NetworkHandle, username: &str) {
-        if self.buddies.remove(username) {
+    pub fn remove_buddy(&mut self, net: &NetworkHandle, username: &str, keep_watch: bool) {
+        if self.buddies.remove(username) && !keep_watch && self.watched.remove(username).is_some() {
             net.server(ServerRequest::UnwatchUser {
                 user: username.to_owned(),
             });
         }
     }
 
-    pub fn handle_user_status(&mut self, username: &str, privileged: bool) {
+    pub fn set_privileged(&mut self, username: &str, privileged: bool) {
         if privileged {
             self.privileged.insert(username.to_owned());
         } else {
             self.privileged.remove(username);
+        }
+    }
+
+    pub fn handle_user_status(
+        &mut self,
+        net: &NetworkHandle,
+        username: &str,
+        status: Option<UserStatus>,
+        privileged: bool,
+    ) -> Presence {
+        self.set_privileged(username, privileged);
+        let previous = self
+            .watched
+            .get_mut(username)
+            .map(|known| std::mem::replace(known, status));
+        let online = |status: Option<UserStatus>| {
+            matches!(status, Some(UserStatus::Online | UserStatus::Away))
+        };
+        if status == Some(UserStatus::Offline) {
+            return Presence::WentOffline;
+        }
+        match previous {
+            Some(previous) if online(status) && !online(previous) => {
+                if previous == Some(UserStatus::Offline) {
+                    net.server(ServerRequest::GetUserStats {
+                        user: username.to_owned(),
+                    });
+                }
+                Presence::CameOnline
+            }
+            _ => Presence::Unchanged,
         }
     }
 
@@ -200,13 +282,155 @@ mod tests {
     #[test]
     fn privilege_revokes_on_false_status() {
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        users.handle_user_status("peer", true);
+        users.set_privileged("peer", true);
         assert!(users.is_privileged("peer"));
-        users.handle_user_status("peer", false);
+        users.set_privileged("peer", false);
         assert!(!users.is_privileged("peer"));
         users.handle_privileged_users(vec!["peer".into()]);
         assert!(users.is_privileged("peer"));
         users.handle_privileged_users(Vec::new());
         assert!(!users.is_privileged("peer"));
+    }
+
+    fn sent_requests(
+        commands: &mut tokio::sync::mpsc::Receiver<crate::network::NetworkCommand>,
+    ) -> Vec<ServerRequest> {
+        let mut sent = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            if let crate::network::NetworkCommand::SendServerMessage(request) = command {
+                sent.push(request);
+            }
+        }
+        sent
+    }
+
+    #[test]
+    fn removing_a_buddy_keeps_a_watch_downloads_still_need() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut users = Users::new(
+            ["kept".to_owned(), "dropped".to_owned()].into(),
+            HashSet::new(),
+            HashSet::new(),
+            Vec::new(),
+        );
+        users.start_session("me");
+        users.send_watches(&net);
+        sent_requests(&mut commands);
+        users.remove_buddy(&net, "kept", true);
+        users.remove_buddy(&net, "dropped", false);
+        assert_eq!(
+            sent_requests(&mut commands),
+            vec![ServerRequest::UnwatchUser {
+                user: "dropped".into()
+            }]
+        );
+        users.watch("kept");
+        users.send_watches(&net);
+        assert!(sent_requests(&mut commands).is_empty());
+    }
+
+    #[test]
+    fn watch_requests_are_paced_and_skip_dropped_users() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        for index in 0..WATCH_BATCH + 10 {
+            users.watch(&format!("peer{index}"));
+        }
+        users.watch("peer0");
+        users.forget_watch("peer1");
+        users.send_watches(&net);
+        assert_eq!(sent_requests(&mut commands).len(), 2 * WATCH_BATCH);
+        users.send_watches(&net);
+        assert_eq!(sent_requests(&mut commands).len(), 2 * 9);
+    }
+
+    #[test]
+    fn befriending_a_watched_uploader_refreshes_its_details() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        users.watch("uploader");
+        users.send_watches(&net);
+        sent_requests(&mut commands);
+        users.add_buddy(&net, "uploader".into());
+        assert_eq!(
+            sent_requests(&mut commands),
+            vec![
+                ServerRequest::WatchUser {
+                    user: "uploader".into()
+                },
+                ServerRequest::GetUserStatus {
+                    user: "uploader".into()
+                },
+            ]
+        );
+        users.add_buddy(&net, "uploader".into());
+        assert!(sent_requests(&mut commands).is_empty());
+    }
+
+    #[test]
+    fn a_new_session_rewatches_and_asks_for_privilege_status() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut users = Users::new(
+            ["buddy".to_owned()].into(),
+            HashSet::new(),
+            HashSet::new(),
+            Vec::new(),
+        );
+        users.start_session("me");
+        users.send_watches(&net);
+        users.start_session("me");
+        users.send_watches(&net);
+        let sent = sent_requests(&mut commands);
+        let buddy_requests = sent
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request,
+                    ServerRequest::WatchUser { user } | ServerRequest::GetUserStatus { user }
+                        if user == "buddy"
+                )
+            })
+            .count();
+        assert_eq!(buddy_requests, 4);
+    }
+
+    #[test]
+    fn returning_watched_users_come_online_once_and_refresh_their_stats() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        users.watch("peer");
+        users.send_watches(&net);
+        sent_requests(&mut commands);
+        let online = Some(UserStatus::Online);
+        let away = Some(UserStatus::Away);
+        let offline = Some(UserStatus::Offline);
+        assert_eq!(
+            users.handle_user_status(&net, "peer", online, false),
+            Presence::CameOnline
+        );
+        assert!(sent_requests(&mut commands).is_empty());
+        assert_eq!(
+            users.handle_user_status(&net, "peer", away, true),
+            Presence::Unchanged
+        );
+        assert!(users.is_privileged("peer"));
+        assert_eq!(
+            users.handle_user_status(&net, "peer", offline, false),
+            Presence::WentOffline
+        );
+        assert_eq!(
+            users.handle_user_status(&net, "peer", away, false),
+            Presence::CameOnline
+        );
+        assert_eq!(
+            sent_requests(&mut commands),
+            vec![ServerRequest::GetUserStats {
+                user: "peer".into()
+            }]
+        );
+        assert_eq!(
+            users.handle_user_status(&net, "stranger", online, false),
+            Presence::Unchanged
+        );
     }
 }

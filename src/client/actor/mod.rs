@@ -242,7 +242,9 @@ impl ClientActor {
                 self.users.add_buddy(&self.net, username);
             }
             ClientCommand::RemoveBuddy { username } => {
-                self.users.remove_buddy(&self.net, &username);
+                let keep_watch =
+                    username == self.config.login.username || self.downloads.needs_watch(&username);
+                self.users.remove_buddy(&self.net, &username, keep_watch);
             }
             ClientCommand::BanUser { username } => self.ban_user(username),
             ClientCommand::UnbanUser { username } => {

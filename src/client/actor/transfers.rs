@@ -35,6 +35,7 @@ impl ClientActor {
     ) {
         let (result, events) = self.downloads.enqueue(
             &mut self.transfer_ids,
+            &mut self.users,
             username,
             FileInfo {
                 name: virtual_path,
@@ -77,14 +78,18 @@ impl ClientActor {
                 file
             })
             .collect();
-        let events = self
-            .downloads
-            .enqueue_folder(&mut self.transfer_ids, username, files, root);
+        let events = self.downloads.enqueue_folder(
+            &mut self.transfer_ids,
+            &mut self.users,
+            username,
+            files,
+            root,
+        );
         self.emit_transfers(events);
     }
 
     pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
-        let (result, events) = self.downloads.retry(&mut self.transfer_ids, id);
+        let (result, events) = self.downloads.retry(&mut self.users, id);
         self.emit_transfers(events);
         Self::ack(ack, result);
     }
@@ -180,6 +185,11 @@ impl ClientActor {
                 &self.users,
             );
             self.emit_transfers(queued);
+            self.downloads.retry_failed();
+            self.downloads.release_limited();
+            let recovered = self.downloads.drain_recovery(&mut self.users);
+            self.emit_transfers(recovered);
+            self.users.send_watches(&self.net);
         }
     }
 
