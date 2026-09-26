@@ -88,6 +88,17 @@ async fn take_turn(
     }
 }
 
+async fn read_granted(
+    reader: &mut BufReader<OwnedReadHalf>,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
+    if reader.buffer().is_empty() {
+        reader.get_mut().read(buffer).await
+    } else {
+        reader.read(buffer).await
+    }
+}
+
 struct TransferTask<'a> {
     conn_id: ConnId,
     events: &'a mpsc::Sender<ConnEvent>,
@@ -141,7 +152,7 @@ async fn run_download(
             break None;
         };
         tokio::select! {
-            read_result = reader.read(&mut buffer[..grant.len]) => {
+            read_result = read_granted(reader, &mut buffer[..grant.len]) => {
                 match read_result {
                     Ok(0) => break Some("connection closed".into()),
                     Ok(count) => {
@@ -303,60 +314,56 @@ async fn run_upload(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::sync::Arc;
 
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::task::JoinHandle;
 
     use super::*;
     use crate::network::conn::TransferLimits;
 
-    #[tokio::test]
-    async fn upload_stops_at_the_advertised_size_when_the_file_grew() {
-        let path = std::env::temp_dir().join(format!(
-            "newkitine-upload-cap-{}-{:?}",
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "newkitine-{label}-{}-{:?}",
             std::process::id(),
             std::time::SystemTime::now()
-        ));
-        std::fs::File::create(&path)
-            .unwrap()
-            .write_all(&vec![7u8; 200_000])
-            .unwrap();
-        let file = std::fs::File::open(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        ))
+    }
 
+    struct Harness {
+        peer: TcpStream,
+        events: mpsc::Receiver<ConnEvent>,
+        control: mpsc::Sender<ConnControl>,
+        task: JoinHandle<()>,
+    }
+
+    async fn start(limits: SharedLimits) -> Harness {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut peer = TcpStream::connect(listener.local_addr().unwrap())
+        let peer = TcpStream::connect(listener.local_addr().unwrap())
             .await
             .unwrap();
         let (stream, _) = listener.accept().await.unwrap();
         let (read_half, write_half) = stream.into_split();
-        let (events_tx, mut events) = mpsc::channel(64);
-        let (control_tx, control) = mpsc::channel(8);
-        let conn_task = tokio::spawn(run_file_loop(
+        let (events_tx, events) = mpsc::channel(256);
+        let (control, control_rx) = mpsc::channel(8);
+        let task = tokio::spawn(run_file_loop(
             1,
             events_tx,
-            control,
-            Arc::new(TransferLimits::default()),
+            control_rx,
+            limits,
             BufReader::new(read_half),
             BufWriter::new(write_half),
         ));
+        Harness {
+            peer,
+            events,
+            control,
+            task,
+        }
+    }
 
-        control_tx.send(ConnControl::SendFileInit(9)).await.unwrap();
-        control_tx
-            .send(ConnControl::Upload {
-                file,
-                size: 100_000,
-            })
-            .await
-            .unwrap();
-        assert_eq!(peer.read_u32_le().await.unwrap(), 9);
-        peer.write_u64_le(1_000).await.unwrap();
-        let mut received = Vec::new();
-        peer.read_to_end(&mut received).await.unwrap();
-        conn_task.await.unwrap();
-
-        assert_eq!(received.len(), 99_000);
+    fn assert_done(events: &mut mpsc::Receiver<ConnEvent>) {
         let mut saw_done = false;
         while let Ok(event) = events.try_recv() {
             match event {
@@ -366,5 +373,78 @@ mod tests {
             }
         }
         assert!(saw_done);
+    }
+
+    #[tokio::test]
+    async fn upload_stops_at_the_advertised_size_when_the_file_grew() {
+        let path = temp_path("upload-cap");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&vec![7u8; 200_000])
+            .unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let mut harness = start(Arc::new(TransferLimits::default())).await;
+        harness
+            .control
+            .send(ConnControl::SendFileInit(9))
+            .await
+            .unwrap();
+        harness
+            .control
+            .send(ConnControl::Upload {
+                file,
+                size: 100_000,
+            })
+            .await
+            .unwrap();
+        assert_eq!(harness.peer.read_u32_le().await.unwrap(), 9);
+        harness.peer.write_u64_le(1_000).await.unwrap();
+        let mut received = Vec::new();
+        harness.peer.read_to_end(&mut received).await.unwrap();
+        harness.task.await.unwrap();
+
+        assert_eq!(received.len(), 99_000);
+        assert_done(&mut harness.events);
+    }
+
+    #[tokio::test]
+    async fn throttled_download_keeps_bytes_buffered_with_the_init() {
+        let payload: Vec<u8> = (0..3_000u32).map(|i| (i % 251) as u8).collect();
+        let limits = Arc::new(TransferLimits::default());
+        limits.download.set_limit(64 * 1024);
+        let mut harness = start(limits).await;
+        let mut init = 5u32.to_le_bytes().to_vec();
+        init.extend_from_slice(&payload[..1_000]);
+        harness.peer.write_all(&init).await.unwrap();
+        match harness.events.recv().await.unwrap() {
+            ConnEvent::FileInit { token: 5, .. } => {}
+            other => panic!("unexpected event {other:?}"),
+        }
+
+        let path = temp_path("download");
+        let file = std::fs::File::create(&path).unwrap();
+        harness
+            .control
+            .send(ConnControl::Download {
+                file,
+                offset: 0,
+                bytes_left: payload.len() as u64,
+            })
+            .await
+            .unwrap();
+        assert_eq!(harness.peer.read_u64_le().await.unwrap(), 0);
+        harness.peer.write_all(&payload[1_000..]).await.unwrap();
+        harness.task.await.unwrap();
+
+        let mut written = Vec::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut written)
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(written, payload);
+        assert_done(&mut harness.events);
     }
 }
