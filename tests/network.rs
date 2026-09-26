@@ -12,7 +12,9 @@ use tokio::time::timeout;
 use common::{frame, free_port, start_fake_server, tempfile};
 use newkitine::network::spawn;
 use newkitine::network::{NetworkCommand, NetworkEvent};
-use newkitine::protocol::{MessageWriter, PeerInitMessage, PeerMessage, ServerResponse};
+use newkitine::protocol::{
+    DistributedMessage, MessageWriter, PeerInitMessage, PeerMessage, ServerResponse,
+};
 use newkitine::types::ConnectionType;
 
 async fn wait_for<T>(
@@ -352,10 +354,11 @@ async fn assert_no_connection(listener: &TcpListener) {
 
 async fn assert_closed(stream: &mut TcpStream) {
     let mut buf = [0u8; 64];
-    let read = timeout(Duration::from_secs(10), stream.read(&mut buf))
-        .await
-        .expect("connection was not closed");
-    assert!(matches!(read, Ok(0) | Err(_)));
+    timeout(Duration::from_secs(10), async {
+        while let Ok(1..) = stream.read(&mut buf).await {}
+    })
+    .await
+    .expect("connection was not closed");
 }
 
 fn queue_request(file: &str) -> PeerMessage {
@@ -490,4 +493,67 @@ async fn out_of_range_ports_are_not_truncated() {
     alice.server.expect(3).await;
     alice.server.send_peer_address("bob", wrapped_port).await;
     assert_no_connection(&bob).await;
+}
+
+async fn read_distributed_message(stream: &mut TcpStream) -> DistributedMessage {
+    timeout(Duration::from_secs(10), async {
+        let size = stream.read_u32_le().await.unwrap() as usize;
+        let code = stream.read_u8().await.unwrap();
+        let mut payload = vec![0u8; size - 1];
+        stream.read_exact(&mut payload).await.unwrap();
+        DistributedMessage::parse(code, &payload).unwrap()
+    })
+    .await
+    .expect("timed out waiting for distributed message")
+}
+
+async fn connect_distributed_child(listen_port: u16, username: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(("127.0.0.1", listen_port))
+        .await
+        .unwrap();
+    write_peer_init(
+        &mut stream,
+        PeerInitMessage::PeerInit {
+            username: username.into(),
+            conn_type: ConnectionType::Distributed,
+        },
+    )
+    .await;
+    stream
+}
+
+#[tokio::test]
+async fn incoming_distributed_child_replaces_previous_connection() {
+    let mut alice = scripted_stack("alice", None).await;
+    let mut stats = MessageWriter::new();
+    stats.write_string("alice");
+    for value in [100_000, 0, 0, 0, 0] {
+        stats.write_u32(value);
+    }
+    alice.server.send(36, stats).await;
+    let mut embedded = MessageWriter::new();
+    embedded.write_u8(3);
+    embedded.write_u32(49);
+    embedded.write_string("carol");
+    embedded.write_u32(1);
+    embedded.write_string("term");
+    alice.server.send(93, embedded).await;
+    wait_for(&mut alice.events, |event| match event {
+        NetworkEvent::DistributedSearch { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let mut first = connect_distributed_child(alice.listen_port, "bob").await;
+    assert!(matches!(
+        read_distributed_message(&mut first).await,
+        DistributedMessage::BranchLevel { .. }
+    ));
+
+    let mut second = connect_distributed_child(alice.listen_port, "bob").await;
+    assert_closed(&mut first).await;
+    assert!(matches!(
+        read_distributed_message(&mut second).await,
+        DistributedMessage::BranchLevel { .. }
+    ));
 }

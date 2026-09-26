@@ -22,7 +22,7 @@ pub(super) struct ServerState {
     control: mpsc::Sender<ConnControl>,
     username: String,
     logged_in: bool,
-    connected_at: Instant,
+    login_deadline: Option<Instant>,
     manual_disconnect: bool,
 }
 
@@ -133,7 +133,7 @@ impl Actor {
             control: control_tx,
             username,
             logged_in: false,
-            connected_at: Instant::now(),
+            login_deadline: Some(Instant::now() + LOGIN_TIMEOUT),
             manual_disconnect: false,
         });
 
@@ -157,13 +157,19 @@ impl Actor {
     }
 
     pub(super) fn check_login_timeout(&mut self) {
-        let timed_out =
-            self.server.state.as_ref().is_some_and(|state| {
-                !state.logged_in && state.connected_at.elapsed() > LOGIN_TIMEOUT
-            });
-        if timed_out {
-            self.handle_server_closed(Some("login timed out".into()));
+        let Some(state) = &mut self.server.state else {
+            return;
+        };
+        if state.logged_in
+            || state
+                .login_deadline
+                .is_none_or(|deadline| Instant::now() < deadline)
+        {
+            return;
         }
+        state.login_deadline = None;
+        warn!("server did not answer login, disconnecting");
+        self.push_server(ConnControl::Close);
     }
 
     pub(super) fn push_server(&mut self, control: ConnControl) {

@@ -100,6 +100,11 @@ impl Actor {
         self.push_conn(conn_id, ConnControl::Close);
     }
 
+    pub(super) fn discard_conn(&mut self, conn_id: ConnId) {
+        self.close_conn(conn_id);
+        self.handle_conn_closed(conn_id, None);
+    }
+
     pub(super) fn handle_accepted(&mut self, stream: tokio::net::TcpStream, addr: SocketAddr) {
         let (control_tx, control_rx) = mpsc::channel(CONN_CONTROL_QUEUE_CAPACITY);
         let ip = match addr {

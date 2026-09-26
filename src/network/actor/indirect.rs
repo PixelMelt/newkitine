@@ -561,7 +561,7 @@ impl Actor {
                     self.peers.get_mut(conn_id).unwrap().init_id = Some(init_id);
                     if let Some(previous) = previous {
                         debug!(username, ?conn_type, "discarding existing connection");
-                        self.close_conn(previous);
+                        self.discard_conn(previous);
                     }
                     self.flush_init_queue(init_id);
                 }
