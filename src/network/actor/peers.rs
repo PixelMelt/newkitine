@@ -77,12 +77,6 @@ impl Peers {
         self.conns.len()
     }
 
-    pub(super) fn is_established(&self, conn_id: ConnId) -> bool {
-        self.conns
-            .get(&conn_id)
-            .is_some_and(|conn| conn.established)
-    }
-
     pub(super) fn close_all(&mut self) {
         for conn in self.conns.values() {
             conn.push(ConnControl::Close);
@@ -104,6 +98,11 @@ impl Actor {
 
     pub(super) fn close_conn(&mut self, conn_id: ConnId) {
         self.push_conn(conn_id, ConnControl::Close);
+    }
+
+    pub(super) fn discard_conn(&mut self, conn_id: ConnId) {
+        self.close_conn(conn_id);
+        self.handle_conn_closed(conn_id, None);
     }
 
     pub(super) fn handle_accepted(&mut self, stream: tokio::net::TcpStream, addr: SocketAddr) {
@@ -191,17 +190,23 @@ impl Actor {
             .clone()
             .expect("outgoing connection established without identity");
         let ip = conn.ip;
+        let init_id = conn.init_id;
+        let pierced = conn.pierce_token.is_some();
+        if let Some(init_id) = init_id
+            && !self.indirect.mark_established(init_id, conn_id)
+        {
+            return;
+        }
         self.emit(NetworkEvent::PeerConnected {
             username: username.clone(),
             conn_type,
             conn_id,
             ip,
         });
-        if let Some(init_id) = self.peers.get(conn_id).and_then(|conn| conn.init_id) {
-            if self.indirect.mark_established(init_id, conn_id) {
-                self.flush_init_queue(init_id);
-            }
-        } else if conn_type == ConnectionType::Distributed {
+        if let Some(init_id) = init_id {
+            self.flush_init_queue(init_id);
+        }
+        if pierced && conn_type == ConnectionType::Distributed {
             self.accept_child_peer(conn_id, &username);
         }
     }

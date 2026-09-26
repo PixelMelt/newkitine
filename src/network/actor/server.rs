@@ -1,8 +1,10 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use super::{Actor, CONN_CONTROL_QUEUE_CAPACITY};
@@ -13,10 +15,14 @@ use crate::protocol::{
 };
 use crate::types::{ConnectionType, UserStatus};
 
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_secs(1);
+
 pub(super) struct ServerState {
     control: mpsc::Sender<ConnControl>,
     username: String,
     logged_in: bool,
+    login_deadline: Option<Instant>,
     manual_disconnect: bool,
 }
 
@@ -127,6 +133,7 @@ impl Actor {
             control: control_tx,
             username,
             logged_in: false,
+            login_deadline: Some(Instant::now() + LOGIN_TIMEOUT),
             manual_disconnect: false,
         });
 
@@ -140,10 +147,29 @@ impl Actor {
                             return;
                         }
                     }
-                    Err(error) => debug!(%error, "incoming connection failed"),
+                    Err(error) => {
+                        warn!(%error, "accepting peer connection failed, backing off");
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                    }
                 }
             }
         }));
+    }
+
+    pub(super) fn check_login_timeout(&mut self) {
+        let Some(state) = &mut self.server.state else {
+            return;
+        };
+        if state.logged_in
+            || state
+                .login_deadline
+                .is_none_or(|deadline| Instant::now() < deadline)
+        {
+            return;
+        }
+        state.login_deadline = None;
+        warn!("server did not answer login, disconnecting");
+        self.push_server(ConnControl::Close);
     }
 
     pub(super) fn push_server(&mut self, control: ConnControl) {
@@ -197,12 +223,16 @@ impl Actor {
                 port,
                 token,
                 ..
-            } => match ConnectionType::from_str_value(conn_type) {
-                Some(conn_type) => {
-                    let addr = SocketAddrV4::new(*ip_address, *port as u16);
+            } => match (
+                ConnectionType::from_str_value(conn_type),
+                u16::try_from(*port).ok().filter(|&port| port != 0),
+            ) {
+                (Some(conn_type), Some(port)) => {
+                    let addr = SocketAddrV4::new(*ip_address, port);
                     self.handle_connect_to_peer(user.clone(), conn_type, addr, *token);
                 }
-                None => debug!(conn_type, "unknown connection type"),
+                (None, _) => debug!(conn_type, "unknown connection type"),
+                (_, None) => debug!(user, port, "skipping indirect connection, invalid port"),
             },
             ServerResponse::CantConnectToPeer { token } => {
                 self.handle_cant_connect(*token);
@@ -218,7 +248,7 @@ impl Actor {
                 port,
                 ..
             } => {
-                self.handle_peer_address(user, *ip_address, *port as u16);
+                self.handle_peer_address(user, *ip_address, *port);
             }
             ServerResponse::WatchUser {
                 user,
@@ -286,6 +316,7 @@ impl Actor {
             allowed.search_tokens.clear();
             allowed.shared_list_users.clear();
             allowed.user_info_users.clear();
+            allowed.folder_contents.clear();
         }
         self.emit(NetworkEvent::ServerDisconnected {
             manual: state.manual_disconnect,

@@ -98,7 +98,10 @@ impl Actor {
                         stream.expect("accept channel closed while the actor holds the sender");
                     self.handle_accepted(stream, addr);
                 }
-                _ = sweep.tick() => self.sweep_indirect_requests(),
+                _ = sweep.tick() => {
+                    self.sweep_indirect_requests();
+                    self.check_login_timeout();
+                }
                 _ = ping.tick() => {
                     if self.server.is_logged_in() {
                         self.send_to_server(ServerRequest::ServerPing);

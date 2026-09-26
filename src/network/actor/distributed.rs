@@ -73,7 +73,15 @@ impl Actor {
         self.close_parent_candidate_connections();
         self.distributed.potential_parents.clear();
         for parent in parents {
-            let addr = SocketAddrV4::new(parent.ip_address, parent.port as u16);
+            let Some(port) = u16::try_from(parent.port).ok().filter(|&port| port != 0) else {
+                debug!(
+                    username = parent.username,
+                    port = parent.port,
+                    "skipping parent candidate, invalid port"
+                );
+                continue;
+            };
+            let addr = SocketAddrV4::new(parent.ip_address, port);
             self.distributed.potential_parents.insert(
                 parent.username.clone(),
                 PotentialParent {
