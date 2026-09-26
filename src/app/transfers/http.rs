@@ -8,12 +8,10 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::client::{AbortResult, EnqueueResult, RetryResult};
+use crate::client::{AbortResult, EnqueueResult, FOLDER_DOWNLOAD_FILE_LIMIT, RetryResult};
 use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus};
 
 use crate::app::state::App;
-
-const FOLDER_DOWNLOAD_FILE_LIMIT: usize = 1000;
 
 pub(in crate::app) fn router() -> Router<Arc<App>> {
     Router::new()

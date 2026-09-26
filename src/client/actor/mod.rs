@@ -340,15 +340,13 @@ impl ClientActor {
                 username,
                 token,
                 conn_id,
-            } => self.handle_file_transfer_init(&username, token, conn_id),
+                direction,
+            } => self.handle_file_transfer_init(&username, token, conn_id, direction),
             NetworkEvent::FileDownloadProgress {
-                username,
-                token,
+                conn_id,
                 bytes_left,
             } => {
-                let updates = self
-                    .downloads
-                    .handle_download_progress(&username, token, bytes_left);
+                let updates = self.downloads.handle_download_progress(conn_id, bytes_left);
                 self.emit_transfers(updates);
             }
             NetworkEvent::FileUploadProgress {
@@ -365,14 +363,18 @@ impl ClientActor {
             NetworkEvent::FileTransferError {
                 username,
                 token,
+                conn_id,
+                direction,
                 error,
             } => {
-                let updates = if self.downloads.owns_token(&username, token) {
-                    self.downloads
-                        .handle_transfer_error(&username, token, &error)
-                } else {
-                    self.uploads
-                        .handle_transfer_error(&username, token, &error, &self.users)
+                let updates = match direction {
+                    TransferDirection::Download => {
+                        self.downloads.handle_transfer_error(conn_id, &error)
+                    }
+                    TransferDirection::Upload => {
+                        self.uploads
+                            .handle_transfer_error(&username, token, &error, &self.users)
+                    }
                 };
                 self.emit_transfers(updates);
             }
@@ -380,7 +382,8 @@ impl ClientActor {
                 username,
                 token,
                 conn_id,
-            } => self.handle_file_connection_closed(&username, token, conn_id),
+                direction,
+            } => self.handle_file_connection_closed(&username, token, conn_id, direction),
         }
     }
 }

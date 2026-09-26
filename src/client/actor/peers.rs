@@ -33,8 +33,10 @@ impl ClientActor {
                 filesize,
             } => match direction {
                 TransferDirection::Upload => {
-                    self.downloads
+                    let updates = self
+                        .downloads
                         .handle_transfer_request(&username, token, &file, filesize);
+                    self.emit_transfers(updates);
                 }
                 TransferDirection::Download => {
                     let (updates, accepted) = self.uploads.handle_legacy_transfer_request(

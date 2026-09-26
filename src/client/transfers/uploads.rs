@@ -142,10 +142,6 @@ impl Uploads {
         u32::from(self.queue.is_active(username))
     }
 
-    pub fn owns_token(&self, username: &str, token: u32) -> bool {
-        self.transfers.owns_token(username, token)
-    }
-
     pub fn seed(&mut self, seed: TransferSnapshot) {
         let phase = TransferPhase::from_seed(&seed);
         let key = (seed.username.clone(), seed.virtual_path.clone());
@@ -450,6 +446,7 @@ impl Uploads {
         users: &Users,
     ) -> Vec<TransferWork> {
         let Some(key) = self.transfers.key_by_token(username, token).cloned() else {
+            self.net.send(NetworkCommand::CloseConnection(conn_id));
             return Vec::new();
         };
         if self.transfers.conn_of(&key).is_some() {
@@ -539,13 +536,14 @@ impl Uploads {
     pub fn handle_file_connection_closed(
         &mut self,
         username: &str,
-        token: Option<u32>,
+        token: u32,
         conn_id: ConnId,
         users: &Users,
     ) -> Vec<TransferWork> {
         let key = match self.transfers.key_by_conn(conn_id).cloned().or_else(|| {
-            token
-                .and_then(|token| self.transfers.key_by_token(username, token).cloned())
+            self.transfers
+                .key_by_token(username, token)
+                .cloned()
                 .filter(|key| self.transfers.conn_of(key).is_none())
         }) {
             Some(key) => key,
@@ -999,7 +997,7 @@ mod tests {
     async fn a_peer_resuming_at_the_end_of_the_file_is_not_a_delivery() {
         let (mut uploads, users, token, conn_id, size) = transferring("resume-end");
         uploads.handle_upload_progress("peer", token, size, 0);
-        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id, &users);
+        let work = uploads.handle_file_connection_closed("peer", token, conn_id, &users);
         assert_eq!(delivered_of(&work), Some(0));
         let key = ("peer".to_owned(), TRACKS[0].to_owned());
         assert_eq!(
@@ -1012,7 +1010,7 @@ mod tests {
     async fn a_peer_resuming_mid_file_is_a_delivery() {
         let (mut uploads, users, token, conn_id, size) = transferring("resume-mid");
         uploads.handle_upload_progress("peer", token, size / 2, size - size / 2);
-        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id, &users);
+        let work = uploads.handle_file_connection_closed("peer", token, conn_id, &users);
         assert_eq!(delivered_of(&work), Some(size - size / 2));
     }
 
@@ -1020,7 +1018,7 @@ mod tests {
     async fn an_offset_past_the_end_of_the_file_is_not_a_delivery() {
         let (mut uploads, users, token, conn_id, size) = transferring("resume-past");
         uploads.handle_upload_progress("peer", token, size + 1, 0);
-        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id, &users);
+        let work = uploads.handle_file_connection_closed("peer", token, conn_id, &users);
         assert_eq!(delivered_of(&work), Some(0));
         assert_eq!(uploads.upload_speed, 0);
     }
@@ -1029,7 +1027,7 @@ mod tests {
     async fn a_duplicate_file_connection_does_not_finish_the_primary_transfer() {
         let (mut uploads, users, token, conn_id, size) = transferring("dup-conn");
         uploads.handle_upload_progress("peer", token, 0, size);
-        let work = uploads.handle_file_connection_closed("peer", Some(token), conn_id + 1, &users);
+        let work = uploads.handle_file_connection_closed("peer", token, conn_id + 1, &users);
         assert!(work.is_empty());
         let key = ("peer".to_owned(), TRACKS[0].to_owned());
         assert_eq!(uploads.transfers.conn_of(&key), Some(conn_id));

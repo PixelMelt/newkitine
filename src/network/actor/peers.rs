@@ -10,7 +10,7 @@ use crate::network::ConnId;
 use crate::network::NetworkEvent;
 use crate::network::conn::{ConnControl, PeerTask, run_incoming_peer, run_outgoing_peer};
 use crate::protocol::{PeerInitMessage, PeerMessage, ServerRequest};
-use crate::types::ConnectionType;
+use crate::types::{ConnectionType, TransferDirection};
 
 #[derive(Clone)]
 pub(super) struct PeerIdentity {
@@ -23,7 +23,7 @@ pub(super) struct Conn {
     pub(super) identity: Option<PeerIdentity>,
     pub(super) init_id: Option<InitId>,
     pub(super) established: bool,
-    pub(super) file_token: Option<u32>,
+    pub(super) file_transfer: Option<(u32, TransferDirection)>,
     pub(super) pierce_token: Option<u32>,
     pub(super) ip: Option<Ipv4Addr>,
 }
@@ -117,7 +117,7 @@ impl Actor {
             identity: None,
             init_id: None,
             established: true,
-            file_token: None,
+            file_transfer: None,
             pierce_token: None,
             ip,
         });
@@ -153,7 +153,7 @@ impl Actor {
             }),
             init_id,
             established: false,
-            file_token: None,
+            file_transfer: None,
             pierce_token,
             ip: Some(*addr.ip()),
         });
@@ -251,11 +251,14 @@ impl Actor {
         };
         match conn_type {
             ConnectionType::File => {
-                self.emit(NetworkEvent::FileConnectionClosed {
-                    username,
-                    token: conn.file_token,
-                    conn_id,
-                });
+                if let Some((token, direction)) = conn.file_transfer {
+                    self.emit(NetworkEvent::FileConnectionClosed {
+                        username,
+                        token,
+                        conn_id,
+                        direction,
+                    });
+                }
             }
             ConnectionType::Distributed => {
                 self.handle_distributed_conn_closed(&username, conn_id);

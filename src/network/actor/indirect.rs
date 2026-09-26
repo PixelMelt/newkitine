@@ -13,7 +13,7 @@ use crate::network::conn::ConnControl;
 use crate::protocol::{
     PeerInitMessage, PeerMessage, ServerRequest, increment_token, initial_token,
 };
-use crate::types::ConnectionType;
+use crate::types::{ConnectionType, TransferDirection};
 
 const INDIRECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_ADDRESS_TTL: Duration = Duration::from_secs(1800);
@@ -400,7 +400,7 @@ impl Actor {
                 QueuedItem::Peer(message) => ConnControl::Send(message.to_bytes()),
                 QueuedItem::Frame(bytes) => ConnControl::Send(bytes),
                 QueuedItem::FileInit(token) => {
-                    conn.file_token = Some(token);
+                    conn.file_transfer = Some((token, TransferDirection::Upload));
                     sent_file_init = Some(token);
                     ConnControl::SendFileInit(token)
                 }
@@ -416,6 +416,7 @@ impl Actor {
                 username,
                 token,
                 conn_id,
+                direction: TransferDirection::Upload,
             });
         }
     }
