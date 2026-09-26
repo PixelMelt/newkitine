@@ -1,61 +1,67 @@
 import { writable } from 'svelte/store';
 import { get as apiGet } from '../api.js';
 
-export const rooms = writable({ available: [], joined: {} });
-export const privateChats = writable({});
+export const rooms = writable({ available: [], joined: new Map() });
+export const privateChats = writable(new Map());
 export const chatPartners = writable([]);
 
-function messageKey(m) {
-	return m.id != null ? `#${m.id}` : `${m.timestamp}\u0000${m.sender}\u0000${m.message}`;
+const ROOM_MESSAGE_LIMIT = 200;
+const historyRequested = new Set();
+
+function mergeById(...lists) {
+	const byId = new Map();
+	for (const list of lists) {
+		for (const message of list) byId.set(message.id, message);
+	}
+	return [...byId.values()].sort((a, b) => a.id - b.id);
 }
 
-function mergeHistory(history, live) {
-	const seen = new Set(history.map(messageKey));
-	const raced = live.filter((m) => !seen.has(messageKey(m)));
-	return [...history, ...raced];
-}
-
-async function loadRoomHistory(room) {
-	const data = await apiGet(`/rooms/${encodeURIComponent(room)}/messages?limit=100`);
+async function loadRoomHistory(name) {
+	const data = await apiGet(`/rooms/${encodeURIComponent(name)}/messages?limit=100`);
 	rooms.update((r) => {
-		if (r.joined[room]) {
-			r.joined[room].messages = mergeHistory(data.messages, r.joined[room].messages);
+		const room = r.joined.get(name);
+		if (room) {
+			room.messages = mergeById(data.messages, room.messages);
 		}
 		return r;
 	});
 }
 
-export async function loadChatHistory(username) {
+async function loadChatHistory(username) {
 	const data = await apiGet(`/chats/${encodeURIComponent(username)}?limit=200`);
-	privateChats.update((chats) => ({
-		...chats,
-		[username]: mergeHistory(data.messages, chats[username] ?? []),
-	}));
+	privateChats.update((chats) =>
+		chats.set(username, mergeById(chats.get(username) ?? [], data.messages)),
+	);
+}
+
+export function ensureChatHistory(username) {
+	if (historyRequested.has(username)) return;
+	historyRequested.add(username);
+	loadChatHistory(username);
 }
 
 export function applySnapshot(msg) {
-	for (const room of Object.keys(msg.rooms.joined)) {
-		msg.rooms.joined[room].messages = [];
-	}
-	rooms.set(msg.rooms);
+	const joined = new Map(
+		Object.entries(msg.rooms.joined).map(([name, view]) => [
+			name,
+			{ users: view.users, messages: [] },
+		]),
+	);
+	rooms.set({ available: msg.rooms.available, joined });
 	chatPartners.set(msg.chat_partners);
-	for (const room of Object.keys(msg.rooms.joined)) {
-		loadRoomHistory(room);
+	for (const name of joined.keys()) {
+		loadRoomHistory(name);
 	}
-	privateChats.update((chats) => {
-		for (const username of Object.keys(chats)) {
-			loadChatHistory(username);
-		}
-		return chats;
-	});
+	for (const username of historyRequested) {
+		loadChatHistory(username);
+	}
 }
 
 export const handlers = {
 	private_message: (msg) => {
-		privateChats.update((chats) => ({
-			...chats,
-			[msg.username]: [...(chats[msg.username] ?? []), msg.message],
-		}));
+		privateChats.update((chats) =>
+			chats.set(msg.username, mergeById(chats.get(msg.username) ?? [], [msg.message])),
+		);
 		chatPartners.update((list) =>
 			list.includes(msg.username) ? list : [msg.username, ...list],
 		);
@@ -70,8 +76,8 @@ export const handlers = {
 	},
 	room_message: (msg) => {
 		rooms.update((r) => {
-			const room = r.joined[msg.room];
-			room.messages = [...room.messages.slice(-199), msg.message];
+			const room = r.joined.get(msg.room);
+			room.messages = mergeById(room.messages, [msg.message]).slice(-ROOM_MESSAGE_LIMIT);
 			return r;
 		});
 	},
@@ -80,22 +86,21 @@ export const handlers = {
 	},
 	room_joined: (msg) => {
 		rooms.update((r) => {
-			r.joined = { ...r.joined, [msg.room]: { users: msg.users, messages: [] } };
+			r.joined.set(msg.room, { users: msg.users, messages: [] });
 			return r;
 		});
 		loadRoomHistory(msg.room);
 	},
 	room_left: (msg) => {
 		rooms.update((r) => {
-			const joined = { ...r.joined };
-			delete joined[msg.room];
-			return { ...r, joined };
+			r.joined.delete(msg.room);
+			return r;
 		});
 	},
 	room_user_joined: (msg) => {
 		rooms.update((r) => {
-			const room = r.joined[msg.room];
-			if (room && !room.users.includes(msg.username)) {
+			const room = r.joined.get(msg.room);
+			if (!room.users.includes(msg.username)) {
 				room.users = [...room.users, msg.username].sort();
 			}
 			return r;
@@ -103,10 +108,8 @@ export const handlers = {
 	},
 	room_user_left: (msg) => {
 		rooms.update((r) => {
-			const room = r.joined[msg.room];
-			if (room) {
-				room.users = room.users.filter((u) => u !== msg.username);
-			}
+			const room = r.joined.get(msg.room);
+			room.users = room.users.filter((u) => u !== msg.username);
 			return r;
 		});
 	},

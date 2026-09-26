@@ -129,6 +129,7 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         }
         ClientEvent::Privileges { seconds } => session::privileges(app, seconds),
         ClientEvent::AdminMessage { message } => session::server_message(app, message),
+        ClientEvent::Relogged => session::relogged(app),
         ClientEvent::Observed(observation) => {
             app.stats.record(&observation, app.geo.as_ref());
             if let Observation::QueueRequest {

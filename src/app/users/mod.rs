@@ -445,6 +445,21 @@ mod tests {
     }
 
     #[test]
+    fn replies_to_a_requested_profile_land_on_its_entry() {
+        let mut state = UsersState::default();
+        state.ensure_info("peer");
+        let stats = state
+            .set_info_stats("peer", UserStats::default())
+            .expect("stats reply after request");
+        assert_eq!(stats.stats, Some(UserStats::default()));
+        let interests = state
+            .set_info_interests("peer", vec!["jazz".into()], vec![])
+            .expect("interests reply after request");
+        assert_eq!(interests.interests_liked, vec!["jazz".to_string()]);
+        assert!(!interests.received);
+    }
+
+    #[test]
     fn rebrowsing_same_user_does_not_evict() {
         let mut state = UsersState::default();
         for i in 0..MAX_RETAINED_BROWSES as i64 {

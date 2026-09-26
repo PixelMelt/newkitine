@@ -143,5 +143,6 @@ pub enum ClientEvent {
     AdminMessage {
         message: String,
     },
+    Relogged,
     Observed(Observation),
 }

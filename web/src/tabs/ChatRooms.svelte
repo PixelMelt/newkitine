@@ -14,15 +14,15 @@
   let newRoom = '';
   let draft = '';
   let showAvailable = false;
-  let unread = {};
-  let counts = {};
+  let unread = Object.create(null);
+  let counts = Object.create(null);
 
-  $: joinedNames = Object.keys($rooms.joined).sort();
-  $: if (!$rooms.joined[selected] && joinedNames.length) selected = joinedNames[0];
-  $: current = $rooms.joined[selected] ?? null;
+  $: joinedNames = [...$rooms.joined.keys()].sort();
+  $: if (!$rooms.joined.has(selected) && joinedNames.length) selected = joinedNames[0];
+  $: current = $rooms.joined.get(selected) ?? null;
 
   $: {
-    for (const [room, view] of Object.entries($rooms.joined)) {
+    for (const [room, view] of $rooms.joined) {
       const chatMessages = view.messages.length;
       if (counts[room] !== undefined && chatMessages > counts[room]
           && !(room === selected && $activeTab === 'rooms' && !showAvailable)) {

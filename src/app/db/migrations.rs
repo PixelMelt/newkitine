@@ -1,6 +1,8 @@
 use sqlx::{Executor, MySql, MySqlPool, Row};
 use tracing::info;
 
+use crate::app::interests::normalize_interest;
+
 const BASELINE: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS transfers (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -85,7 +87,7 @@ const BASELINE: &[&str] = &[
     )",
 ];
 
-const LATEST_VERSION: i32 = 13;
+const LATEST_VERSION: i32 = 14;
 
 pub async fn init_schema(pool: &MySqlPool) {
     sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL PRIMARY KEY)")
@@ -221,6 +223,52 @@ pub async fn init_schema(pool: &MySqlPool) {
         record_delivered_bytes(pool).await;
         record_migration(pool, 13).await;
     }
+    if applied < 14 {
+        normalize_stored_interests(pool).await;
+        record_migration(pool, 14).await;
+    }
+}
+
+fn interests_migration_failed<T>(error: sqlx::Error) -> T {
+    panic!("schema migration 14 failed: {error}")
+}
+
+async fn normalize_stored_interests(pool: &MySqlPool) {
+    let mut tx = pool
+        .begin()
+        .await
+        .unwrap_or_else(interests_migration_failed);
+    let rows: Vec<(String, String)> = sqlx::query("SELECT kind, thing FROM interests")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_else(interests_migration_failed)
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    for (kind, thing) in rows {
+        let normalized = normalize_interest(&thing);
+        if normalized.as_deref() == Some(thing.as_str()) {
+            continue;
+        }
+        sqlx::query(
+            "DELETE FROM interests
+             WHERE kind = ? AND CAST(thing AS BINARY) = CAST(? AS BINARY)",
+        )
+        .bind(&kind)
+        .bind(&thing)
+        .execute(&mut *tx)
+        .await
+        .unwrap_or_else(interests_migration_failed);
+        if let Some(normalized) = normalized {
+            sqlx::query("INSERT IGNORE INTO interests (kind, thing) VALUES (?, ?)")
+                .bind(&kind)
+                .bind(&normalized)
+                .execute(&mut *tx)
+                .await
+                .unwrap_or_else(interests_migration_failed);
+        }
+    }
+    tx.commit().await.unwrap_or_else(interests_migration_failed);
 }
 
 async fn record_delivered_bytes(pool: &MySqlPool) {
