@@ -16,14 +16,14 @@ impl ClientActor {
                 ..
             } => {
                 if !self.users.is_ignored(&username) {
-                    self.emit(ClientEvent::SearchResults(SearchResult {
+                    self.handle_search_response(SearchResult {
                         token,
                         username,
                         results,
                         free_upload_slots,
                         upload_speed,
                         queue_size,
-                    }));
+                    });
                 }
             }
             PeerMessage::TransferRequest {

@@ -181,7 +181,6 @@ impl ClientActor {
         }
         self.net.server(ServerRequest::CheckPrivileges);
         self.downloads.request_queued();
-        self.schedule_wishlist();
         self.emit(ClientEvent::LoggedIn { username, banner });
     }
 
@@ -212,7 +211,7 @@ impl ClientActor {
         let uploads = self.uploads.reset();
         self.emit_transfers(uploads);
         self.users.reset();
-        self.wishlist.at = None;
+        self.wishlist.stop();
         self.emit(ClientEvent::Disconnected);
         if self.session.reconnect_now {
             self.session.reconnect_now = false;

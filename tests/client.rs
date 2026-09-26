@@ -257,7 +257,10 @@ async fn client_shares_answers_search_and_uploads() {
     })
     .await;
 
-    let token = frank.search("unique melody", SearchScope::Global).await;
+    let token = frank
+        .search("unique melody", SearchScope::Global)
+        .await
+        .unwrap();
     let (result_username, results) = wait_client(&mut frank_events, |event| match event {
         ClientEvent::SearchResults(result) if result.token == token => {
             Some((result.username, result.results))
@@ -404,13 +407,100 @@ async fn wishlist_search_runs_on_interval() {
     heidi_config.wishlist = vec!["wishlist gem".into()];
     let (_heidi, mut heidi_events, _heidi_transfers) = Client::spawn(heidi_config);
 
-    let (username, results) = wait_client(&mut heidi_events, |event| match event {
-        ClientEvent::SearchResults(result) => Some((result.username, result.results)),
+    let started = wait_client(&mut heidi_events, |event| match event {
+        ClientEvent::SearchStarted { token, query } => Some((token, query)),
+        ClientEvent::SearchResults(_) => panic!("wish results before the wish search was shown"),
         _ => None,
     })
     .await;
+    assert_eq!(started.1, "wishlist gem");
+    let (token, username, results) = wait_client(&mut heidi_events, |event| match event {
+        ClientEvent::SearchResults(result) => Some((result.token, result.username, result.results)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(token, started.0);
     assert_eq!(username, "grace");
     assert_eq!(results[0].name, "Stash\\wishlist gem.mp3");
+
+    let rerun = wait_client(&mut heidi_events, |event| match event {
+        ClientEvent::SearchStarted { .. } => panic!("a wish rerun must not start a new search"),
+        ClientEvent::SearchResults(result) => Some(result.token),
+        _ => None,
+    })
+    .await;
+    assert_eq!(rerun, started.0);
+}
+
+#[tokio::test]
+async fn search_results_are_filtered_against_the_query() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let (responder, mut responder_events) = spawn_network();
+    responder.send(NetworkCommand::ServerConnect {
+        address: server_addr,
+        username: "ivan".into(),
+        password: "secret".into(),
+        listen_port: free_port(),
+    });
+    wait_net(&mut responder_events, |event| match event {
+        NetworkEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let (judy, mut judy_events, _judy_transfers) = Client::spawn(client_config(
+        server_addr,
+        "judy",
+        free_port(),
+        temp_dir("judy-downloads"),
+    ));
+    wait_client(&mut judy_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let token = judy
+        .search("\"night drive\" -live", SearchScope::Global)
+        .await
+        .unwrap();
+    assert_eq!(judy.search(" \t ", SearchScope::Global).await, None);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let file = |name: &str| newkitine::types::FileInfo {
+        name: name.into(),
+        size: 1,
+        attributes: FileAttributes::default(),
+    };
+    let respond = |results: Vec<newkitine::types::FileInfo>| {
+        responder.peer(
+            "judy",
+            PeerMessage::FileSearchResponse {
+                username: "ivan".into(),
+                token,
+                results,
+                free_upload_slots: true,
+                upload_speed: 1,
+                queue_size: 0,
+                unknown: 0,
+                private_results: Vec::new(),
+            },
+        );
+    };
+    respond(vec![file("Music\\unrelated.mp3")]);
+    respond(vec![
+        file("Music\\Night Drive.mp3"),
+        file("Music\\Night Drive (Live).mp3"),
+        file("Music\\Night - Drive.mp3"),
+    ]);
+
+    let received = wait_client(&mut judy_events, |event| match event {
+        ClientEvent::SearchResults(result) => Some(result.results),
+        _ => None,
+    })
+    .await;
+    assert_eq!(received, vec![file("Music\\Night Drive.mp3")]);
 }
 
 #[tokio::test]
@@ -439,7 +529,10 @@ async fn client_receives_search_results() {
     })
     .await;
 
-    let token = dave.search("test query", SearchScope::Global).await;
+    let token = dave
+        .search("test query", SearchScope::Global)
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let results = vec![newkitine::types::FileInfo {
@@ -532,7 +625,10 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
 
-    let token = frank.search("guarded song", SearchScope::Global).await;
+    let token = frank
+        .search("guarded song", SearchScope::Global)
+        .await
+        .unwrap();
     let (matched, query) = wait_client(&mut eve_events, |event| match event {
         ClientEvent::Observed(Observation::SearchSeen {
             username,
@@ -589,7 +685,10 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
 
-    frank.search("guarded song", SearchScope::Global).await;
+    frank
+        .search("guarded song", SearchScope::Global)
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(event) = eve_events.try_recv() {
         if let ClientEvent::Observed(Observation::SearchSeen { username, .. }) = &event {
