@@ -181,12 +181,8 @@ impl Actor {
                 upload_bps,
                 download_bps,
             } => {
-                self.limits
-                    .upload_bps
-                    .store(upload_bps, std::sync::atomic::Ordering::Relaxed);
-                self.limits
-                    .download_bps
-                    .store(download_bps, std::sync::atomic::Ordering::Relaxed);
+                self.limits.upload.set_limit(upload_bps);
+                self.limits.download.set_limit(download_bps);
             }
             NetworkCommand::AllowSearchToken(token) => {
                 self.allowed.write().unwrap().search_tokens.insert(token);

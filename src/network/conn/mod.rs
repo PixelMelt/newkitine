@@ -1,13 +1,14 @@
+mod bandwidth;
 mod file;
 mod peer;
 mod server;
 
+use bandwidth::Bandwidth;
 pub use peer::{run_incoming_peer, run_outgoing_peer};
 pub use server::run_server_conn;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -37,8 +38,8 @@ pub type SharedAllowed = Arc<RwLock<AllowedResponses>>;
 
 #[derive(Default)]
 pub struct TransferLimits {
-    pub upload_bps: AtomicU64,
-    pub download_bps: AtomicU64,
+    pub upload: Bandwidth,
+    pub download: Bandwidth,
 }
 
 pub type SharedLimits = Arc<TransferLimits>;
