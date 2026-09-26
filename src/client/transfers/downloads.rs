@@ -697,6 +697,8 @@ impl Downloads {
             let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.phase = TransferPhase::Queued;
             transfer.activated_at = None;
+            transfer.legacy_attempt = false;
+            transfer.size_changed = false;
             updates.push(TransferWork::Update(transfer.snapshot()));
         }
         updates
@@ -1200,6 +1202,14 @@ mod tests {
             .downloads
             .handle_file_transfer_init("uploader", 7, 1);
         let _ = harness.downloads.handle_transfer_error(1, "reset by peer");
+        assert!(!harness.downloads.transfers.get(&key).unwrap().size_changed);
+
+        let _ = harness
+            .downloads
+            .handle_transfer_request("uploader", 6, "Music\\a.mp3", Some(400));
+        assert!(harness.downloads.transfers.get(&key).unwrap().size_changed);
+        let reset = harness.downloads.reset();
+        assert_eq!(statuses(&reset), vec![TransferStatus::Queued]);
         assert!(!harness.downloads.transfers.get(&key).unwrap().size_changed);
 
         let _ = harness
