@@ -251,11 +251,19 @@ pub async fn init_schema(pool: &MySqlPool) {
     }
 }
 
+fn interests_migration_failed<T>(error: sqlx::Error) -> T {
+    panic!("schema migration 14 failed: {error}")
+}
+
 async fn normalize_stored_interests(pool: &MySqlPool) {
-    let rows: Vec<(String, String)> = sqlx::query("SELECT kind, thing FROM interests")
-        .fetch_all(pool)
+    let mut tx = pool
+        .begin()
         .await
-        .unwrap_or_else(|error| panic!("schema migration 14 failed: {error}"))
+        .unwrap_or_else(interests_migration_failed);
+    let rows: Vec<(String, String)> = sqlx::query("SELECT kind, thing FROM interests")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_else(interests_migration_failed)
         .into_iter()
         .map(|row| (row.get(0), row.get(1)))
         .collect();
@@ -270,18 +278,19 @@ async fn normalize_stored_interests(pool: &MySqlPool) {
         )
         .bind(&kind)
         .bind(&thing)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
-        .unwrap_or_else(|error| panic!("schema migration 14 failed: {error}"));
+        .unwrap_or_else(interests_migration_failed);
         if let Some(normalized) = normalized {
             sqlx::query("INSERT IGNORE INTO interests (kind, thing) VALUES (?, ?)")
                 .bind(&kind)
                 .bind(&normalized)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
-                .unwrap_or_else(|error| panic!("schema migration 14 failed: {error}"));
+                .unwrap_or_else(interests_migration_failed);
         }
     }
+    tx.commit().await.unwrap_or_else(interests_migration_failed);
 }
 
 async fn record_delivered_bytes(pool: &MySqlPool) {
