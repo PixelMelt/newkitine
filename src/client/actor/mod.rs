@@ -6,6 +6,7 @@ mod session;
 mod sharing;
 mod transfers;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -22,7 +23,7 @@ use crate::network::{NetworkCommand, NetworkEvent, NetworkHandle, spawn as spawn
 use crate::protocol::PeerMessage;
 use crate::types::{RuntimeConfig, TransferDirection};
 
-use search::Wishlist;
+use search::{ActiveSearch, Wishlist};
 use session::Session;
 use sharing::{ScanJob, Sharing};
 
@@ -42,6 +43,7 @@ struct ClientActor {
     sharing: Sharing,
     session: Session,
     wishlist: Wishlist,
+    searches: HashMap<u32, ActiveSearch>,
     liked_interests: Vec<String>,
     hated_interests: Vec<String>,
 }
@@ -86,7 +88,8 @@ pub(crate) async fn run(
         ),
         sharing: Sharing::new(scan_tx, config.scan_cache),
         session: Session::new(),
-        wishlist: Wishlist::new(config.wishlist),
+        wishlist: Wishlist::new(),
+        searches: HashMap::new(),
         liked_interests: config.liked_interests,
         hated_interests: config.hated_interests,
         config: config.runtime,
@@ -97,6 +100,9 @@ pub(crate) async fn run(
             TransferDirection::Download => actor.downloads.seed(seed),
             TransferDirection::Upload => actor.uploads.seed(seed),
         }
+    }
+    for term in config.wishlist {
+        actor.add_wish(term);
     }
 
     actor.set_transfer_limits(
@@ -193,9 +199,7 @@ impl ClientActor {
                 query,
                 scope,
             } => self.start_search(token, query, scope),
-            ClientCommand::CancelSearch { token } => {
-                self.net.send(NetworkCommand::DisallowSearchToken(token));
-            }
+            ClientCommand::CancelSearch { token } => self.cancel_search(token),
             ClientCommand::Download {
                 username,
                 virtual_path,

@@ -26,6 +26,12 @@ function numericClauses(text, getValue, parseValue, bareIsMinimum) {
 	return clauses;
 }
 
+function bitrate({ bitrate, sample_rate, bit_depth }) {
+	if (bitrate !== null) return bitrate;
+	if (sample_rate && bit_depth) return Math.floor((sample_rate * bit_depth * 2) / 1000);
+	return -1;
+}
+
 function phrases(text) {
 	return text
 		.toLowerCase()
@@ -65,9 +71,7 @@ export function compileFilters(f) {
 		});
 	}
 	clauses.push(...numericClauses(f.size, ({ file }) => file.size, parseSize, true));
-	clauses.push(
-		...numericClauses(f.bitrate, ({ file }) => file.attributes?.bitrate ?? 0, Number, false),
-	);
+	clauses.push(...numericClauses(f.bitrate, ({ file }) => bitrate(file.attributes), Number, false));
 	clauses.push(
 		...numericClauses(
 			f.duration,

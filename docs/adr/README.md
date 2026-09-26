@@ -44,3 +44,4 @@ To add one: next number, one decision per file, sections Context / Decision / Co
 | [0034](0034-the-share-catalog-is-persisted-and-served-at-boot.md) | The share catalog is persisted and served at boot | Accepted | Matches: Nicotine+ persists its share databases, serves them at login, and keeps serving the old list during a rescan |
 | [0035](0035-installing-an-index-re-validates-active-uploads.md) | Installing an index re-validates active uploads | Accepted | Stricter than Nicotine+, which does not re-check uploads against a new share list |
 | [0036](0036-repeat-downloads-are-capped-per-file-not-convicted-per-user.md) | Repeat downloads are capped per file, not convicted per user | Accepted | No counterpart |
+| [0037](0037-the-client-actor-owns-outgoing-search-state.md) | The client actor owns outgoing search state | Accepted | Matches: Nicotine+ keeps per-token search requests, one token per wish, and shows wish results on the first match |

@@ -23,6 +23,16 @@ pub struct SearchView {
     pub results: Vec<SearchResponseView>,
 }
 
+impl SearchView {
+    fn accepts(&self, username: &str, max_responses: usize) -> bool {
+        self.results.len() < max_responses
+            && !self
+                .results
+                .iter()
+                .any(|response| response.username == username)
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct SearchResponseView {
     pub username: String,
@@ -131,7 +141,7 @@ pub fn apply_results(app: &App, result: SearchResult) {
         return;
     };
     let search = &mut data.search.searches[index];
-    if search.results.len() < max_search_responses {
+    if search.accepts(&response.username, max_search_responses) {
         search.results.push(response.clone());
         data.broadcast(AppEvent::SearchResults { token, response });
     }
@@ -212,6 +222,9 @@ async fn start_search(
     if let Err(status) = api::require_login(&app) {
         return status.into_response();
     }
+    if body.query.trim().is_empty() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     let scope = match body.mode.as_str() {
         "global" => SearchScope::Global,
         "buddies" => SearchScope::Buddies,
@@ -261,6 +274,9 @@ async fn list_wishlist(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 }
 
 async fn add_wish(State(app): State<Arc<App>>, Json(body): Json<WishBody>) -> StatusCode {
+    if body.term.trim().is_empty() {
+        return StatusCode::BAD_REQUEST;
+    }
     let _mutation = app.list_mutation.lock().await;
     if let Err(error) = insert_wish(&app.db, &body.term).await {
         return api::db_failed(error);
@@ -313,5 +329,24 @@ mod tests {
         }
         assert_eq!(state.searches.len(), MAX_RETAINED_SEARCHES);
         assert_eq!(state.searches[0].token, 2);
+    }
+
+    #[test]
+    fn a_peer_is_retained_once_per_search() {
+        let response = |username: &str| SearchResponseView {
+            username: username.into(),
+            free_upload_slots: true,
+            upload_speed: 0,
+            queue_size: 0,
+            files: Vec::new(),
+        };
+        let search = SearchView {
+            token: 1,
+            query: "query".into(),
+            results: vec![response("alice")],
+        };
+        assert!(!search.accepts("alice", 10));
+        assert!(search.accepts("bob", 10));
+        assert!(!search.accepts("bob", 1));
     }
 }
