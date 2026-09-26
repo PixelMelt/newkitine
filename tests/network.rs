@@ -12,7 +12,7 @@ use tokio::time::timeout;
 use common::{frame, free_port, start_fake_server, tempfile};
 use newkitine::network::spawn;
 use newkitine::network::{NetworkCommand, NetworkEvent};
-use newkitine::protocol::{MessageWriter, PeerInitMessage, PeerMessage};
+use newkitine::protocol::{MessageWriter, PeerInitMessage, PeerMessage, ServerResponse};
 use newkitine::types::ConnectionType;
 
 async fn wait_for<T>(
@@ -260,7 +260,7 @@ impl ScriptedServer {
 
 struct ScriptedStack {
     handle: newkitine::network::NetworkHandle,
-    _events: Receiver<NetworkEvent>,
+    events: Receiver<NetworkEvent>,
     server: ScriptedServer,
     listen_port: u16,
 }
@@ -303,7 +303,7 @@ async fn scripted_stack(username: &str, preamble: Option<(u32, MessageWriter)>) 
     .await;
     ScriptedStack {
         handle,
-        _events: events,
+        events,
         server,
         listen_port,
     }
@@ -394,6 +394,12 @@ async fn cant_connect_keeps_established_direct_connection() {
     assert_eq!(read_peer_message(&mut conn).await, queue_request("a.mp3"));
 
     alice.server.send_cant_connect(token).await;
+    wait_for(&mut alice.events, |event| match event {
+        NetworkEvent::ServerMessage(ServerResponse::CantConnectToPeer { .. }) => Some(()),
+        NetworkEvent::PeerConnectionError { .. } => panic!("live connection reported as failed"),
+        _ => None,
+    })
+    .await;
     alice.handle.peer("bob", queue_request("b.mp3"));
     assert_eq!(read_peer_message(&mut conn).await, queue_request("b.mp3"));
     assert_no_connection(&bob).await;
