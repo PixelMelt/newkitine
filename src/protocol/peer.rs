@@ -1,11 +1,18 @@
-use super::compress::{compress, decompress};
+use super::compress::{compress, decompress, decompress_prefix};
 use super::wire::{MessageReader, MessageWriter, ProtocolError};
 use crate::types::{FileAttributes, FileInfo, FolderContents, TransferDirection};
 
 const MAX_SHARES_SIZE: usize = 268435456;
 const MAX_RESULTS_SIZE: usize = 134217728;
+const MAX_RESPONSE_HEADER_SIZE: usize = 65536;
 const MAX_SEARCH_RESULTS_PER_RESPONSE: usize = 5000;
 const MAX_USER_PICTURE_SIZE: usize = 8388608;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseHeader {
+    Search { token: u32 },
+    FolderContents { directory: String },
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PeerMessage {
@@ -159,19 +166,15 @@ fn read_file_entry(r: &mut MessageReader, backslash_name: bool) -> Result<FileIn
 fn read_file_list(
     r: &mut MessageReader,
     backslash_name: bool,
-    max: usize,
+    keep: usize,
 ) -> Result<Vec<FileInfo>, ProtocolError> {
     let num = r.read_u32()? as usize;
-    if num > max {
-        return Err(ProtocolError::TooManyEntries {
-            what: "file list",
-            count: num,
-            limit: max,
-        });
-    }
-    let mut files = Vec::with_capacity(num.min(65536));
+    let mut files = Vec::with_capacity(num.min(keep).min(65536));
     for _ in 0..num {
-        files.push(read_file_entry(r, backslash_name)?);
+        let file = read_file_entry(r, backslash_name)?;
+        if files.len() < keep {
+            files.push(file);
+        }
     }
     if files.len() > 1 {
         files.sort_by(|a, b| a.name.cmp(&b.name));
@@ -382,6 +385,28 @@ impl PeerMessage {
         w.into_bytes()
     }
 
+    pub fn response_header(
+        code: u32,
+        payload: &[u8],
+    ) -> Result<Option<ResponseHeader>, ProtocolError> {
+        if !matches!(code, 9 | 37) {
+            return Ok(None);
+        }
+        let prefix = decompress_prefix(payload, MAX_RESPONSE_HEADER_SIZE)?;
+        let r = &mut MessageReader::new(&prefix);
+        Ok(Some(if code == 9 {
+            r.read_string()?;
+            ResponseHeader::Search {
+                token: r.read_u32()?,
+            }
+        } else {
+            r.read_u32()?;
+            ResponseHeader::FolderContents {
+                directory: r.read_string()?,
+            }
+        }))
+    }
+
     pub fn parse(code: u32, payload: &[u8]) -> Result<Self, ProtocolError> {
         Ok(match code {
             4 => Self::SharedFileListRequest,
@@ -440,15 +465,7 @@ impl PeerMessage {
                 let description = r.read_string()?;
                 let has_picture = r.read_bool()?;
                 let picture = if has_picture {
-                    let picture = r.read_bytes()?;
-                    if picture.len() > MAX_USER_PICTURE_SIZE {
-                        return Err(ProtocolError::TooManyEntries {
-                            what: "user picture bytes",
-                            count: picture.len(),
-                            limit: MAX_USER_PICTURE_SIZE,
-                        });
-                    }
-                    Some(picture)
+                    Some(r.read_bytes()?).filter(|picture| picture.len() <= MAX_USER_PICTURE_SIZE)
                 } else {
                     None
                 };

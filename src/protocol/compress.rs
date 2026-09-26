@@ -21,3 +21,9 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, ProtocolError> {
     }
     Ok(out)
 }
+
+pub fn decompress_prefix(data: &[u8], len: usize) -> Result<Vec<u8>, ProtocolError> {
+    let mut out = Vec::new();
+    ZlibDecoder::new(data).take(len as u64).read_to_end(&mut out)?;
+    Ok(out)
+}

@@ -258,7 +258,12 @@ impl Actor {
             } => {
                 self.handle_incoming_init(conn_id, init, addr);
             }
-            ConnEvent::Peer { conn_id, message } => self.handle_peer_message(conn_id, message),
+            ConnEvent::Peer {
+                conn_id,
+                message,
+                received_through,
+            } => self.handle_peer_message(conn_id, message, received_through),
+            ConnEvent::Unsent { username, messages } => self.emit_unsent(username, messages),
             ConnEvent::Distrib { conn_id, message } => {
                 self.handle_distrib_message(conn_id, message);
             }

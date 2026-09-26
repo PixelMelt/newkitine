@@ -1,25 +1,26 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, BufReader, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep_until, timeout};
+use tokio::time::{sleep_until, timeout};
 use tracing::debug;
 
 use super::file::run_file_loop;
 use super::{
-    ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, PEER_IDLE_TIMEOUT, PeerTask, SharedAllowed,
-    connect, write_all,
+    ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, OUTGOING_QUEUE_CAPACITY, PEER_IDLE_TIMEOUT,
+    PeerTask, SharedAllowed, SharedTraffic, SocketReader, connect, consumed, split_tracked,
+    write_all,
 };
 use crate::network::ConnId;
 use crate::network::codec::{
     FrameError, MAX_CONTROL_MESSAGE_SIZE, MAX_LARGE_RESPONSE_SIZE, MAX_PEER_MESSAGE_SIZE,
     read_frame_u8, read_payload,
 };
-use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage};
+use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage, ResponseHeader};
 use crate::types::ConnectionType;
 
 const GHOST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,9 +45,7 @@ pub async fn run_outgoing_peer(
             return;
         }
     };
-    let (read_half, write_half) = stream.into_split();
-    let reader = BufReader::new(read_half);
-    let mut writer = BufWriter::new(write_half);
+    let (reader, mut writer) = split_tracked(stream, task.traffic.clone());
 
     if write_all(&mut writer, &init.to_bytes()).await.is_err() {
         let _ = task
@@ -76,9 +75,7 @@ pub async fn run_incoming_peer(mut task: PeerTask, stream: TcpStream, addr: Sock
         tracing::warn!(%error, %addr, "cannot set nodelay, continuing without it");
     }
 
-    let (read_half, write_half) = stream.into_split();
-    let mut reader = BufReader::new(read_half);
-    let writer = BufWriter::new(write_half);
+    let (mut reader, writer) = split_tracked(stream, task.traffic.clone());
 
     let init = match timeout(
         GHOST_TIMEOUT,
@@ -167,7 +164,7 @@ pub async fn run_incoming_peer(mut task: PeerTask, stream: TcpStream, addr: Sock
 
 async fn run_typed_loop(
     task: PeerTask,
-    reader: BufReader<OwnedReadHalf>,
+    reader: SocketReader,
     writer: BufWriter<OwnedWriteHalf>,
     username: String,
     conn_type: ConnectionType,
@@ -178,42 +175,50 @@ async fn run_typed_loop(
         control,
         allowed,
         limits,
+        traffic,
     } = task;
-    match conn_type {
-        ConnectionType::Peer => {
-            let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE_CAPACITY);
-            let reader_task = tokio::spawn(read_peer_frames(reader, frames_tx, allowed, username));
-            run_message_loop(conn_id, events, control, frames, writer, reader_task).await;
-        }
-        ConnectionType::Distributed => {
-            let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE_CAPACITY);
-            let reader_task = tokio::spawn(read_distrib_frames(reader, frames_tx));
-            run_message_loop(conn_id, events, control, frames, writer, reader_task).await;
-        }
+    let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE_CAPACITY);
+    let reader_task = match conn_type {
+        ConnectionType::Peer => tokio::spawn(read_peer_frames(
+            reader,
+            frames_tx,
+            allowed,
+            username.clone(),
+        )),
+        ConnectionType::Distributed => tokio::spawn(read_distrib_frames(reader, frames_tx)),
         ConnectionType::File => {
             run_file_loop(conn_id, events, control, limits, reader, writer).await;
+            return;
         }
-    }
+    };
+    let conn = MessageConn {
+        conn_id,
+        username,
+        events,
+        control,
+        traffic,
+    };
+    run_message_loop(conn, frames, writer.into_inner(), reader_task).await;
 }
 
 const OFFLOADED_PARSE_THRESHOLD: usize = 1048576;
 
 enum PeerFrame {
-    Message(ConnEventPayload),
+    Peer {
+        message: PeerMessage,
+        received_through: u64,
+    },
+    Distrib(DistributedMessage),
     Fatal(Option<String>),
 }
 
-enum ConnEventPayload {
-    Peer(PeerMessage),
-    Distrib(DistributedMessage),
-}
-
 async fn read_peer_frames(
-    mut reader: BufReader<OwnedReadHalf>,
+    mut reader: SocketReader,
     frames: mpsc::Sender<PeerFrame>,
     allowed: SharedAllowed,
     username: String,
 ) {
+    let mut received_through = consumed(&reader);
     loop {
         let size = match reader.read_u32_le().await {
             Ok(size) => size as usize,
@@ -228,15 +233,16 @@ async fn read_peer_frames(
                 .await;
             return;
         }
-        let mut frame = vec![0u8; 4];
-        if let Err(error) = reader.read_exact(&mut frame).await {
-            let _ = frames.send(PeerFrame::Fatal(Some(error.to_string()))).await;
-            return;
-        }
-        let code = u32::from_le_bytes(frame[..4].try_into().unwrap());
+        let code = match reader.read_u32_le().await {
+            Ok(code) => code,
+            Err(error) => {
+                let _ = frames.send(PeerFrame::Fatal(Some(error.to_string()))).await;
+                return;
+            }
+        };
 
         let is_large_response = matches!(code, 5 | 16);
-        let limit = if code == 5 {
+        let limit = if is_large_response {
             MAX_LARGE_RESPONSE_SIZE
         } else {
             MAX_PEER_MESSAGE_SIZE
@@ -261,7 +267,21 @@ async fn read_peer_frames(
                 return;
             }
         };
-        let parsed = if payload.len() >= OFFLOADED_PARSE_THRESHOLD {
+        received_through += 4 + size as u64;
+
+        match PeerMessage::response_header(code, &payload) {
+            Ok(Some(header)) if !is_response_allowed(&allowed, &username, &header) => {
+                debug!(code, username, "dropping unsolicited peer response");
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                debug!(code, %error, "dropping unparsable peer response header");
+                continue;
+            }
+        }
+
+        let parsed = if payload.len() >= OFFLOADED_PARSE_THRESHOLD || is_compressed(code) {
             tokio::task::spawn_blocking(move || PeerMessage::parse(code, &payload))
                 .await
                 .expect("peer parse task panicked")
@@ -270,12 +290,11 @@ async fn read_peer_frames(
         };
         match parsed {
             Ok(message) => {
-                if !is_parsed_message_allowed(&allowed, &username, &message) {
-                    debug!(code, username, "dropping disallowed peer response");
-                    continue;
-                }
                 if frames
-                    .send(PeerFrame::Message(ConnEventPayload::Peer(message)))
+                    .send(PeerFrame::Peer {
+                        message,
+                        received_through,
+                    })
                     .await
                     .is_err()
                 {
@@ -287,43 +306,35 @@ async fn read_peer_frames(
     }
 }
 
+fn is_compressed(code: u32) -> bool {
+    matches!(code, 5 | 9 | 37)
+}
+
 fn is_large_response_allowed(allowed: &SharedAllowed, username: &str, code: u32) -> bool {
     let allowed = allowed.read().unwrap();
     match code {
         5 => allowed.shared_list_users.contains(username),
         16 => allowed.user_info_users.contains(username),
-        _ => true,
+        _ => unreachable!("peer code {code} is not a large response"),
     }
 }
 
-fn is_parsed_message_allowed(
-    allowed: &SharedAllowed,
-    username: &str,
-    message: &PeerMessage,
-) -> bool {
+fn is_response_allowed(allowed: &SharedAllowed, username: &str, header: &ResponseHeader) -> bool {
     let allowed = allowed.read().unwrap();
-    match message {
-        PeerMessage::FileSearchResponse { token, .. } => allowed.search_tokens.contains(token),
-        PeerMessage::FolderContentsResponse { directory, .. } => allowed
+    match header {
+        ResponseHeader::Search { token } => allowed.search_tokens.contains(token),
+        ResponseHeader::FolderContents { directory } => allowed
             .folder_contents
             .contains(&(username.to_owned(), directory.clone())),
-        _ => true,
     }
 }
 
-async fn read_distrib_frames(
-    mut reader: BufReader<OwnedReadHalf>,
-    frames: mpsc::Sender<PeerFrame>,
-) {
+async fn read_distrib_frames(mut reader: SocketReader, frames: mpsc::Sender<PeerFrame>) {
     loop {
         match read_frame_u8(&mut reader, MAX_CONTROL_MESSAGE_SIZE).await {
             Ok((code, payload)) => match DistributedMessage::parse(code, &payload) {
                 Ok(message) => {
-                    if frames
-                        .send(PeerFrame::Message(ConnEventPayload::Distrib(message)))
-                        .await
-                        .is_err()
-                    {
+                    if frames.send(PeerFrame::Distrib(message)).await.is_err() {
                         return;
                     }
                 }
@@ -340,48 +351,108 @@ async fn read_distrib_frames(
     }
 }
 
-async fn run_message_loop(
+async fn write_frames(
+    mut writer: OwnedWriteHalf,
+    mut outgoing: mpsc::Receiver<Vec<u8>>,
+    traffic: SharedTraffic,
+) -> String {
+    while let Some(bytes) = outgoing.recv().await {
+        let mut written = 0;
+        while written < bytes.len() {
+            match timeout(PEER_IDLE_TIMEOUT, writer.write(&bytes[written..])).await {
+                Ok(Ok(0)) => return "write failed: connection closed".into(),
+                Ok(Ok(count)) => {
+                    written += count;
+                    traffic.touch();
+                }
+                Ok(Err(error)) => return format!("write failed: {error}"),
+                Err(_) => return "write stalled".into(),
+            }
+        }
+        traffic.record_send_complete();
+    }
+    "outgoing queue closed".into()
+}
+
+struct MessageConn {
     conn_id: ConnId,
+    username: String,
     events: mpsc::Sender<ConnEvent>,
-    mut control: mpsc::Receiver<ConnControl>,
+    control: mpsc::Receiver<ConnControl>,
+    traffic: SharedTraffic,
+}
+
+async fn run_message_loop(
+    conn: MessageConn,
     mut frames: mpsc::Receiver<PeerFrame>,
-    mut writer: BufWriter<OwnedWriteHalf>,
+    writer: OwnedWriteHalf,
     reader_task: JoinHandle<()>,
 ) {
-    let mut deadline = Instant::now() + PEER_IDLE_TIMEOUT;
+    let MessageConn {
+        conn_id,
+        username,
+        events,
+        mut control,
+        traffic,
+    } = conn;
+    let (outgoing, outgoing_rx) = mpsc::channel(OUTGOING_QUEUE_CAPACITY);
+    let mut writer_task = tokio::spawn(write_frames(writer, outgoing_rx, traffic.clone()));
+    traffic.touch();
+    let mut deadline = traffic.last_active() + PEER_IDLE_TIMEOUT;
     let error = loop {
         tokio::select! {
             frame = frames.recv() => {
-                deadline = Instant::now() + PEER_IDLE_TIMEOUT;
-                match frame {
-                    Some(PeerFrame::Message(payload)) => {
-                        let event = match payload {
-                            ConnEventPayload::Peer(message) => ConnEvent::Peer { conn_id, message },
-                            ConnEventPayload::Distrib(message) => ConnEvent::Distrib { conn_id, message },
-                        };
-                        if events.send(event).await.is_err() {
-                            break None;
-                        }
+                let event = match frame {
+                    Some(PeerFrame::Peer { message, received_through }) => {
+                        ConnEvent::Peer { conn_id, message, received_through }
                     }
+                    Some(PeerFrame::Distrib(message)) => ConnEvent::Distrib { conn_id, message },
                     Some(PeerFrame::Fatal(error)) => break error,
                     None => break Some("connection closed".into()),
+                };
+                if events.send(event).await.is_err() {
+                    break None;
                 }
             }
             ctrl = control.recv() => {
-                match ctrl {
-                    Some(ConnControl::Send(bytes)) => {
-                        deadline = Instant::now() + PEER_IDLE_TIMEOUT;
-                        if write_all(&mut writer, &bytes).await.is_err() {
-                            break Some("write failed".into());
-                        }
-                    }
+                let bytes = match ctrl {
+                    Some(ConnControl::Send(bytes)) => bytes,
+                    Some(ConnControl::SendPeer(message)) => message.to_bytes(),
                     Some(ConnControl::Close) | None => break None,
                     Some(other) => unreachable!("invalid message-loop control {other:?}"),
+                };
+                if outgoing.try_send(bytes).is_err() {
+                    break Some("outbound queue overflowed".into());
                 }
             }
-            _ = sleep_until(deadline) => break None,
+            written = &mut writer_task => {
+                break Some(written.expect("peer writer task panicked"));
+            }
+            _ = sleep_until(deadline) => {
+                let idle_deadline = traffic.last_active() + PEER_IDLE_TIMEOUT;
+                if idle_deadline <= deadline {
+                    break None;
+                }
+                deadline = idle_deadline;
+            }
         }
     };
     reader_task.abort();
+    writer_task.abort();
+    control.close();
+    let mut unsent = Vec::new();
+    while let Ok(control) = control.try_recv() {
+        if let ConnControl::SendPeer(message) = control {
+            unsent.push(message);
+        }
+    }
+    if !unsent.is_empty() {
+        let _ = events
+            .send(ConnEvent::Unsent {
+                username,
+                messages: unsent,
+            })
+            .await;
+    }
     let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
 }

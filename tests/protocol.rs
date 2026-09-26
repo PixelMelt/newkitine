@@ -1,6 +1,6 @@
 use newkitine::protocol::{
     DistributedMessage, FileOffset, FileTransferInit, LoginOutcome, MessageWriter, PeerInitMessage,
-    PeerMessage, ServerRequest, ServerResponse,
+    PeerMessage, ResponseHeader, ServerRequest, ServerResponse,
 };
 use newkitine::types::{
     ConnectionType, FileAttributes, FileInfo, FolderContents, TransferDirection,
@@ -362,6 +362,92 @@ fn ns_large_file_size_workaround() {
         panic!("wrong variant");
     };
     assert_eq!(results[0].size, 3000000000);
+}
+
+#[test]
+fn response_header_reads_only_the_compressed_prefix() {
+    let mut w = MessageWriter::new();
+    w.write_string("mallory");
+    w.write_u32(4321);
+    w.write_raw(&vec![0u8; 32 * 1024 * 1024]);
+    let search = newkitine::protocol::compress(&w.into_bytes());
+    assert_eq!(
+        PeerMessage::response_header(9, &search).unwrap(),
+        Some(ResponseHeader::Search { token: 4321 })
+    );
+
+    let folder = PeerMessage::FolderContentsResponse {
+        token: 55,
+        directory: "Music\\Album".into(),
+        folders: Vec::new(),
+    };
+    assert_eq!(
+        PeerMessage::response_header(37, &folder.make_payload()).unwrap(),
+        Some(ResponseHeader::FolderContents {
+            directory: "Music\\Album".into()
+        })
+    );
+    assert_eq!(PeerMessage::response_header(5, &search).unwrap(), None);
+}
+
+#[test]
+fn oversized_search_response_keeps_the_first_results() {
+    let results: Vec<FileInfo> = (0..6000)
+        .map(|index| FileInfo {
+            name: format!("Music\\{index:05}.mp3"),
+            size: index,
+            attributes: FileAttributes::default(),
+        })
+        .collect();
+    let msg = PeerMessage::FileSearchResponse {
+        username: "bob".into(),
+        token: 1,
+        results: results.clone(),
+        free_upload_slots: true,
+        upload_speed: 10,
+        queue_size: 2,
+        unknown: 0,
+        private_results: Vec::new(),
+    };
+    let parsed = PeerMessage::parse(9, &msg.make_payload()).unwrap();
+    let PeerMessage::FileSearchResponse {
+        results: parsed_results,
+        free_upload_slots,
+        upload_speed,
+        queue_size,
+        ..
+    } = parsed
+    else {
+        panic!("wrong variant");
+    };
+    assert_eq!(parsed_results, results[..5000]);
+    assert!(free_upload_slots);
+    assert_eq!(upload_speed, 10);
+    assert_eq!(queue_size, 2);
+}
+
+#[test]
+fn oversized_user_picture_is_omitted_from_user_info() {
+    let msg = PeerMessage::UserInfoResponse {
+        description: "hello".into(),
+        picture: Some(vec![7u8; 9 * 1024 * 1024]),
+        total_uploads: 5,
+        queue_size: 2,
+        slots_available: true,
+        upload_allowed: Some(1),
+    };
+    let parsed = PeerMessage::parse(16, &msg.make_payload()).unwrap();
+    assert_eq!(
+        parsed,
+        PeerMessage::UserInfoResponse {
+            description: "hello".into(),
+            picture: None,
+            total_uploads: 5,
+            queue_size: 2,
+            slots_available: true,
+            upload_allowed: Some(1),
+        }
+    );
 }
 
 #[test]

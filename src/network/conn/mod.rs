@@ -7,15 +7,17 @@ pub use server::run_server_conn;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicU64;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncWriteExt, BufReader, BufWriter, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use crate::network::ConnId;
 use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage, ServerResponse};
@@ -24,6 +26,7 @@ use crate::types::ConnectionType;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_QUEUE_CAPACITY: usize = 256;
+const OUTGOING_QUEUE_CAPACITY: usize = 1024;
 
 #[derive(Default)]
 pub struct AllowedResponses {
@@ -43,9 +46,97 @@ pub struct TransferLimits {
 
 pub type SharedLimits = Arc<TransferLimits>;
 
+pub struct Traffic {
+    epoch: Instant,
+    last_active_ms: AtomicU64,
+    received: AtomicU64,
+    sends_written: AtomicU64,
+}
+
+impl Default for Traffic {
+    fn default() -> Self {
+        Self {
+            epoch: Instant::now(),
+            last_active_ms: AtomicU64::new(0),
+            received: AtomicU64::new(0),
+            sends_written: AtomicU64::new(0),
+        }
+    }
+}
+
+impl Traffic {
+    pub fn received(&self) -> u64 {
+        self.received.load(Ordering::Acquire)
+    }
+
+    pub fn sends_written(&self) -> u64 {
+        self.sends_written.load(Ordering::Acquire)
+    }
+
+    fn touch(&self) {
+        let elapsed = self.epoch.elapsed().as_millis() as u64;
+        self.last_active_ms.fetch_max(elapsed, Ordering::Relaxed);
+    }
+
+    fn last_active(&self) -> Instant {
+        self.epoch + Duration::from_millis(self.last_active_ms.load(Ordering::Relaxed))
+    }
+
+    fn record_received(&self, count: usize) {
+        self.received.fetch_add(count as u64, Ordering::Release);
+        self.touch();
+    }
+
+    fn record_send_complete(&self) {
+        self.sends_written.fetch_add(1, Ordering::Release);
+    }
+}
+
+pub type SharedTraffic = Arc<Traffic>;
+
+pub struct TrackedRead {
+    inner: OwnedReadHalf,
+    traffic: SharedTraffic,
+}
+
+impl AsyncRead for TrackedRead {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
+        let count = buf.filled().len() - before;
+        if count > 0 {
+            self.traffic.record_received(count);
+        }
+        polled
+    }
+}
+
+type SocketReader = BufReader<TrackedRead>;
+
+fn consumed(reader: &SocketReader) -> u64 {
+    reader.get_ref().traffic.received() - reader.buffer().len() as u64
+}
+
+fn split_tracked(
+    stream: TcpStream,
+    traffic: SharedTraffic,
+) -> (SocketReader, BufWriter<OwnedWriteHalf>) {
+    let (read_half, write_half) = stream.into_split();
+    let reader = BufReader::new(TrackedRead {
+        inner: read_half,
+        traffic,
+    });
+    (reader, BufWriter::new(write_half))
+}
+
 #[derive(Debug)]
 pub enum ConnControl {
     Send(Vec<u8>),
+    SendPeer(PeerMessage),
     SendFileInit(u32),
     AssumeIdentity {
         username: String,
@@ -80,6 +171,11 @@ pub enum ConnEvent {
     Peer {
         conn_id: ConnId,
         message: PeerMessage,
+        received_through: u64,
+    },
+    Unsent {
+        username: String,
+        messages: Vec<PeerMessage>,
     },
     Distrib {
         conn_id: ConnId,
@@ -121,6 +217,7 @@ pub struct PeerTask {
     pub control: mpsc::Receiver<ConnControl>,
     pub allowed: SharedAllowed,
     pub limits: SharedLimits,
+    pub traffic: SharedTraffic,
 }
 
 async fn connect(addr: SocketAddr) -> Result<TcpStream, String> {

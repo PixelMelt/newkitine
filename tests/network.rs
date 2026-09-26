@@ -4,14 +4,16 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::Receiver;
 use tokio::time::timeout;
 
 use common::{free_port, start_fake_server, tempfile};
 use newkitine::network::spawn;
 use newkitine::network::{NetworkCommand, NetworkEvent};
-use newkitine::protocol::PeerMessage;
-use newkitine::types::ConnectionType;
+use newkitine::protocol::{PeerInitMessage, PeerMessage};
+use newkitine::types::{ConnectionType, FileAttributes, FileInfo};
 
 async fn wait_for<T>(
     events: &mut Receiver<NetworkEvent>,
@@ -188,6 +190,134 @@ async fn indirect_connection_via_pierce_firewall() {
             conn_type: ConnectionType::Peer,
             ..
         } if username == "bob" => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+async fn raw_peer(registry: &common::Registry, target: &str, from: &str) -> TcpStream {
+    let port = registry.lock().await.get(target).unwrap().port;
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let init = PeerInitMessage::PeerInit {
+        username: from.into(),
+        conn_type: ConnectionType::Peer,
+    };
+    stream.write_all(&init.to_bytes()).await.unwrap();
+    stream
+}
+
+fn search_response(token: u32) -> PeerMessage {
+    PeerMessage::FileSearchResponse {
+        username: "mallory".into(),
+        token,
+        results: vec![FileInfo {
+            name: "Music\\song.mp3".into(),
+            size: 1,
+            attributes: FileAttributes::default(),
+        }],
+        free_upload_slots: true,
+        upload_speed: 1,
+        queue_size: 0,
+        unknown: 0,
+        private_results: Vec::new(),
+    }
+}
+
+fn queue_upload() -> PeerMessage {
+    PeerMessage::QueueUpload {
+        file: "Music\\song.mp3".into(),
+        legacy_client: false,
+    }
+}
+
+async fn next_peer_message(events: &mut Receiver<NetworkEvent>) -> PeerMessage {
+    wait_for(events, |event| match event {
+        NetworkEvent::PeerMessage { message, .. } => Some(message),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn unsolicited_compressed_responses_are_dropped() {
+    let (server_addr, registry) = start_fake_server().await;
+    let mut alice = connect_stack(server_addr, "alice").await;
+    let mut stream = raw_peer(&registry, "alice", "mallory").await;
+
+    let folder = PeerMessage::FolderContentsResponse {
+        token: 1,
+        directory: "Music".into(),
+        folders: Vec::new(),
+    };
+    let mut bytes = search_response(99).to_bytes();
+    bytes.extend(folder.to_bytes());
+    bytes.extend(queue_upload().to_bytes());
+    stream.write_all(&bytes).await.unwrap();
+
+    assert_eq!(next_peer_message(&mut alice.events).await, queue_upload());
+}
+
+#[tokio::test]
+async fn search_result_connection_stays_open_while_data_is_pending() {
+    let (server_addr, registry) = start_fake_server().await;
+    let mut alice = connect_stack(server_addr, "alice").await;
+    alice.handle.send(NetworkCommand::AllowSearchToken(7));
+    let mut stream = raw_peer(&registry, "alice", "mallory").await;
+
+    let follow_up = queue_upload().to_bytes();
+    let (head, tail) = follow_up.split_at(6);
+    let mut bytes = search_response(7).to_bytes();
+    bytes.extend_from_slice(head);
+    stream.write_all(&bytes).await.unwrap();
+
+    assert_eq!(next_peer_message(&mut alice.events).await, search_response(7));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    stream.write_all(tail).await.unwrap();
+    assert_eq!(next_peer_message(&mut alice.events).await, queue_upload());
+}
+
+#[tokio::test]
+async fn idle_search_result_connection_is_closed() {
+    let (server_addr, registry) = start_fake_server().await;
+    let mut alice = connect_stack(server_addr, "alice").await;
+    alice.handle.send(NetworkCommand::AllowSearchToken(7));
+    let mut stream = raw_peer(&registry, "alice", "mallory").await;
+
+    stream
+        .write_all(&search_response(7).to_bytes())
+        .await
+        .unwrap();
+    assert_eq!(next_peer_message(&mut alice.events).await, search_response(7));
+
+    let mut buffer = [0u8; 16];
+    let read = timeout(Duration::from_secs(5), stream.read(&mut buffer))
+        .await
+        .expect("search result connection was not closed");
+    assert_eq!(read.unwrap_or(0), 0);
+}
+
+#[tokio::test]
+async fn close_interrupts_a_write_blocked_on_a_peer_that_stopped_reading() {
+    let (server_addr, registry) = start_fake_server().await;
+    let mut alice = connect_stack(server_addr, "alice").await;
+    let _stream = raw_peer(&registry, "alice", "mallory").await;
+
+    let conn_id = wait_for(&mut alice.events, |event| match event {
+        NetworkEvent::PeerConnected {
+            username, conn_id, ..
+        } if username == "mallory" => Some(conn_id),
+        _ => None,
+    })
+    .await;
+
+    for _ in 0..8 {
+        alice.handle.peer_frame("mallory", vec![0u8; 4 * 1024 * 1024]);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    alice.handle.send(NetworkCommand::CloseConnection(conn_id));
+
+    wait_for(&mut alice.events, |event| match event {
+        NetworkEvent::ConnectionCount(0) => Some(()),
         _ => None,
     })
     .await;

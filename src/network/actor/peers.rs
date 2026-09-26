@@ -8,7 +8,9 @@ use super::indirect::InitId;
 use super::{Actor, CONN_CONTROL_QUEUE_CAPACITY};
 use crate::network::ConnId;
 use crate::network::NetworkEvent;
-use crate::network::conn::{ConnControl, PeerTask, run_incoming_peer, run_outgoing_peer};
+use crate::network::conn::{
+    ConnControl, PeerTask, SharedTraffic, run_incoming_peer, run_outgoing_peer,
+};
 use crate::protocol::{PeerInitMessage, PeerMessage, ServerRequest};
 use crate::types::ConnectionType;
 
@@ -26,14 +28,14 @@ pub(super) struct Conn {
     pub(super) file_token: Option<u32>,
     pub(super) pierce_token: Option<u32>,
     pub(super) ip: Option<Ipv4Addr>,
+    traffic: SharedTraffic,
+    sends_pushed: u64,
 }
 
 impl Conn {
-    pub(super) fn push(&self, control: ConnControl) -> bool {
-        match self.control.try_send(control) {
-            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => false,
-        }
+    fn is_quiescent(&self, received_through: u64) -> bool {
+        self.traffic.received() == received_through
+            && self.traffic.sends_written() == self.sends_pushed
     }
 }
 
@@ -85,7 +87,7 @@ impl Peers {
 
     pub(super) fn close_all(&mut self) {
         for conn in self.conns.values() {
-            conn.push(ConnControl::Close);
+            let _ = conn.control.try_send(ConnControl::Close);
         }
         self.conns.clear();
     }
@@ -93,16 +95,50 @@ impl Peers {
 
 impl Actor {
     pub(super) fn push_conn(&mut self, conn_id: ConnId, control: ConnControl) {
-        let Some(conn) = self.peers.get(conn_id) else {
+        let Some(conn) = self.peers.get_mut(conn_id) else {
             return;
         };
-        if !conn.push(control) {
-            warn!(conn_id, "connection outbound queue overflowed, dropping");
-            self.handle_conn_closed(conn_id, Some("outbound queue overflowed".into()));
+        let is_send = matches!(control, ConnControl::Send(_) | ConnControl::SendPeer(_));
+        let (rejected, error) = match conn.control.try_send(control) {
+            Ok(()) => {
+                if is_send {
+                    conn.sends_pushed += 1;
+                }
+                return;
+            }
+            Err(mpsc::error::TrySendError::Full(rejected)) => {
+                warn!(conn_id, "connection outbound queue overflowed, dropping");
+                (rejected, "outbound queue overflowed")
+            }
+            Err(mpsc::error::TrySendError::Closed(rejected)) => (rejected, "connection closed"),
+        };
+        if let ConnControl::SendPeer(message) = rejected {
+            let username = conn
+                .identity
+                .as_ref()
+                .expect("peer message pushed to an unidentified connection")
+                .username
+                .clone();
+            self.emit_unsent(username, vec![message]);
         }
+        self.handle_conn_closed(conn_id, Some(error.into()));
+    }
+
+    pub(super) fn emit_unsent(&self, username: String, unsent: Vec<PeerMessage>) {
+        self.emit(NetworkEvent::PeerConnectionError {
+            username,
+            unsent,
+            is_offline: false,
+        });
     }
 
     pub(super) fn close_conn(&mut self, conn_id: ConnId) {
+        let Some(conn) = self.peers.get_mut(conn_id) else {
+            return;
+        };
+        if let Some(init_id) = conn.init_id.take() {
+            self.detach_init_conn(init_id, conn_id, None);
+        }
         self.push_conn(conn_id, ConnControl::Close);
     }
 
@@ -112,6 +148,7 @@ impl Actor {
             SocketAddr::V4(addr) => Some(*addr.ip()),
             SocketAddr::V6(_) => None,
         };
+        let traffic = SharedTraffic::default();
         let conn_id = self.peers.add(Conn {
             control: control_tx,
             identity: None,
@@ -120,6 +157,8 @@ impl Actor {
             file_token: None,
             pierce_token: None,
             ip,
+            traffic: traffic.clone(),
+            sends_pushed: 0,
         });
         let task = PeerTask {
             conn_id,
@@ -127,6 +166,7 @@ impl Actor {
             control: control_rx,
             allowed: self.allowed.clone(),
             limits: self.limits.clone(),
+            traffic,
         };
         super::spawn_conn_task("incoming peer", run_incoming_peer(task, stream, addr));
         self.emit(NetworkEvent::ConnectionCount(self.peers.count()));
@@ -145,6 +185,7 @@ impl Actor {
             _ => None,
         };
         let (control_tx, control_rx) = mpsc::channel(CONN_CONTROL_QUEUE_CAPACITY);
+        let traffic = SharedTraffic::default();
         let conn_id = self.peers.add(Conn {
             control: control_tx,
             identity: Some(PeerIdentity {
@@ -156,6 +197,8 @@ impl Actor {
             file_token: None,
             pierce_token,
             ip: Some(*addr.ip()),
+            traffic: traffic.clone(),
+            sends_pushed: 0,
         });
         let task = PeerTask {
             conn_id,
@@ -163,6 +206,7 @@ impl Actor {
             control: control_rx,
             allowed: self.allowed.clone(),
             limits: self.limits.clone(),
+            traffic,
         };
         super::spawn_conn_task(
             "outgoing peer",
@@ -206,7 +250,12 @@ impl Actor {
         }
     }
 
-    pub(super) fn handle_peer_message(&mut self, conn_id: ConnId, message: PeerMessage) {
+    pub(super) fn handle_peer_message(
+        &mut self,
+        conn_id: ConnId,
+        message: PeerMessage,
+        received_through: u64,
+    ) {
         let Some(conn) = self.peers.get(conn_id) else {
             return;
         };
@@ -216,7 +265,9 @@ impl Actor {
             return;
         };
         let username = identity.username.clone();
-        let close_after = matches!(message, PeerMessage::FileSearchResponse { .. });
+        let close_after = matches!(message, PeerMessage::FileSearchResponse { .. })
+            && self.server.username() != Some(username.as_str())
+            && conn.is_quiescent(received_through);
         self.emit(NetworkEvent::PeerMessage { username, message });
         if close_after {
             self.close_conn(conn_id);

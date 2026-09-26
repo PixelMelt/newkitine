@@ -2,12 +2,12 @@ use std::io::SeekFrom;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until, timeout};
 
-use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, write_all};
+use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, SocketReader, write_all};
 use crate::network::ConnId;
 use crate::protocol::{FileOffset, FileTransferInit};
 
@@ -48,7 +48,7 @@ pub(super) async fn run_file_loop(
     events: mpsc::Sender<ConnEvent>,
     mut control: mpsc::Receiver<ConnControl>,
     limits: SharedLimits,
-    mut reader: BufReader<OwnedReadHalf>,
+    mut reader: SocketReader,
     mut writer: BufWriter<OwnedWriteHalf>,
 ) {
     let mut init_exchanged = false;
@@ -108,7 +108,7 @@ struct TransferTask<'a> {
 
 async fn run_download(
     task: TransferTask<'_>,
-    reader: &mut BufReader<OwnedReadHalf>,
+    reader: &mut SocketReader,
     file: std::fs::File,
     mut bytes_left: u64,
 ) {
@@ -185,7 +185,7 @@ async fn run_download(
 async fn run_upload(
     task: TransferTask<'_>,
     writer: &mut BufWriter<OwnedWriteHalf>,
-    reader: &mut BufReader<OwnedReadHalf>,
+    reader: &mut SocketReader,
     file: std::fs::File,
     size: u64,
 ) {
