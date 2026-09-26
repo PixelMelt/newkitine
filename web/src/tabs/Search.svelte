@@ -39,7 +39,7 @@
     resultsEl?.focus();
   }
 
-  $: joinedRooms = Object.keys($rooms.joined).sort();
+  $: joinedRooms = [...$rooms.joined.keys()].sort();
   $: if (mode === 'rooms' && !joinedRooms.includes(modeRoom)) modeRoom = joinedRooms[0] ?? '';
   $: activeSearch =
     $searches.find((s) => s.token === activeToken) ?? $searches[$searches.length - 1];

@@ -173,17 +173,25 @@ struct InterestBody {
     thing: String,
 }
 
+pub(super) fn normalize_interest(thing: &str) -> Option<String> {
+    let thing = thing.trim().to_lowercase();
+    (!thing.is_empty()).then_some(thing)
+}
+
 async fn add_interest(State(app): State<Arc<App>>, Json(body): Json<InterestBody>) -> StatusCode {
     let _mutation = app.list_mutation.lock().await;
     if !matches!(body.kind.as_str(), "liked" | "hated") {
         return StatusCode::BAD_REQUEST;
     }
-    if let Err(error) = insert_interest(&app.db, &body.kind, &body.thing).await {
+    let Some(thing) = normalize_interest(&body.thing) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    if let Err(error) = insert_interest(&app.db, &body.kind, &thing).await {
         return api::db_failed(error);
     }
     match body.kind.as_str() {
-        "liked" => app.client.add_liked_interest(&body.thing).await,
-        _ => app.client.add_hated_interest(&body.thing).await,
+        "liked" => app.client.add_liked_interest(&thing).await,
+        _ => app.client.add_hated_interest(&thing).await,
     }
     publish(&app, |view| {
         let list = if body.kind == "liked" {
@@ -191,8 +199,8 @@ async fn add_interest(State(app): State<Arc<App>>, Json(body): Json<InterestBody
         } else {
             &mut view.hated
         };
-        if !list.contains(&body.thing) {
-            list.push(body.thing);
+        if !list.contains(&thing) {
+            list.push(thing);
             list.sort();
         }
     });
@@ -207,12 +215,15 @@ async fn remove_interest(
     if !matches!(body.kind.as_str(), "liked" | "hated") {
         return StatusCode::BAD_REQUEST;
     }
-    if let Err(error) = delete_interest(&app.db, &body.kind, &body.thing).await {
+    let Some(thing) = normalize_interest(&body.thing) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    if let Err(error) = delete_interest(&app.db, &body.kind, &thing).await {
         return api::db_failed(error);
     }
     match body.kind.as_str() {
-        "liked" => app.client.remove_liked_interest(&body.thing).await,
-        _ => app.client.remove_hated_interest(&body.thing).await,
+        "liked" => app.client.remove_liked_interest(&thing).await,
+        _ => app.client.remove_hated_interest(&thing).await,
     }
     publish(&app, |view| {
         let list = if body.kind == "liked" {
@@ -220,7 +231,7 @@ async fn remove_interest(
         } else {
             &mut view.hated
         };
-        list.retain(|thing| thing != &body.thing);
+        list.retain(|item| item != &thing);
     });
     StatusCode::ACCEPTED
 }
@@ -257,4 +268,23 @@ async fn item_recommendations(
     app.client.request_item_recommendations(&body.thing).await;
     app.client.request_item_similar_users(&body.thing).await;
     StatusCode::ACCEPTED
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_interest;
+
+    #[test]
+    fn interests_are_trimmed_and_lowercased() {
+        assert_eq!(
+            normalize_interest("  Jazz Fusion \t").as_deref(),
+            Some("jazz fusion")
+        );
+    }
+
+    #[test]
+    fn blank_interests_are_rejected() {
+        assert_eq!(normalize_interest(" \n "), None);
+        assert_eq!(normalize_interest(""), None);
+    }
 }

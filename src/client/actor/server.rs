@@ -1,5 +1,6 @@
 use super::ClientActor;
 use crate::client::ClientEvent;
+use crate::client::users::Presence;
 use crate::protocol::{ServerRequest, ServerResponse};
 use crate::types::UserStatus;
 
@@ -11,15 +12,28 @@ impl ClientActor {
                 status,
                 privileged,
             } => {
-                self.users.handle_user_status(&user, privileged);
-                if status == UserStatus::Online.as_u32() {
-                    self.downloads.retry_offline(&user);
+                let status = UserStatus::from_u32(status);
+                match self
+                    .users
+                    .handle_user_status(&self.net, &user, status, privileged)
+                {
+                    Presence::WentOffline => self.downloads.user_offline(&user),
+                    Presence::CameOnline => self.downloads.user_online(&user),
+                    Presence::Unchanged => {}
                 }
                 self.emit(ClientEvent::UserStatus {
                     username: user,
-                    status: UserStatus::from_u32(status),
+                    status,
                     privileged,
                 });
+            }
+            ServerResponse::ConnectToPeer {
+                user, privileged, ..
+            } => {
+                self.users.set_privileged(&user, privileged);
+            }
+            ServerResponse::AddToPrivileged { user } => {
+                self.users.set_privileged(&user, true);
             }
             ServerResponse::WatchUser {
                 user,
@@ -28,6 +42,9 @@ impl ClientActor {
                 stats,
                 country: _,
             } => {
+                if !user_exists {
+                    self.users.forget_watch(&user);
+                }
                 self.emit(ClientEvent::WatchedUser {
                     username: user,
                     exists: user_exists,
@@ -158,6 +175,7 @@ impl ClientActor {
             ServerResponse::AdminMessage { msg } => {
                 self.emit(ClientEvent::AdminMessage { message: msg });
             }
+            ServerResponse::Relogged => self.emit(ClientEvent::Relogged),
             ServerResponse::GetPeerAddress {
                 user, ip_address, ..
             } => {
@@ -169,11 +187,9 @@ impl ClientActor {
             ServerResponse::Login(_)
             | ServerResponse::IgnoreUser { .. }
             | ServerResponse::UnignoreUser { .. }
-            | ServerResponse::ConnectToPeer { .. }
             | ServerResponse::ServerPing
             | ServerResponse::SendConnectToken { .. }
             | ServerResponse::UploadSlotsFull { .. }
-            | ServerResponse::Relogged
             | ServerResponse::SimilarRecommendations { .. }
             | ServerResponse::MyRecommendations { .. }
             | ServerResponse::PlaceInLineRequest { .. }
@@ -189,7 +205,6 @@ impl ClientActor {
             | ServerResponse::SearchInactivityTimeout { .. }
             | ServerResponse::MinParentsInCache { .. }
             | ServerResponse::DistribPingInterval { .. }
-            | ServerResponse::AddToPrivileged { .. }
             | ServerResponse::EmbeddedMessage { .. }
             | ServerResponse::PossibleParents { .. }
             | ServerResponse::RoomTickers { .. }

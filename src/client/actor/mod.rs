@@ -6,6 +6,7 @@ mod session;
 mod sharing;
 mod transfers;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -22,7 +23,7 @@ use crate::network::{NetworkCommand, NetworkEvent, NetworkHandle, spawn as spawn
 use crate::protocol::PeerMessage;
 use crate::types::{RuntimeConfig, TransferDirection};
 
-use search::Wishlist;
+use search::{ActiveSearch, Wishlist};
 use session::Session;
 use sharing::{ScanJob, Sharing};
 
@@ -42,11 +43,12 @@ struct ClientActor {
     sharing: Sharing,
     session: Session,
     wishlist: Wishlist,
+    searches: HashMap<u32, ActiveSearch>,
     liked_interests: Vec<String>,
     hated_interests: Vec<String>,
 }
 
-pub(crate) async fn run(
+pub(super) async fn run(
     config: ClientBootstrap,
     mut commands: mpsc::Receiver<ClientCommand>,
     events: mpsc::Sender<ClientEvent>,
@@ -86,17 +88,24 @@ pub(crate) async fn run(
         ),
         sharing: Sharing::new(scan_tx, config.scan_cache),
         session: Session::new(),
-        wishlist: Wishlist::new(config.wishlist),
+        wishlist: Wishlist::new(),
+        searches: HashMap::new(),
         liked_interests: config.liked_interests,
         hated_interests: config.hated_interests,
         config: config.runtime,
     };
 
+    actor
+        .users
+        .set_login_username(actor.config.login.username.clone());
     for seed in config.transfers {
         match seed.direction {
             TransferDirection::Download => actor.downloads.seed(seed),
             TransferDirection::Upload => actor.uploads.seed(seed),
         }
+    }
+    for term in config.wishlist {
+        actor.add_wish(term);
     }
 
     actor.set_transfer_limits(
@@ -191,11 +200,10 @@ impl ClientActor {
             ClientCommand::Search {
                 token,
                 query,
+                filter,
                 scope,
-            } => self.start_search(token, query, scope),
-            ClientCommand::CancelSearch { token } => {
-                self.net.send(NetworkCommand::DisallowSearchToken(token));
-            }
+            } => self.start_search(token, query, filter, scope),
+            ClientCommand::CancelSearch { token } => self.cancel_search(token),
             ClientCommand::Download {
                 username,
                 virtual_path,
@@ -234,11 +242,11 @@ impl ClientActor {
                 self.users.add_buddy(&self.net, username);
             }
             ClientCommand::RemoveBuddy { username } => {
-                self.users.remove_buddy(&self.net, &username);
+                let keep_watch =
+                    username == self.config.login.username || self.downloads.needs_watch(&username);
+                self.users.remove_buddy(&self.net, &username, keep_watch);
             }
-            ClientCommand::BanUser { username } => {
-                self.users.banned.insert(username);
-            }
+            ClientCommand::BanUser { username } => self.ban_user(username),
             ClientCommand::UnbanUser { username } => {
                 self.users.banned.remove(&username);
             }
@@ -340,15 +348,13 @@ impl ClientActor {
                 username,
                 token,
                 conn_id,
-            } => self.handle_file_transfer_init(&username, token, conn_id),
+                direction,
+            } => self.handle_file_transfer_init(&username, token, conn_id, direction),
             NetworkEvent::FileDownloadProgress {
-                username,
-                token,
+                conn_id,
                 bytes_left,
             } => {
-                let updates = self
-                    .downloads
-                    .handle_download_progress(&username, token, bytes_left);
+                let updates = self.downloads.handle_download_progress(conn_id, bytes_left);
                 self.emit_transfers(updates);
             }
             NetworkEvent::FileUploadProgress {
@@ -365,14 +371,18 @@ impl ClientActor {
             NetworkEvent::FileTransferError {
                 username,
                 token,
+                conn_id,
+                direction,
                 error,
             } => {
-                let updates = if self.downloads.owns_token(&username, token) {
-                    self.downloads
-                        .handle_transfer_error(&username, token, &error)
-                } else {
-                    self.uploads
-                        .handle_transfer_error(&username, token, &error, &self.users)
+                let updates = match direction {
+                    TransferDirection::Download => {
+                        self.downloads.handle_transfer_error(conn_id, &error)
+                    }
+                    TransferDirection::Upload => {
+                        self.uploads
+                            .handle_transfer_error(&username, token, &error, &self.users)
+                    }
                 };
                 self.emit_transfers(updates);
             }
@@ -380,7 +390,8 @@ impl ClientActor {
                 username,
                 token,
                 conn_id,
-            } => self.handle_file_connection_closed(&username, token, conn_id),
+                direction,
+            } => self.handle_file_connection_closed(&username, token, conn_id, direction),
         }
     }
 }

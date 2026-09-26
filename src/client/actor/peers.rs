@@ -16,14 +16,14 @@ impl ClientActor {
                 ..
             } => {
                 if !self.users.is_ignored(&username) {
-                    self.emit(ClientEvent::SearchResults(SearchResult {
+                    self.handle_search_response(SearchResult {
                         token,
                         username,
                         results,
                         free_upload_slots,
                         upload_speed,
                         queue_size,
-                    }));
+                    });
                 }
             }
             PeerMessage::TransferRequest {
@@ -33,8 +33,10 @@ impl ClientActor {
                 filesize,
             } => match direction {
                 TransferDirection::Upload => {
-                    self.downloads
+                    let updates = self
+                        .downloads
                         .handle_transfer_request(&username, token, &file, filesize);
+                    self.emit_transfers(updates);
                 }
                 TransferDirection::Download => {
                     let (updates, accepted) = self.uploads.handle_legacy_transfer_request(
@@ -78,7 +80,8 @@ impl ClientActor {
                 }
             }
             PeerMessage::PlaceInQueueRequest { file, .. } => {
-                self.uploads.handle_place_in_queue_request(&username, &file);
+                self.uploads
+                    .handle_place_in_queue_request(&username, &file, &self.users);
             }
             PeerMessage::SharedFileListResponse {
                 shares,

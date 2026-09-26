@@ -1,20 +1,43 @@
 use std::net::SocketAddr;
+use std::time::Duration;
+
+use socket2::{SockRef, TcpKeepalive};
 
 use tokio::io::{AsyncReadExt, BufReader, BufWriter};
+use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{ConnControl, ConnEvent, FRAME_QUEUE_CAPACITY, connect, write_all};
 use crate::network::codec::{MAX_SERVER_MESSAGE_SIZE, read_payload};
 use crate::protocol::{ProtocolError, ServerResponse};
+
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(10);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+const KEEPALIVE_RETRIES: u32 = 10;
+const USER_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn enable_keepalive(stream: &TcpStream) -> std::io::Result<()> {
+    let socket = SockRef::from(stream);
+    socket.set_tcp_keepalive(
+        &TcpKeepalive::new()
+            .with_time(KEEPALIVE_IDLE)
+            .with_interval(KEEPALIVE_INTERVAL)
+            .with_retries(KEEPALIVE_RETRIES),
+    )?;
+    socket.set_tcp_user_timeout(Some(USER_TIMEOUT))
+}
 
 pub async fn run_server_conn(
     address: SocketAddr,
     events: mpsc::Sender<ConnEvent>,
     mut control: mpsc::Receiver<ConnControl>,
 ) {
-    let stream = match connect(address).await {
+    let stream = match connect(address).await.and_then(|stream| {
+        enable_keepalive(&stream).map_err(|error| format!("cannot enable keepalive: {error}"))?;
+        Ok(stream)
+    }) {
         Ok(stream) => stream,
         Err(error) => {
             let _ = events
@@ -101,10 +124,7 @@ async fn read_server_frames(
                 debug!(code, "ignoring unsupported server message");
             }
             Err(error) => {
-                let _ = frames
-                    .send(Err(format!("malformed server message {code}: {error}")))
-                    .await;
-                return;
+                warn!(code, %error, "ignoring malformed server message");
             }
         }
     }

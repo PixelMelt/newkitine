@@ -72,6 +72,8 @@ impl ClientActor {
 
     pub(super) fn apply_config(&mut self, config: RuntimeConfig) {
         let old = std::mem::replace(&mut self.config, config);
+        self.users
+            .set_login_username(self.config.login.username.clone());
         if self.config.transfers != old.transfers {
             let transfers = self.config.transfers.clone();
             self.uploads.set_limits(
@@ -80,7 +82,8 @@ impl ClientActor {
                 transfers.queue_size_limit_mb,
                 transfers.banned_message,
             );
-            self.uploads.check_queue(&self.users);
+            let updates = self.uploads.check_queue(&self.users);
+            self.emit_transfers(updates);
             self.downloads.set_dirs(
                 transfers.download_dir,
                 transfers.incomplete_dir,
@@ -160,10 +163,7 @@ impl ClientActor {
     pub(super) fn handle_logged_in(&mut self, username: String, banner: String) {
         self.session.logged_in = true;
         self.session.reconnect_delay = RECONNECT_INITIAL_DELAY;
-        self.users.watch_buddies(&self.net);
-        self.net.server(ServerRequest::WatchUser {
-            user: username.clone(),
-        });
+        self.users.start_session(&username);
         let (folders, files) = self.sharing.counts();
         self.net
             .server(ServerRequest::SharedFoldersFiles { folders, files });
@@ -178,8 +178,10 @@ impl ClientActor {
             });
         }
         self.net.server(ServerRequest::CheckPrivileges);
-        self.downloads.request_queued();
-        self.schedule_wishlist();
+        self.downloads.start_session(&mut self.users);
+        self.users.send_watches(&self.net);
+        let uploads = self.uploads.check_queue(&self.users);
+        self.emit_transfers(uploads);
         self.emit(ClientEvent::LoggedIn { username, banner });
     }
 
@@ -210,7 +212,7 @@ impl ClientActor {
         let uploads = self.uploads.reset();
         self.emit_transfers(uploads);
         self.users.reset();
-        self.wishlist.at = None;
+        self.wishlist.stop();
         self.emit(ClientEvent::Disconnected);
         if self.session.reconnect_now {
             self.session.reconnect_now = false;

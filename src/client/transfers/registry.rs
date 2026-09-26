@@ -78,10 +78,6 @@ impl<T> Registry<T> {
         self.conns.get(&conn_id)
     }
 
-    pub(super) fn owns_token(&self, username: &str, token: u32) -> bool {
-        self.tokens.contains_key(&(username.to_owned(), token))
-    }
-
     pub(super) fn conn_of(&self, key: &TransferKey) -> Option<ConnId> {
         self.entries.get(key).and_then(|entry| entry.conn_id)
     }

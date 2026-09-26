@@ -5,6 +5,8 @@ use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus
 
 use super::TransferView;
 
+const DELETE_BATCH_SIZE: usize = 1000;
+
 impl TransferDirection {
     pub(in crate::app) fn as_str(self) -> &'static str {
         match self {
@@ -63,7 +65,7 @@ pub(super) async fn upsert_transfer(
             (id, direction, username, virtual_path, folder_path, size, bytes_done, status, failure_reason, file_path, attributes, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
-            size = VALUES(size), bytes_done = VALUES(bytes_done), status = VALUES(status),
+            folder_path = VALUES(folder_path), size = VALUES(size), bytes_done = VALUES(bytes_done), status = VALUES(status),
             failure_reason = VALUES(failure_reason), file_path = VALUES(file_path),
             attributes = VALUES(attributes), updated_at = VALUES(updated_at)",
     )
@@ -133,14 +135,17 @@ pub(super) async fn delete_transfers(
     pool: &MySqlPool,
     ids: &[TransferId],
 ) -> Result<(), sqlx::Error> {
-    let placeholders = vec!["?"; ids.len()].join(", ");
-    let statement = format!("DELETE FROM transfers WHERE id IN ({placeholders})");
-    let mut query = sqlx::query(&statement);
-    for id in ids {
-        query = query.bind(id.0);
+    let mut tx = pool.begin().await?;
+    for chunk in ids.chunks(DELETE_BATCH_SIZE) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let statement = format!("DELETE FROM transfers WHERE id IN ({placeholders})");
+        let mut query = sqlx::query(&statement);
+        for id in chunk {
+            query = query.bind(id.0);
+        }
+        query.execute(&mut *tx).await?;
     }
-    query.execute(pool).await?;
-    Ok(())
+    tx.commit().await
 }
 
 pub(super) async fn record_transfer(

@@ -8,9 +8,9 @@ mod server_response;
 mod wire;
 
 pub use compress::{compress, decompress};
-pub use distributed::DistributedMessage;
+pub use distributed::{DistributedMessage, DistributedSearch};
 pub use file::{FileOffset, FileTransferInit};
-pub use peer::PeerMessage;
+pub use peer::{PeerMessage, ResponseHeader};
 pub use peer_init::PeerInitMessage;
 pub use server_request::ServerRequest;
 pub use server_response::{LoginOutcome, ParentCandidate, ServerResponse, UserData};

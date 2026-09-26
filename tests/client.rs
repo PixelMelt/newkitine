@@ -257,7 +257,10 @@ async fn client_shares_answers_search_and_uploads() {
     })
     .await;
 
-    let token = frank.search("unique melody", SearchScope::Global).await;
+    let token = frank
+        .search("unique melody", SearchScope::Global)
+        .await
+        .unwrap();
     let (result_username, results) = wait_client(&mut frank_events, |event| match event {
         ClientEvent::SearchResults(result) if result.token == token => {
             Some((result.username, result.results))
@@ -404,13 +407,100 @@ async fn wishlist_search_runs_on_interval() {
     heidi_config.wishlist = vec!["wishlist gem".into()];
     let (_heidi, mut heidi_events, _heidi_transfers) = Client::spawn(heidi_config);
 
-    let (username, results) = wait_client(&mut heidi_events, |event| match event {
-        ClientEvent::SearchResults(result) => Some((result.username, result.results)),
+    let started = wait_client(&mut heidi_events, |event| match event {
+        ClientEvent::SearchStarted { token, query } => Some((token, query)),
+        ClientEvent::SearchResults(_) => panic!("wish results before the wish search was shown"),
         _ => None,
     })
     .await;
+    assert_eq!(started.1, "wishlist gem");
+    let (token, username, results) = wait_client(&mut heidi_events, |event| match event {
+        ClientEvent::SearchResults(result) => Some((result.token, result.username, result.results)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(token, started.0);
     assert_eq!(username, "grace");
     assert_eq!(results[0].name, "Stash\\wishlist gem.mp3");
+
+    let rerun = wait_client(&mut heidi_events, |event| match event {
+        ClientEvent::SearchStarted { .. } => panic!("a wish rerun must not start a new search"),
+        ClientEvent::SearchResults(result) => Some(result.token),
+        _ => None,
+    })
+    .await;
+    assert_eq!(rerun, started.0);
+}
+
+#[tokio::test]
+async fn search_results_are_filtered_against_the_query() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let (responder, mut responder_events) = spawn_network();
+    responder.send(NetworkCommand::ServerConnect {
+        address: server_addr,
+        username: "ivan".into(),
+        password: "secret".into(),
+        listen_port: free_port(),
+    });
+    wait_net(&mut responder_events, |event| match event {
+        NetworkEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let (judy, mut judy_events, _judy_transfers) = Client::spawn(client_config(
+        server_addr,
+        "judy",
+        free_port(),
+        temp_dir("judy-downloads"),
+    ));
+    wait_client(&mut judy_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let token = judy
+        .search("\"night drive\" -live", SearchScope::Global)
+        .await
+        .unwrap();
+    assert_eq!(judy.search(" \t ", SearchScope::Global).await, None);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let file = |name: &str| newkitine::types::FileInfo {
+        name: name.into(),
+        size: 1,
+        attributes: FileAttributes::default(),
+    };
+    let respond = |results: Vec<newkitine::types::FileInfo>| {
+        responder.peer(
+            "judy",
+            PeerMessage::FileSearchResponse {
+                username: "ivan".into(),
+                token,
+                results,
+                free_upload_slots: true,
+                upload_speed: 1,
+                queue_size: 0,
+                unknown: 0,
+                private_results: Vec::new(),
+            },
+        );
+    };
+    respond(vec![file("Music\\unrelated.mp3")]);
+    respond(vec![
+        file("Music\\Night Drive.mp3"),
+        file("Music\\Night Drive (Live).mp3"),
+        file("Music\\Night - Drive.mp3"),
+    ]);
+
+    let received = wait_client(&mut judy_events, |event| match event {
+        ClientEvent::SearchResults(result) => Some(result.results),
+        _ => None,
+    })
+    .await;
+    assert_eq!(received, vec![file("Music\\Night Drive.mp3")]);
 }
 
 #[tokio::test]
@@ -439,7 +529,10 @@ async fn client_receives_search_results() {
     })
     .await;
 
-    let token = dave.search("test query", SearchScope::Global).await;
+    let token = dave
+        .search("test query", SearchScope::Global)
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let results = vec![newkitine::types::FileInfo {
@@ -532,7 +625,10 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
 
-    let token = frank.search("guarded song", SearchScope::Global).await;
+    let token = frank
+        .search("guarded song", SearchScope::Global)
+        .await
+        .unwrap();
     let (matched, query) = wait_client(&mut eve_events, |event| match event {
         ClientEvent::Observed(Observation::SearchSeen {
             username,
@@ -589,7 +685,10 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
 
-    frank.search("guarded song", SearchScope::Global).await;
+    frank
+        .search("guarded song", SearchScope::Global)
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(event) = eve_events.try_recv() {
         if let ClientEvent::Observed(Observation::SearchSeen { username, .. }) = &event {
@@ -964,6 +1063,30 @@ async fn banned_peer_browse_gets_an_empty_share_list() {
 }
 
 #[tokio::test]
+async fn browsing_an_offline_peer_reports_the_failure() {
+    let (server_addr, _registry) = start_fake_server().await;
+    let config = client_config(
+        server_addr,
+        "grace",
+        free_port(),
+        temp_dir("offline-browse-grace-dl"),
+    );
+    let (grace, mut grace_events, _grace_transfers) = Client::spawn(config);
+    wait_client(&mut grace_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    grace.browse_user("nobody").await;
+    wait_client(&mut grace_events, |event| match event {
+        ClientEvent::BrowseFailed { username } if username == "nobody" => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn connect_while_connected_is_ignored() {
     let (server_addr, _registry) = start_fake_server().await;
     let config = client_config(server_addr, "carol", free_port(), temp_dir("downloads"));
@@ -985,6 +1108,111 @@ async fn connect_while_connected_is_ignored() {
     assert!(matches!(first, ClientEvent::Disconnected));
     wait_client(&mut carol_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn removing_every_share_installs_an_empty_index_without_a_cache() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("unshare-all-music");
+    std::fs::write(share_dir.join("song.mp3"), b"payload".repeat(100)).unwrap();
+    let eve_dir = temp_dir("unshare-all-eve-dl");
+    let mut eve_config = client_config(server_addr, "eve", free_port(), eve_dir.clone());
+    eve_config.runtime.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    let (eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config.clone());
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled { files: 1, .. } => Some(()),
+        _ => None,
+    })
+    .await;
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::ShareScanFinished => Some(()),
+        _ => None,
+    })
+    .await;
+
+    std::fs::remove_file(&eve_config.scan_cache).unwrap();
+    let mut runtime = eve_config.runtime.clone();
+    runtime.shared_folders = Vec::new();
+    eve.apply_config(runtime).await;
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled {
+            folders: 0,
+            files: 0,
+        } => Some(()),
+        ClientEvent::SharesInstalled { folders, files } => {
+            panic!("expected an empty index, got {folders}/{files}")
+        }
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dropped_browse_retries_do_not_extend_the_coalesce_window() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("coalesce-music");
+    std::fs::write(share_dir.join("song.mp3"), b"payload".repeat(100)).unwrap();
+    let mut eve_config =
+        client_config(server_addr, "eve", free_port(), temp_dir("coalesce-eve-dl"));
+    eve_config.runtime.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    let (_eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config);
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let frank_config = client_config(
+        server_addr,
+        "frank",
+        free_port(),
+        temp_dir("coalesce-frank-dl"),
+    );
+    let (frank, mut frank_events, _frank_transfers) = Client::spawn(frank_config);
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    frank.browse_user("eve").await;
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SharedFileList { username, .. } if username == "eve" => Some(()),
+        _ => None,
+    })
+    .await;
+    let started = std::time::Instant::now();
+    loop {
+        frank.browse_user("eve").await;
+        wait_client(&mut eve_events, |event| match event {
+            ClientEvent::Observed(Observation::BrowseRequest { username })
+                if username == "frank" =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+        if started.elapsed() >= Duration::from_millis(900) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SharedFileList { username, .. } if username == "eve" => Some(()),
         _ => None,
     })
     .await;

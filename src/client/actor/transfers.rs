@@ -1,10 +1,13 @@
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
+use tracing::warn;
 
 use super::ClientActor;
 use crate::client::transfers::destination_root;
-use crate::client::{AbortResult, ClientEvent, EnqueueResult, RetryResult, TransferWork};
+use crate::client::{
+    AbortResult, ClientEvent, EnqueueResult, FOLDER_DOWNLOAD_FILE_LIMIT, RetryResult, TransferWork,
+};
 use crate::network::ConnId;
 use crate::network::NetworkCommand;
 use crate::types::{
@@ -32,6 +35,7 @@ impl ClientActor {
     ) {
         let (result, events) = self.downloads.enqueue(
             &mut self.transfer_ids,
+            &mut self.users,
             username,
             FileInfo {
                 name: virtual_path,
@@ -53,18 +57,39 @@ impl ClientActor {
         let Some(files) = self.folder_requests.accept(&username, &directory, folders) else {
             return;
         };
-        let root = destination_root(&directory).to_owned();
-        for mut file in files {
-            file.name = format!("{directory}\\{}", file.name);
-            let (_, events) =
-                self.downloads
-                    .enqueue(&mut self.transfer_ids, username.clone(), file, Some(&root));
-            self.emit_transfers(events);
+        if files.len() > FOLDER_DOWNLOAD_FILE_LIMIT {
+            warn!(
+                username,
+                directory,
+                files = files.len(),
+                "folder contents exceed the download limit, refusing"
+            );
+            self.emit(ClientEvent::FolderRequestFailed {
+                username,
+                directory,
+            });
+            return;
         }
+        let root = destination_root(&directory);
+        let files = files
+            .into_iter()
+            .map(|mut file| {
+                file.name = format!("{directory}\\{}", file.name);
+                file
+            })
+            .collect();
+        let events = self.downloads.enqueue_folder(
+            &mut self.transfer_ids,
+            &mut self.users,
+            username,
+            files,
+            root,
+        );
+        self.emit_transfers(events);
     }
 
     pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
-        let (result, events) = self.downloads.retry(&mut self.transfer_ids, id);
+        let (result, events) = self.downloads.retry(&mut self.users, id);
         self.emit_transfers(events);
         Self::ack(ack, result);
     }
@@ -91,7 +116,11 @@ impl ClientActor {
     ) {
         let ids = match direction {
             TransferDirection::Download => self.downloads.clear(&statuses),
-            TransferDirection::Upload => self.uploads.clear(&statuses),
+            TransferDirection::Upload => {
+                let (ids, updates) = self.uploads.clear(&statuses, &self.users);
+                self.emit_transfers(updates);
+                ids
+            }
         };
         if !ids.is_empty() {
             self.emit_transfer_work(TransferWork::Removed { direction, ids });
@@ -120,7 +149,14 @@ impl ClientActor {
             self.emit_transfers(updates);
         }
         self.users.set_restriction(username, restriction);
-        self.uploads.check_queue(&self.users);
+        let updates = self.uploads.check_queue(&self.users);
+        self.emit_transfers(updates);
+    }
+
+    pub(super) fn ban_user(&mut self, username: String) {
+        self.users.banned.insert(username.clone());
+        let updates = self.uploads.ban(&username, &self.users);
+        self.emit_transfers(updates);
     }
 
     pub(super) fn deny_file(&mut self, username: String, virtual_path: String, ttl: Duration) {
@@ -143,6 +179,17 @@ impl ClientActor {
         self.emit_transfers(uploads);
         if self.session.logged_in {
             self.downloads.request_queue_positions();
+            let queued = self.uploads.sweep_queue(
+                &mut self.transfer_ids,
+                self.sharing.index.as_ref(),
+                &self.users,
+            );
+            self.emit_transfers(queued);
+            self.downloads.retry_failed();
+            self.downloads.release_limited();
+            let recovered = self.downloads.drain_recovery(&mut self.users);
+            self.emit_transfers(recovered);
+            self.users.send_watches(&self.net);
         }
     }
 
@@ -157,6 +204,9 @@ impl ClientActor {
                 PeerMessage::SharedFileListRequest => {
                     self.net
                         .send(NetworkCommand::DisallowSharedListUser(username.to_owned()));
+                    self.emit(ClientEvent::BrowseFailed {
+                        username: username.to_owned(),
+                    });
                 }
                 PeerMessage::UserInfoRequest => {
                     self.net
@@ -189,35 +239,34 @@ impl ClientActor {
         username: &str,
         token: u32,
         conn_id: ConnId,
+        direction: TransferDirection,
     ) {
-        if self.downloads.owns_token(username, token) {
-            let updates = self
+        let updates = match direction {
+            TransferDirection::Download => self
                 .downloads
-                .handle_file_transfer_init(username, token, conn_id);
-            self.emit_transfers(updates);
-        } else if self.uploads.owns_token(username, token) {
-            let updates =
+                .handle_file_transfer_init(username, token, conn_id),
+            TransferDirection::Upload => {
                 self.uploads
-                    .handle_file_transfer_init(username, token, conn_id, &self.users);
-            self.emit_transfers(updates);
-        } else {
-            self.net.send(NetworkCommand::CloseConnection(conn_id));
-        }
+                    .handle_file_transfer_init(username, token, conn_id, &self.users)
+            }
+        };
+        self.emit_transfers(updates);
     }
 
     pub(super) fn handle_file_connection_closed(
         &mut self,
         username: &str,
-        token: Option<u32>,
+        token: u32,
         conn_id: ConnId,
+        direction: TransferDirection,
     ) {
-        let downloads = self
-            .downloads
-            .handle_file_connection_closed(username, token, conn_id);
-        self.emit_transfers(downloads);
-        let uploads =
-            self.uploads
-                .handle_file_connection_closed(username, token, conn_id, &self.users);
-        self.emit_transfers(uploads);
+        let updates = match direction {
+            TransferDirection::Download => self.downloads.handle_file_connection_closed(conn_id),
+            TransferDirection::Upload => {
+                self.uploads
+                    .handle_file_connection_closed(username, token, conn_id, &self.users)
+            }
+        };
+        self.emit_transfers(updates);
     }
 }

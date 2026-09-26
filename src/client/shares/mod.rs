@@ -1,3 +1,4 @@
+mod audio;
 mod cache;
 mod scan;
 mod wire;
@@ -9,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 
+use super::punctuation::split_words;
 use crate::types::{FileAttributes, FileInfo, FolderContents};
 
 #[derive(Debug, Clone, Default)]
@@ -211,6 +213,10 @@ impl SharesIndex {
         }
     }
 
+    pub fn empty() -> Self {
+        Self::from_catalog(ShareCatalog::empty())
+    }
+
     pub fn counts(&self) -> (u32, u32) {
         self.public_counts
     }
@@ -307,7 +313,7 @@ impl SharesIndex {
         max_results: usize,
         min_chars: usize,
     ) -> Vec<FileInfo> {
-        if search_term.len() < min_chars {
+        if search_term.chars().count() < min_chars {
             return Vec::new();
         }
         let term_lower = search_term.to_lowercase();
@@ -501,7 +507,62 @@ fn equal_range<T>(slice: &[T], mut compare: impl FnMut(&T) -> std::cmp::Ordering
     start..end
 }
 
-fn split_words(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index(names: &[&str]) -> SharesIndex {
+        let mut catalog = ShareCatalog::empty();
+        catalog.push_folder(
+            "Music\\Caf\u{e9}".into(),
+            PathBuf::from("/music"),
+            false,
+            names.iter().map(|name| {
+                ShareCatalogFile::new(
+                    name.to_string(),
+                    name.into(),
+                    1,
+                    0,
+                    FileAttributes::default(),
+                )
+            }),
+        );
+        SharesIndex::from_catalog(catalog)
+    }
+
+    fn names(results: Vec<FileInfo>) -> Vec<String> {
+        results.into_iter().map(|file| file.name).collect()
+    }
+
+    #[test]
+    fn minimum_length_counts_characters_not_bytes() {
+        let index = index(&["\u{e4}\u{f6}.mp3"]);
+        assert_eq!(index.search("\u{e4}\u{f6}", false, &[], 10, 3), Vec::new());
+        assert_eq!(
+            names(index.search("\u{e4}\u{f6}", false, &[], 10, 2)),
+            ["Music\\Caf\u{e9}\\\u{e4}\u{f6}.mp3"]
+        );
+    }
+
+    #[test]
+    fn index_and_queries_split_on_the_nicotine_punctuation_set() {
+        let index = index(&[
+            "\u{2665}love.mp3",
+            "live\u{2013}set.mp3",
+            "caf\u{e9}_tunes.mp3",
+        ]);
+        assert!(index.search("love", false, &[], 10, 1).is_empty());
+        assert_eq!(
+            names(index.search("\u{2665}love", false, &[], 10, 1)),
+            ["Music\\Caf\u{e9}\\\u{2665}love.mp3"]
+        );
+        assert_eq!(
+            names(index.search("set live", false, &[], 10, 1)),
+            ["Music\\Caf\u{e9}\\live\u{2013}set.mp3"]
+        );
+        assert_eq!(
+            names(index.search("caf\u{e9}\u{2014}tunes", false, &[], 10, 1)),
+            ["Music\\Caf\u{e9}\\caf\u{e9}_tunes.mp3"]
+        );
+    }
 }

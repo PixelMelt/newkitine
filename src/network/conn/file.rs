@@ -1,54 +1,22 @@
 use std::io::SeekFrom;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
-use tokio::time::{Instant, sleep_until, timeout};
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 
-use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, write_all};
+use super::bandwidth::{Bandwidth, Grant};
+use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, SocketReader, write_all};
 use crate::network::ConnId;
 use crate::protocol::{FileOffset, FileTransferInit};
-
-struct Throttle {
-    window_start: Instant,
-    window_bytes: u64,
-}
-
-impl Throttle {
-    fn new() -> Self {
-        Self {
-            window_start: Instant::now(),
-            window_bytes: 0,
-        }
-    }
-
-    async fn pace(&mut self, count: u64, limit_bps: u64) {
-        if limit_bps == 0 {
-            self.window_start = Instant::now();
-            self.window_bytes = 0;
-            return;
-        }
-        self.window_bytes += count;
-        let target = Duration::from_secs_f64(self.window_bytes as f64 / limit_bps as f64);
-        let elapsed = self.window_start.elapsed();
-        if target > elapsed {
-            tokio::time::sleep(target - elapsed).await;
-        }
-        if self.window_bytes >= limit_bps {
-            self.window_start = Instant::now();
-            self.window_bytes = 0;
-        }
-    }
-}
 
 pub(super) async fn run_file_loop(
     conn_id: ConnId,
     events: mpsc::Sender<ConnEvent>,
     mut control: mpsc::Receiver<ConnControl>,
     limits: SharedLimits,
-    mut reader: BufReader<OwnedReadHalf>,
+    mut reader: SocketReader,
     mut writer: BufWriter<OwnedWriteHalf>,
 ) {
     let mut init_exchanged = false;
@@ -99,6 +67,35 @@ pub(super) async fn run_file_loop(
     let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
 }
 
+async fn take_turn(
+    bandwidth: &Bandwidth,
+    control: &mut mpsc::Receiver<ConnControl>,
+    max_len: u64,
+) -> Option<Grant> {
+    loop {
+        let changed = bandwidth.changed();
+        let Some(wait_until) = bandwidth.wait_until() else {
+            return Some(bandwidth.grant(max_len));
+        };
+        tokio::select! {
+            _ = sleep_until(wait_until) => return Some(bandwidth.grant(max_len)),
+            _ = changed => {}
+            ctrl = control.recv() => match ctrl {
+                Some(ConnControl::Close) | None => return None,
+                Some(other) => unreachable!("invalid transfer control {other:?}"),
+            },
+        }
+    }
+}
+
+async fn read_granted(reader: &mut SocketReader, buffer: &mut [u8]) -> std::io::Result<usize> {
+    if reader.buffer().is_empty() {
+        reader.get_mut().read(buffer).await
+    } else {
+        reader.read(buffer).await
+    }
+}
+
 struct TransferTask<'a> {
     conn_id: ConnId,
     events: &'a mpsc::Sender<ConnEvent>,
@@ -108,7 +105,7 @@ struct TransferTask<'a> {
 
 async fn run_download(
     task: TransferTask<'_>,
-    reader: &mut BufReader<OwnedReadHalf>,
+    reader: &mut SocketReader,
     file: std::fs::File,
     mut bytes_left: u64,
 ) {
@@ -121,8 +118,7 @@ async fn run_download(
     let mut file = tokio::fs::File::from_std(file);
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
-    let mut throttle = Throttle::new();
-    let mut deadline = Instant::now() + PEER_IDLE_TIMEOUT;
+    let _active = limits.download.join();
     let error = loop {
         if bytes_left == 0 {
             if let Err(error) = file.flush().await {
@@ -143,21 +139,33 @@ async fn run_download(
             let _ = events.send(ConnEvent::FileDone { conn_id }).await;
             break None;
         }
-        let max_read = buffer.len().min(bytes_left as usize);
+        let Some(grant) = take_turn(
+            &limits.download,
+            control,
+            bytes_left.min(buffer.len() as u64),
+        )
+        .await
+        else {
+            break None;
+        };
         tokio::select! {
-            read_result = reader.read(&mut buffer[..max_read]) => {
+            biased;
+            ctrl = control.recv() => {
+                match ctrl {
+                    Some(ConnControl::Close) | None => break None,
+                    Some(other) => unreachable!("invalid download control {other:?}"),
+                }
+            }
+            read_result = read_granted(reader, &mut buffer[..grant.len]) => {
                 match read_result {
                     Ok(0) => break Some("connection closed".into()),
                     Ok(count) => {
-                        deadline = Instant::now() + PEER_IDLE_TIMEOUT;
                         if let Err(error) = file.write_all(&buffer[..count]).await {
                             let _ = events.send(ConnEvent::FileError { conn_id, error: error.to_string() }).await;
                             break None;
                         }
                         bytes_left -= count as u64;
-                        throttle
-                            .pace(count as u64, limits.download_bps.load(Ordering::Relaxed))
-                            .await;
+                        limits.download.charge(&grant, count as u64);
                         if bytes_left > 0 && last_report.elapsed() >= Duration::from_secs(1) {
                             last_report = Instant::now();
                             let _ = events.send(ConnEvent::DownloadProgress {
@@ -169,13 +177,7 @@ async fn run_download(
                     Err(error) => break Some(error.to_string()),
                 }
             }
-            ctrl = control.recv() => {
-                match ctrl {
-                    Some(ConnControl::Close) | None => break None,
-                    Some(other) => unreachable!("invalid download control {other:?}"),
-                }
-            }
-            _ = sleep_until(deadline) => break Some("download stalled".into()),
+            _ = sleep(PEER_IDLE_TIMEOUT) => break Some("download stalled".into()),
         }
     };
     let _ = file.flush().await;
@@ -185,7 +187,7 @@ async fn run_download(
 async fn run_upload(
     task: TransferTask<'_>,
     writer: &mut BufWriter<OwnedWriteHalf>,
-    reader: &mut BufReader<OwnedReadHalf>,
+    reader: &mut SocketReader,
     file: std::fs::File,
     size: u64,
 ) {
@@ -240,7 +242,7 @@ async fn run_upload(
     let mut bytes_sent = 0u64;
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
-    let mut throttle = Throttle::new();
+    let _active = limits.upload.join();
     let error = loop {
         if offset + bytes_sent >= size {
             let _ = events
@@ -253,7 +255,13 @@ async fn run_upload(
             let _ = events.send(ConnEvent::FileDone { conn_id }).await;
             break None;
         }
-        let count = match file.read(&mut buffer).await {
+        let remaining = size - offset - bytes_sent;
+        let Some(grant) =
+            take_turn(&limits.upload, control, remaining.min(buffer.len() as u64)).await
+        else {
+            break None;
+        };
+        let count = match file.read(&mut buffer[..grant.len]).await {
             Ok(0) => {
                 let _ = events
                     .send(ConnEvent::FileError {
@@ -287,9 +295,7 @@ async fn run_upload(
             Err(_) => break Some("upload stalled".into()),
         }
         bytes_sent += count as u64;
-        throttle
-            .pace(count as u64, limits.upload_bps.load(Ordering::Relaxed))
-            .await;
+        limits.upload.charge(&grant, count as u64);
         if last_report.elapsed() >= Duration::from_secs(1) {
             last_report = Instant::now();
             let _ = events
@@ -302,4 +308,136 @@ async fn run_upload(
         }
     };
     let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::task::JoinHandle;
+
+    use super::*;
+    use crate::network::conn::{SharedTraffic, TransferLimits, split_tracked};
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "newkitine-{label}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        ))
+    }
+
+    struct Harness {
+        peer: TcpStream,
+        events: mpsc::Receiver<ConnEvent>,
+        control: mpsc::Sender<ConnControl>,
+        task: JoinHandle<()>,
+    }
+
+    async fn start(limits: SharedLimits) -> Harness {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let (reader, writer) = split_tracked(stream, SharedTraffic::default());
+        let (events_tx, events) = mpsc::channel(256);
+        let (control, control_rx) = mpsc::channel(8);
+        let task = tokio::spawn(run_file_loop(
+            1, events_tx, control_rx, limits, reader, writer,
+        ));
+        Harness {
+            peer,
+            events,
+            control,
+            task,
+        }
+    }
+
+    fn assert_done(events: &mut mpsc::Receiver<ConnEvent>) {
+        let mut saw_done = false;
+        while let Ok(event) = events.try_recv() {
+            match event {
+                ConnEvent::FileDone { .. } => saw_done = true,
+                ConnEvent::FileError { error, .. } => panic!("unexpected file error {error}"),
+                _ => {}
+            }
+        }
+        assert!(saw_done);
+    }
+
+    #[tokio::test]
+    async fn upload_stops_at_the_advertised_size_when_the_file_grew() {
+        let path = temp_path("upload-cap");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&vec![7u8; 200_000])
+            .unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let mut harness = start(Arc::new(TransferLimits::default())).await;
+        harness
+            .control
+            .send(ConnControl::SendFileInit(9))
+            .await
+            .unwrap();
+        harness
+            .control
+            .send(ConnControl::Upload {
+                file,
+                size: 100_000,
+            })
+            .await
+            .unwrap();
+        assert_eq!(harness.peer.read_u32_le().await.unwrap(), 9);
+        harness.peer.write_u64_le(1_000).await.unwrap();
+        let mut received = Vec::new();
+        harness.peer.read_to_end(&mut received).await.unwrap();
+        harness.task.await.unwrap();
+
+        assert_eq!(received.len(), 99_000);
+        assert_done(&mut harness.events);
+    }
+
+    #[tokio::test]
+    async fn throttled_download_keeps_bytes_buffered_with_the_init() {
+        let payload: Vec<u8> = (0..3_000u32).map(|i| (i % 251) as u8).collect();
+        let limits = Arc::new(TransferLimits::default());
+        limits.download.set_limit(64 * 1024);
+        let mut harness = start(limits).await;
+        let mut init = 5u32.to_le_bytes().to_vec();
+        init.extend_from_slice(&payload[..1_000]);
+        harness.peer.write_all(&init).await.unwrap();
+        match harness.events.recv().await.unwrap() {
+            ConnEvent::FileInit { token: 5, .. } => {}
+            other => panic!("unexpected event {other:?}"),
+        }
+
+        let path = temp_path("download");
+        let file = std::fs::File::create(&path).unwrap();
+        harness
+            .control
+            .send(ConnControl::Download {
+                file,
+                offset: 0,
+                bytes_left: payload.len() as u64,
+            })
+            .await
+            .unwrap();
+        assert_eq!(harness.peer.read_u64_le().await.unwrap(), 0);
+        harness.peer.write_all(&payload[1_000..]).await.unwrap();
+        harness.task.await.unwrap();
+
+        let mut written = Vec::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut written)
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(written, payload);
+        assert_done(&mut harness.events);
+    }
 }

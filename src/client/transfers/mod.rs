@@ -70,6 +70,7 @@ impl TransferIds {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TransferPhase {
     Queued,
+    Limited,
     GettingStatus,
     Transferring,
     Placing,
@@ -81,7 +82,7 @@ pub(super) enum TransferPhase {
 impl TransferPhase {
     pub(super) fn status(&self) -> TransferStatus {
         match self {
-            Self::Queued | Self::GettingStatus => TransferStatus::Queued,
+            Self::Queued | Self::Limited | Self::GettingStatus => TransferStatus::Queued,
             Self::Transferring | Self::Placing => TransferStatus::Transferring,
             Self::Finished => TransferStatus::Finished,
             Self::Aborted => TransferStatus::Aborted,
@@ -92,7 +93,7 @@ impl TransferPhase {
     pub(super) fn is_active(&self) -> bool {
         matches!(
             self,
-            Self::Queued | Self::GettingStatus | Self::Transferring | Self::Placing
+            Self::Queued | Self::Limited | Self::GettingStatus | Self::Transferring | Self::Placing
         )
     }
 
@@ -118,6 +119,9 @@ impl TransferRejectReason {
     pub(super) const FILE_NOT_SHARED: &'static str = "File not shared.";
     pub(super) const TOO_MANY_FILES: &'static str = "Too many files";
     pub(super) const TOO_MANY_MEGABYTES: &'static str = "Too many megabytes";
+    pub(super) const USER_LIMIT_PREFIX: &'static str = "User limit of";
+    pub(super) const PENDING_SHUTDOWN: &'static str = "Pending shutdown.";
+    pub(super) const FILE_READ_ERROR: &'static str = "File read error.";
     pub(super) const REPEATED: &'static str =
         "Already sent to you several times; message me if your client is stuck";
 }

@@ -208,15 +208,17 @@ async fn request_user_info(
     if let Err(status) = api::require_login(&app) {
         return status;
     }
+    {
+        let mut data = app.projection.write();
+        let (info, evicted) = data.users.ensure_info(&username);
+        for username in evicted {
+            data.broadcast(AppEvent::UserInfoRemoved { username });
+        }
+        data.broadcast(AppEvent::UserInfo { info });
+    }
     app.client.request_user_info(&username).await;
     app.client.request_user_stats(&username).await;
     app.client.request_user_interests(&username).await;
-    let mut data = app.projection.write();
-    let (info, evicted) = data.users.ensure_info(&username);
-    for username in evicted {
-        data.broadcast(AppEvent::UserInfoRemoved { username });
-    }
-    data.broadcast(AppEvent::UserInfo { info });
     StatusCode::ACCEPTED
 }
 

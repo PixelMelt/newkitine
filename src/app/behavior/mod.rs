@@ -11,17 +11,18 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::post;
+use tokio::time::Instant;
 use tracing::info;
 
 use crate::types::{DenialMessages, FilterLevel, Restriction};
 
 use db::{
-    clear_user_verdict, downloaded_from_any, has_downloaded_from, load_verdicts, repeat_deliveries,
-    repeat_delivery, reset_counters, search_scrape_users, set_user_verdict,
+    downloaded_from_any, forgive_user, has_downloaded_from, load_verdicts, repeat_deliveries,
+    repeat_delivery, search_scrape_users, set_user_verdict,
 };
 use policy::{
-    CONTRADICTION_MIN_FILES, PRESET_STATS, REPEAT_WINDOW_DAYS, SECS_PER_DAY, SWEEP_SECS, Verdict,
-    restriction_for,
+    CHECK_TIMEOUT_SECS, CONTRADICTION_MIN_FILES, PRESET_STATS, REPEAT_WINDOW_DAYS, SECS_PER_DAY,
+    SWEEP_SECS, Verdict, restriction_for,
 };
 use state::{Check, Peer, touch};
 
@@ -90,6 +91,30 @@ async fn convict(app: &Arc<App>, username: &str, verdict: Verdict, evidence: &st
     sync(app, username).await;
 }
 
+fn check_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(CHECK_TIMEOUT_SECS)
+}
+
+fn expire_check_at(app: &Arc<App>, username: &str, deadline: Instant) {
+    let app = app.clone();
+    let username = username.to_owned();
+    tokio::spawn(async move {
+        tokio::time::sleep_until(deadline).await;
+        let _transition = app.behavior.transition.lock().await;
+        let expired = app
+            .behavior
+            .peers
+            .lock()
+            .unwrap()
+            .get_mut(&username)
+            .is_some_and(|peer| peer.expire_check(deadline));
+        if expired {
+            info!(username, "behaviour check timed out");
+            sync(&app, &username).await;
+        }
+    });
+}
+
 pub async fn sweep_loop(app: Arc<App>) {
     let mut ticks = tokio::time::interval(std::time::Duration::from_secs(SWEEP_SECS));
     loop {
@@ -128,15 +153,16 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
         return;
     }
     let (level, _) = policy(app);
+    let deadline = check_deadline();
     let probe = {
         let mut peers = app.behavior.peers.lock().unwrap();
         let peer = touch(&mut peers, username, now());
         let probe = peer.verdict == Verdict::Clean
             && peer.check == Check::Idle
-            && peer.stats.is_none()
+            && peer.stats.is_none_or(|(files, _)| files == 0)
             && level == FilterLevel::Strict;
         if probe {
-            peer.check = Check::AwaitingStats;
+            peer.check = Check::AwaitingStats(deadline);
         }
         probe
     };
@@ -154,6 +180,7 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
         .set_user_restriction(username, Restriction::Hold)
         .await;
     app.client.request_user_stats(username).await;
+    expire_check_at(app, username, deadline);
 }
 
 pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u32) {
@@ -163,20 +190,22 @@ pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u3
     }
     enum Action {
         None,
-        BrowseVerify,
+        BrowseVerify(Instant),
         Passed,
     }
     let action = {
         let mut peers = app.behavior.peers.lock().unwrap();
         let peer = touch(&mut peers, username, now());
         peer.stats = Some((files, dirs));
+        let awaiting_stats = matches!(peer.check, Check::AwaitingStats(_));
         let preset = PRESET_STATS.contains(&(files, dirs))
             && peer.verdict == Verdict::Clean
             && peer.check == Check::Idle;
-        if preset || (peer.check == Check::AwaitingStats && files == 0) {
-            peer.check = Check::AwaitingBrowse;
-            Action::BrowseVerify
-        } else if peer.check == Check::AwaitingStats {
+        if preset || (awaiting_stats && files == 0) {
+            let deadline = check_deadline();
+            peer.check = Check::AwaitingBrowse(deadline);
+            Action::BrowseVerify(deadline)
+        } else if awaiting_stats {
             peer.check = Check::Idle;
             if peer.verdict == Verdict::Clean {
                 peer.verdict = Verdict::Verified;
@@ -187,7 +216,10 @@ pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u3
         }
     };
     match action {
-        Action::BrowseVerify => app.client.browse_user(username).await,
+        Action::BrowseVerify(deadline) => {
+            app.client.browse_user(username).await;
+            expire_check_at(app, username, deadline);
+        }
         Action::Passed => sync(app, username).await,
         Action::None => {}
     }
@@ -207,8 +239,10 @@ pub async fn browse_received(app: &Arc<App>, username: &str, file_count: u32) {
     let action = {
         let mut peers = app.behavior.peers.lock().unwrap();
         let peer = touch(&mut peers, username, now());
-        let checking = peer.check == Check::AwaitingBrowse;
-        peer.check = Check::Idle;
+        let checking = matches!(peer.check, Check::AwaitingBrowse(_));
+        if checking {
+            peer.check = Check::Idle;
+        }
         let stats = peer.stats;
         let stats_files = stats.map(|(files, _)| files);
         if file_count == 0
@@ -244,6 +278,21 @@ pub async fn browse_received(app: &Arc<App>, username: &str, file_count: u32) {
     convict(app, username, Verdict::Leech, &evidence, exempt).await;
 }
 
+pub async fn browse_failed(app: &Arc<App>, username: &str) {
+    let _transition = app.behavior.transition.lock().await;
+    let failed = app
+        .behavior
+        .peers
+        .lock()
+        .unwrap()
+        .get_mut(username)
+        .is_some_and(|peer| peer.fail_browse());
+    if failed {
+        info!(username, "behaviour browse failed");
+        sync(app, username).await;
+    }
+}
+
 pub async fn apply_level(app: &Arc<App>) {
     let _transition = app.behavior.transition.lock().await;
     let usernames: Vec<String> = {
@@ -259,16 +308,14 @@ pub async fn apply_level(app: &Arc<App>) {
     }
 }
 
-fn is_convicted(app: &App, username: &str) -> bool {
+fn awaits_release(app: &App, username: &str) -> bool {
     let peers = app.behavior.peers.lock().unwrap();
-    peers
-        .get(username)
-        .is_some_and(|peer| peer.verdict >= Verdict::Leech)
+    peers.get(username).is_some_and(Peer::awaits_release)
 }
 
 pub async fn buddy_added(app: &Arc<App>, username: &str) {
     let _transition = app.behavior.transition.lock().await;
-    if !is_convicted(app, username) {
+    if !awaits_release(app, username) {
         return;
     }
     mark_verified(app, username);
@@ -283,11 +330,29 @@ pub async fn message_received(app: &Arc<App>, username: &str) {
 }
 
 async fn forgive(app: &Arc<App>, username: &str) {
-    clear_verdict(app, username).await;
-    reset_counters(&app.db, username, now())
+    let _transition = app.behavior.transition.lock().await;
+    let released = release(app, username);
+    forgive_user(&app.db, username, released, now())
         .await
         .unwrap_or_else(|error| fatal(error));
+    if released {
+        app.client
+            .set_user_restriction(username, Restriction::None)
+            .await;
+        info!(username, "cleared peer verdict");
+    }
     app.client.clear_file_denials(username).await;
+}
+
+fn release(app: &App, username: &str) -> bool {
+    let mut peers = app.behavior.peers.lock().unwrap();
+    let Some(peer) = peers.get_mut(username).filter(|peer| peer.awaits_release()) else {
+        return false;
+    };
+    peer.verdict = Verdict::Clean;
+    peer.evidence.clear();
+    peer.abandon_check();
+    true
 }
 
 pub async fn upload_delivered(app: &Arc<App>, username: &str, virtual_path: &str) {
@@ -302,31 +367,6 @@ async fn deny_file(app: &Arc<App>, username: &str, virtual_path: &str, last_at: 
     let ttl = Duration::from_secs(expires_at.saturating_sub(now) as u64);
     app.client.deny_file(username, virtual_path, ttl).await;
     info!(username, virtual_path, "repeat downloads capped");
-}
-
-pub async fn clear_verdict(app: &Arc<App>, username: &str) {
-    if !is_convicted(app, username) {
-        return;
-    }
-    let _transition = app.behavior.transition.lock().await;
-    if !is_convicted(app, username) {
-        return;
-    }
-    {
-        let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = touch(&mut peers, username, now());
-        peer.verdict = Verdict::Clean;
-        peer.evidence.clear();
-        peer.check = Check::Idle;
-        peer.stats = None;
-    }
-    clear_user_verdict(&app.db, username, now())
-        .await
-        .unwrap_or_else(|error| fatal(error));
-    app.client
-        .set_user_restriction(username, Restriction::None)
-        .await;
-    info!(username, "cleared peer verdict");
 }
 
 pub async fn load(app: &Arc<App>) {

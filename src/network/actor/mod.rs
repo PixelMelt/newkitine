@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::network::conn::{ConnControl, ConnEvent, SharedAllowed, SharedLimits};
 use crate::network::{NetworkCommand, NetworkEvent};
 use crate::protocol::ServerRequest;
+use crate::types::ConnectionType;
 
 use distributed::Distributed;
 use indirect::{Indirect, QueuedItem};
@@ -98,7 +99,10 @@ impl Actor {
                         stream.expect("accept channel closed while the actor holds the sender");
                     self.handle_accepted(stream, addr);
                 }
-                _ = sweep.tick() => self.sweep_indirect_requests(),
+                _ = sweep.tick() => {
+                    self.sweep_indirect_requests();
+                    self.check_login_timeout();
+                }
                 _ = ping.tick() => {
                     if self.server.is_logged_in() {
                         self.send_to_server(ServerRequest::ServerPing);
@@ -144,13 +148,29 @@ impl Actor {
                 self.send_to_server(request);
             }
             NetworkCommand::SendPeerMessage { username, message } => {
-                self.send_to_peer(username, QueuedItem::Peer(message));
+                self.send_to_peer(
+                    username,
+                    ConnectionType::Peer,
+                    vec![QueuedItem::Peer(message)],
+                );
+            }
+            NetworkCommand::SendPeerMessages { username, messages } => {
+                let items = messages.into_iter().map(QueuedItem::Peer).collect();
+                self.send_to_peer(username, ConnectionType::Peer, items);
             }
             NetworkCommand::SendPeerFrame { username, bytes } => {
-                self.send_to_peer(username, QueuedItem::Frame(bytes));
+                self.send_to_peer(
+                    username,
+                    ConnectionType::Peer,
+                    vec![QueuedItem::Frame(bytes)],
+                );
             }
             NetworkCommand::RequestFileConnection { username, token } => {
-                self.send_to_peer(username, QueuedItem::FileInit(token));
+                self.send_to_peer(
+                    username,
+                    ConnectionType::File,
+                    vec![QueuedItem::FileInit(token)],
+                );
             }
             NetworkCommand::DownloadFile {
                 conn_id,
@@ -178,12 +198,8 @@ impl Actor {
                 upload_bps,
                 download_bps,
             } => {
-                self.limits
-                    .upload_bps
-                    .store(upload_bps, std::sync::atomic::Ordering::Relaxed);
-                self.limits
-                    .download_bps
-                    .store(download_bps, std::sync::atomic::Ordering::Relaxed);
+                self.limits.upload.set_limit(upload_bps);
+                self.limits.download.set_limit(download_bps);
             }
             NetworkCommand::AllowSearchToken(token) => {
                 self.allowed.write().unwrap().search_tokens.insert(token);
@@ -258,7 +274,12 @@ impl Actor {
             } => {
                 self.handle_incoming_init(conn_id, init, addr);
             }
-            ConnEvent::Peer { conn_id, message } => self.handle_peer_message(conn_id, message),
+            ConnEvent::Peer {
+                conn_id,
+                message,
+                received_through,
+            } => self.handle_peer_message(conn_id, message, received_through),
+            ConnEvent::Unsent { username, messages } => self.emit_unsent(username, messages),
             ConnEvent::Distrib { conn_id, message } => {
                 self.handle_distrib_message(conn_id, message);
             }

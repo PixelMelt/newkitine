@@ -1,6 +1,6 @@
 use newkitine::protocol::{
-    DistributedMessage, FileOffset, FileTransferInit, LoginOutcome, MessageWriter, PeerInitMessage,
-    PeerMessage, ServerRequest, ServerResponse,
+    DistributedMessage, DistributedSearch, FileOffset, FileTransferInit, LoginOutcome,
+    MessageWriter, PeerInitMessage, PeerMessage, ResponseHeader, ServerRequest, ServerResponse,
 };
 use newkitine::types::{
     ConnectionType, FileAttributes, FileInfo, FolderContents, TransferDirection,
@@ -364,22 +364,160 @@ fn ns_large_file_size_workaround() {
     assert_eq!(results[0].size, 3000000000);
 }
 
+fn search_payload(term: &[u8], trailing: &[u8]) -> Vec<u8> {
+    let mut w = MessageWriter::new();
+    w.write_u32(49);
+    w.write_string("carol");
+    w.write_u32(999);
+    w.write_bytes(term);
+    w.write_raw(trailing);
+    w.into_bytes()
+}
+
+#[test]
+fn response_header_reads_only_the_compressed_prefix() {
+    let mut w = MessageWriter::new();
+    w.write_string("mallory");
+    w.write_u32(4321);
+    w.write_raw(&vec![0u8; 32 * 1024 * 1024]);
+    let search = newkitine::protocol::compress(&w.into_bytes());
+    assert_eq!(
+        PeerMessage::response_header(9, &search).unwrap(),
+        Some(ResponseHeader::Search { token: 4321 })
+    );
+
+    let folder = PeerMessage::FolderContentsResponse {
+        token: 55,
+        directory: "Music\\Album".into(),
+        folders: Vec::new(),
+    };
+    assert_eq!(
+        PeerMessage::response_header(37, &folder.make_payload()).unwrap(),
+        Some(ResponseHeader::FolderContents {
+            directory: "Music\\Album".into()
+        })
+    );
+    assert_eq!(PeerMessage::response_header(5, &search).unwrap(), None);
+}
+
+#[test]
+fn oversized_search_response_keeps_the_first_results() {
+    let results: Vec<FileInfo> = (0..6000)
+        .map(|index| FileInfo {
+            name: format!("Music\\{index:05}.mp3"),
+            size: index,
+            attributes: FileAttributes::default(),
+        })
+        .collect();
+    let msg = PeerMessage::FileSearchResponse {
+        username: "bob".into(),
+        token: 1,
+        results: results.clone(),
+        free_upload_slots: true,
+        upload_speed: 10,
+        queue_size: 2,
+        unknown: 0,
+        private_results: Vec::new(),
+    };
+    let parsed = PeerMessage::parse(9, &msg.make_payload()).unwrap();
+    let PeerMessage::FileSearchResponse {
+        results: parsed_results,
+        free_upload_slots,
+        upload_speed,
+        queue_size,
+        ..
+    } = parsed
+    else {
+        panic!("wrong variant");
+    };
+    assert_eq!(parsed_results, results[..5000]);
+    assert!(free_upload_slots);
+    assert_eq!(upload_speed, 10);
+    assert_eq!(queue_size, 2);
+}
+
+#[test]
+fn oversized_user_picture_is_omitted_from_user_info() {
+    let msg = PeerMessage::UserInfoResponse {
+        description: "hello".into(),
+        picture: Some(vec![7u8; 9 * 1024 * 1024]),
+        total_uploads: 5,
+        queue_size: 2,
+        slots_available: true,
+        upload_allowed: Some(1),
+    };
+    let parsed = PeerMessage::parse(16, &msg.make_payload()).unwrap();
+    assert_eq!(
+        parsed,
+        PeerMessage::UserInfoResponse {
+            description: "hello".into(),
+            picture: None,
+            total_uploads: 5,
+            queue_size: 2,
+            slots_available: true,
+            upload_allowed: Some(1),
+        }
+    );
+}
+
 #[test]
 fn distributed_round_trip() {
-    let search = DistributedMessage::Search {
-        identifier: 49,
-        search_username: "carol".into(),
-        token: 999,
-        search_term: "test query".into(),
+    let payload = search_payload(b"test query", &[]);
+    let parsed = DistributedMessage::parse(3, &payload).unwrap();
+    let DistributedMessage::Search(search) = &parsed else {
+        panic!("wrong variant");
     };
-    let bytes = search.to_bytes();
-    let parsed = DistributedMessage::parse(bytes[4], &bytes[5..]).unwrap();
-    assert_eq!(parsed, search);
+    assert_eq!(search.identifier, 49);
+    assert_eq!(search.search_username, "carol");
+    assert_eq!(search.token, 999);
+    assert_eq!(search.search_term, "test query");
+    let bytes = parsed.to_bytes();
+    assert_eq!(
+        DistributedMessage::parse(bytes[4], &bytes[5..]).unwrap(),
+        parsed
+    );
 
     let level = DistributedMessage::BranchLevel { level: 2 };
     let bytes = level.to_bytes();
     let parsed = DistributedMessage::parse(bytes[4], &bytes[5..]).unwrap();
     assert_eq!(parsed, level);
+}
+
+#[test]
+fn distributed_search_forwards_original_payload() {
+    let payload = search_payload(b"caf\xe9", b"\x01\x02\x03");
+    let search = DistributedSearch::parse(&payload).unwrap();
+    assert_eq!(search.search_term, "caf\u{e9}");
+    let bytes = search.to_bytes();
+    assert_eq!(&bytes[..4], &(payload.len() as u32 + 1).to_le_bytes());
+    assert_eq!(bytes[4], 3);
+    assert_eq!(&bytes[5..], &payload[..]);
+}
+
+#[test]
+fn embedded_distributed_search_unpacks_inline() {
+    let inner = search_payload(b"query", b"\xff");
+    let mut embedded = vec![3];
+    embedded.extend_from_slice(&inner);
+    let parsed = DistributedMessage::parse(93, &embedded).unwrap();
+    assert_eq!(
+        parsed,
+        DistributedMessage::Search(DistributedSearch::parse(&inner).unwrap())
+    );
+
+    let mut legacy = vec![0, 0, 0, 3];
+    legacy.extend_from_slice(&inner);
+    assert_eq!(DistributedMessage::parse(93, &legacy).unwrap(), parsed);
+}
+
+#[test]
+fn embedded_distributed_non_search_is_rejected_without_recursion() {
+    let nested = vec![93u8; 1 << 20];
+    assert!(DistributedMessage::parse(93, &nested).is_err());
+
+    let mut level = vec![4];
+    level.extend_from_slice(&2i32.to_le_bytes());
+    assert!(DistributedMessage::parse(93, &level).is_err());
 }
 
 #[test]

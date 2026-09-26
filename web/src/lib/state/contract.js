@@ -133,7 +133,7 @@ const userInfoView = shape({
 });
 
 const chatMessage = shape({
-	id: nullable(num),
+	id: num,
 	sender: str,
 	message: str,
 	timestamp: num,
@@ -214,6 +214,7 @@ const events = {
 	conn_count: shape({ rev: num, count: num }),
 	login_failed: shape({ rev: num, reason: str, detail: nullable(str) }),
 	server_message: shape({ rev: num, message: str }),
+	relogged: shape({ rev: num }),
 	settings: shape({ rev: num, ...settingsPayload }),
 	transfer: shape({ rev: num, direction, transfer: transferView }),
 	transfers_removed: shape({ rev: num, direction, ids: list(num) }),

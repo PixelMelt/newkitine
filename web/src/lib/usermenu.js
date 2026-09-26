@@ -4,7 +4,7 @@ import { post, del } from './api.js';
 import { openPrivateChat, openBrowse, openUserInfo } from './ui.js';
 
 export function userMenu(username, { skip = [] } = {}) {
-	const isBuddy = username in get(buddies);
+	const isBuddy = get(buddies).has(username);
 	const isBanned = get(banned).includes(username);
 	const isIgnored = get(ignored).includes(username);
 	const encoded = encodeURIComponent(username);

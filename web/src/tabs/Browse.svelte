@@ -12,8 +12,8 @@
   let username = '';
   let viewing = '';
   let filter = '';
-  let tree = {};
-  let expanded = {};
+  let tree = Object.create(null);
+  let expanded = Object.create(null);
   let treeLoaded = false;
   let flatFolders = null;
   let currentDir = null;
@@ -29,15 +29,15 @@
     openUser(target, folder);
   }
 
-  $: if (viewing && $browses[viewing] && $browses[viewing] !== loadedAt) {
-    loadedAt = $browses[viewing];
+  $: if (viewing && $browses.has(viewing) && $browses.get(viewing) !== loadedAt) {
+    loadedAt = $browses.get(viewing);
     loadTree();
   }
 
-  $: if (viewing && loadedAt && !$browses[viewing]) {
+  $: if (viewing && loadedAt && !$browses.has(viewing)) {
     loadedAt = 0;
-    tree = {};
-    expanded = {};
+    tree = Object.create(null);
+    expanded = Object.create(null);
     treeLoaded = false;
     flatFolders = null;
     currentDir = null;
@@ -65,8 +65,8 @@
   }
 
   async function loadTree() {
-    tree = {};
-    expanded = {};
+    tree = Object.create(null);
+    expanded = Object.create(null);
     treeLoaded = false;
     await loadChildren('');
     treeLoaded = true;
@@ -115,8 +115,8 @@
     files = null;
     loadedAt = 0;
     pendingFolder = folder;
-    tree = {};
-    expanded = {};
+    tree = Object.create(null);
+    expanded = Object.create(null);
     treeLoaded = false;
     summary = null;
     try {
@@ -194,7 +194,7 @@
     <button on:click={() => post(`/users/${encodeURIComponent(viewing)}/browse`)}>
       Refresh
     </button>
-    <button on:click={() => (expanded = {})}>Collapse All</button>
+    <button on:click={() => (expanded = Object.create(null))}>Collapse All</button>
   {/if}
   {#if summary}
     <span>
