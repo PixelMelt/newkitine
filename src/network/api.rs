@@ -2,7 +2,7 @@ use std::fs::File;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use crate::protocol::{PeerMessage, ServerRequest, ServerResponse};
-use crate::types::ConnectionType;
+use crate::types::{ConnectionType, TransferDirection};
 
 pub type ConnId = u64;
 
@@ -19,6 +19,10 @@ pub enum NetworkCommand {
     SendPeerMessage {
         username: String,
         message: PeerMessage,
+    },
+    SendPeerMessages {
+        username: String,
+        messages: Vec<PeerMessage>,
     },
     SendPeerFrame {
         username: String,
@@ -104,10 +108,10 @@ pub enum NetworkEvent {
         username: String,
         token: u32,
         conn_id: ConnId,
+        direction: TransferDirection,
     },
     FileDownloadProgress {
-        username: String,
-        token: u32,
+        conn_id: ConnId,
         bytes_left: u64,
     },
     FileUploadProgress {
@@ -119,11 +123,14 @@ pub enum NetworkEvent {
     FileTransferError {
         username: String,
         token: u32,
+        conn_id: ConnId,
+        direction: TransferDirection,
         error: String,
     },
     FileConnectionClosed {
         username: String,
-        token: Option<u32>,
+        token: u32,
         conn_id: ConnId,
+        direction: TransferDirection,
     },
 }

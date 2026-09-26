@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::network::conn::{ConnControl, ConnEvent, SharedAllowed, SharedLimits};
 use crate::network::{NetworkCommand, NetworkEvent};
 use crate::protocol::ServerRequest;
+use crate::types::ConnectionType;
 
 use distributed::Distributed;
 use indirect::{Indirect, QueuedItem};
@@ -147,13 +148,29 @@ impl Actor {
                 self.send_to_server(request);
             }
             NetworkCommand::SendPeerMessage { username, message } => {
-                self.send_to_peer(username, QueuedItem::Peer(message));
+                self.send_to_peer(
+                    username,
+                    ConnectionType::Peer,
+                    vec![QueuedItem::Peer(message)],
+                );
+            }
+            NetworkCommand::SendPeerMessages { username, messages } => {
+                let items = messages.into_iter().map(QueuedItem::Peer).collect();
+                self.send_to_peer(username, ConnectionType::Peer, items);
             }
             NetworkCommand::SendPeerFrame { username, bytes } => {
-                self.send_to_peer(username, QueuedItem::Frame(bytes));
+                self.send_to_peer(
+                    username,
+                    ConnectionType::Peer,
+                    vec![QueuedItem::Frame(bytes)],
+                );
             }
             NetworkCommand::RequestFileConnection { username, token } => {
-                self.send_to_peer(username, QueuedItem::FileInit(token));
+                self.send_to_peer(
+                    username,
+                    ConnectionType::File,
+                    vec![QueuedItem::FileInit(token)],
+                );
             }
             NetworkCommand::DownloadFile {
                 conn_id,

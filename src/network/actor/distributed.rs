@@ -93,7 +93,7 @@ impl Actor {
             self.initiate_peer_connection(
                 parent.username.clone(),
                 ConnectionType::Distributed,
-                None,
+                Vec::new(),
                 Some(addr),
             );
         }

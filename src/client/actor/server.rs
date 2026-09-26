@@ -13,7 +13,8 @@ impl ClientActor {
             } => {
                 self.users.handle_user_status(&user, privileged);
                 if status == UserStatus::Online.as_u32() {
-                    self.downloads.retry_offline(&user);
+                    let updates = self.downloads.retry_offline(&user);
+                    self.emit_transfers(updates);
                 }
                 self.emit(ClientEvent::UserStatus {
                     username: user,

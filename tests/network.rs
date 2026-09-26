@@ -15,7 +15,7 @@ use newkitine::network::{NetworkCommand, NetworkEvent};
 use newkitine::protocol::{
     DistributedMessage, MessageWriter, PeerInitMessage, PeerMessage, ServerResponse,
 };
-use newkitine::types::{ConnectionType, FileAttributes, FileInfo};
+use newkitine::types::{ConnectionType, FileAttributes, FileInfo, TransferDirection};
 
 async fn wait_for<T>(
     events: &mut Receiver<NetworkEvent>,
@@ -102,9 +102,11 @@ async fn login_peer_message_and_file_transfer() {
             username,
             token,
             conn_id,
+            direction,
         } => {
             assert_eq!(username, "bob");
             assert_eq!(token, 42);
+            assert_eq!(direction, TransferDirection::Download);
             Some(conn_id)
         }
         _ => None,
@@ -139,8 +141,11 @@ async fn login_peer_message_and_file_transfer() {
     })
     .await;
     wait_for(&mut alice.events, |event| match event {
-        NetworkEvent::FileConnectionClosed { token, .. } => {
-            assert_eq!(token, Some(42));
+        NetworkEvent::FileConnectionClosed {
+            token, direction, ..
+        } => {
+            assert_eq!(token, 42);
+            assert_eq!(direction, TransferDirection::Download);
             Some(())
         }
         _ => None,

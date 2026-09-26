@@ -149,6 +149,13 @@ async fn run_download(
             break None;
         };
         tokio::select! {
+            biased;
+            ctrl = control.recv() => {
+                match ctrl {
+                    Some(ConnControl::Close) | None => break None,
+                    Some(other) => unreachable!("invalid download control {other:?}"),
+                }
+            }
             read_result = read_granted(reader, &mut buffer[..grant.len]) => {
                 match read_result {
                     Ok(0) => break Some("connection closed".into()),
@@ -168,12 +175,6 @@ async fn run_download(
                         }
                     }
                     Err(error) => break Some(error.to_string()),
-                }
-            }
-            ctrl = control.recv() => {
-                match ctrl {
-                    Some(ConnControl::Close) | None => break None,
-                    Some(other) => unreachable!("invalid download control {other:?}"),
                 }
             }
             _ = sleep(PEER_IDLE_TIMEOUT) => break Some("download stalled".into()),

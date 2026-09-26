@@ -138,7 +138,7 @@ fn split_tracked(
 #[derive(Debug)]
 pub enum ConnControl {
     Send(Vec<u8>),
-    SendPeer(PeerMessage),
+    SendPeer(Vec<PeerMessage>),
     SendFileInit(u32),
     AssumeIdentity {
         username: String,

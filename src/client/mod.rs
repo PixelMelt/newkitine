@@ -29,6 +29,7 @@ use search::SearchQuery;
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
 pub const EVENT_QUEUE_CAPACITY: usize = 4096;
 pub const TRANSFER_QUEUE_CAPACITY: usize = 4096;
+pub const FOLDER_DOWNLOAD_FILE_LIMIT: usize = 1000;
 
 #[derive(Debug)]
 enum ClientCommand {

@@ -1,10 +1,13 @@
 use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
+use tracing::warn;
 
 use super::ClientActor;
 use crate::client::transfers::destination_root;
-use crate::client::{AbortResult, ClientEvent, EnqueueResult, RetryResult, TransferWork};
+use crate::client::{
+    AbortResult, ClientEvent, EnqueueResult, FOLDER_DOWNLOAD_FILE_LIMIT, RetryResult, TransferWork,
+};
 use crate::network::ConnId;
 use crate::network::NetworkCommand;
 use crate::types::{
@@ -53,14 +56,31 @@ impl ClientActor {
         let Some(files) = self.folder_requests.accept(&username, &directory, folders) else {
             return;
         };
-        let root = destination_root(&directory).to_owned();
-        for mut file in files {
-            file.name = format!("{directory}\\{}", file.name);
-            let (_, events) =
-                self.downloads
-                    .enqueue(&mut self.transfer_ids, username.clone(), file, Some(&root));
-            self.emit_transfers(events);
+        if files.len() > FOLDER_DOWNLOAD_FILE_LIMIT {
+            warn!(
+                username,
+                directory,
+                files = files.len(),
+                "folder contents exceed the download limit, refusing"
+            );
+            self.emit(ClientEvent::FolderRequestFailed {
+                username,
+                directory,
+            });
+            return;
         }
+        let root = destination_root(&directory);
+        let files = files
+            .into_iter()
+            .map(|mut file| {
+                file.name = format!("{directory}\\{}", file.name);
+                file
+            })
+            .collect();
+        let events = self
+            .downloads
+            .enqueue_folder(&mut self.transfer_ids, username, files, root);
+        self.emit_transfers(events);
     }
 
     pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
@@ -209,35 +229,34 @@ impl ClientActor {
         username: &str,
         token: u32,
         conn_id: ConnId,
+        direction: TransferDirection,
     ) {
-        if self.downloads.owns_token(username, token) {
-            let updates = self
+        let updates = match direction {
+            TransferDirection::Download => self
                 .downloads
-                .handle_file_transfer_init(username, token, conn_id);
-            self.emit_transfers(updates);
-        } else if self.uploads.owns_token(username, token) {
-            let updates =
+                .handle_file_transfer_init(username, token, conn_id),
+            TransferDirection::Upload => {
                 self.uploads
-                    .handle_file_transfer_init(username, token, conn_id, &self.users);
-            self.emit_transfers(updates);
-        } else {
-            self.net.send(NetworkCommand::CloseConnection(conn_id));
-        }
+                    .handle_file_transfer_init(username, token, conn_id, &self.users)
+            }
+        };
+        self.emit_transfers(updates);
     }
 
     pub(super) fn handle_file_connection_closed(
         &mut self,
         username: &str,
-        token: Option<u32>,
+        token: u32,
         conn_id: ConnId,
+        direction: TransferDirection,
     ) {
-        let downloads = self
-            .downloads
-            .handle_file_connection_closed(username, token, conn_id);
-        self.emit_transfers(downloads);
-        let uploads =
-            self.uploads
-                .handle_file_connection_closed(username, token, conn_id, &self.users);
-        self.emit_transfers(uploads);
+        let updates = match direction {
+            TransferDirection::Download => self.downloads.handle_file_connection_closed(conn_id),
+            TransferDirection::Upload => {
+                self.uploads
+                    .handle_file_connection_closed(username, token, conn_id, &self.users)
+            }
+        };
+        self.emit_transfers(updates);
     }
 }

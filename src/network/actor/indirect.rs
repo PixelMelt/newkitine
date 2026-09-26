@@ -13,7 +13,7 @@ use crate::network::conn::ConnControl;
 use crate::protocol::{
     PeerInitMessage, PeerMessage, ServerRequest, increment_token, initial_token,
 };
-use crate::types::ConnectionType;
+use crate::types::{ConnectionType, TransferDirection};
 
 const INDIRECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_ADDRESS_TTL: Duration = Duration::from_secs(1800);
@@ -144,9 +144,9 @@ impl Indirect {
             .copied()
     }
 
-    fn push_queued(&mut self, init_id: InitId, item: QueuedItem) -> bool {
+    fn push_queued(&mut self, init_id: InitId, items: Vec<QueuedItem>) -> bool {
         let init = self.inits.get_mut(&init_id).unwrap();
-        init.queued.push(item);
+        init.queued.extend(items);
         init.established
     }
 
@@ -167,14 +167,14 @@ impl Indirect {
         &mut self,
         username: String,
         conn_type: ConnectionType,
-        item: Option<QueuedItem>,
+        items: Vec<QueuedItem>,
     ) -> (InitId, u32) {
         let indirect_token = self.next_indirect_token();
         let init_id = self.insert(Init {
             username,
             conn_type,
             indirect_token: Some(indirect_token),
-            queued: item.into_iter().collect(),
+            queued: items,
             conn_id: None,
             established: false,
             created: Instant::now(),
@@ -326,32 +326,33 @@ impl Indirect {
 }
 
 impl Actor {
-    pub(super) fn send_to_peer(&mut self, username: String, item: QueuedItem) {
-        let conn_type = match &item {
-            QueuedItem::Peer(_) | QueuedItem::Frame(_) => ConnectionType::Peer,
-            QueuedItem::FileInit(_) => ConnectionType::File,
-        };
+    pub(super) fn send_to_peer(
+        &mut self,
+        username: String,
+        conn_type: ConnectionType,
+        items: Vec<QueuedItem>,
+    ) {
         if let Some(init_id) = self.indirect.existing_attempt(&username, conn_type) {
-            if self.indirect.push_queued(init_id, item) {
+            if self.indirect.push_queued(init_id, items) {
                 self.flush_init_queue(init_id);
             }
             return;
         }
-        self.initiate_peer_connection(username, conn_type, Some(item), None);
+        self.initiate_peer_connection(username, conn_type, items, None);
     }
 
     pub(super) fn initiate_peer_connection(
         &mut self,
         username: String,
         conn_type: ConnectionType,
-        item: Option<QueuedItem>,
+        items: Vec<QueuedItem>,
         in_address: Option<SocketAddrV4>,
     ) {
         let addr = in_address.or_else(|| {
             self.indirect
                 .lookup_fresh_address(&username, self.server.username())
         });
-        let (init_id, indirect_token) = self.indirect.register(username.clone(), conn_type, item);
+        let (init_id, indirect_token) = self.indirect.register(username.clone(), conn_type, items);
         self.send_to_server(ServerRequest::ConnectToPeer {
             token: indirect_token,
             user: username.clone(),
@@ -388,26 +389,43 @@ impl Actor {
             return;
         };
         let mut sent_file_init = None;
-        let mut queued = queued.into_iter();
+        let mut controls = Vec::new();
+        let mut batch = Vec::new();
+        for item in queued {
+            match item {
+                QueuedItem::Peer(message) => batch.push(message),
+                QueuedItem::Frame(bytes) => {
+                    if !batch.is_empty() {
+                        controls.push(ConnControl::SendPeer(std::mem::take(&mut batch)));
+                    }
+                    controls.push(ConnControl::Send(bytes));
+                }
+                QueuedItem::FileInit(token) => {
+                    if !batch.is_empty() {
+                        controls.push(ConnControl::SendPeer(std::mem::take(&mut batch)));
+                    }
+                    controls.push(ConnControl::SendFileInit(token));
+                }
+            }
+        }
+        if !batch.is_empty() {
+            controls.push(ConnControl::SendPeer(batch));
+        }
+        let mut controls = controls.into_iter();
         while let Some(conn) = self.peers.get_mut(conn_id) {
-            let Some(item) = queued.next() else {
+            let Some(control) = controls.next() else {
                 break;
             };
-            let control = match item {
-                QueuedItem::Peer(message) => ConnControl::SendPeer(message),
-                QueuedItem::Frame(bytes) => ConnControl::Send(bytes),
-                QueuedItem::FileInit(token) => {
-                    conn.file_token = Some(token);
-                    sent_file_init = Some(token);
-                    ConnControl::SendFileInit(token)
-                }
-            };
+            if let ConnControl::SendFileInit(token) = control {
+                conn.file_transfer = Some((token, TransferDirection::Upload));
+                sent_file_init = Some(token);
+            }
             self.push_conn(conn_id, control);
         }
-        let unsent: Vec<PeerMessage> = queued
-            .filter_map(|item| match item {
-                QueuedItem::Peer(message) => Some(message),
-                _ => None,
+        let unsent: Vec<PeerMessage> = controls
+            .flat_map(|control| match control {
+                ConnControl::SendPeer(messages) => messages,
+                _ => Vec::new(),
             })
             .collect();
         if !unsent.is_empty() {
@@ -420,6 +438,7 @@ impl Actor {
                 username,
                 token,
                 conn_id,
+                direction: TransferDirection::Upload,
             });
         }
     }

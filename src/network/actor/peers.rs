@@ -12,7 +12,7 @@ use crate::network::conn::{
     ConnControl, PeerTask, SharedTraffic, run_incoming_peer, run_outgoing_peer,
 };
 use crate::protocol::{PeerInitMessage, PeerMessage, ServerRequest};
-use crate::types::ConnectionType;
+use crate::types::{ConnectionType, TransferDirection};
 
 #[derive(Clone)]
 pub(super) struct PeerIdentity {
@@ -25,7 +25,7 @@ pub(super) struct Conn {
     pub(super) identity: Option<PeerIdentity>,
     pub(super) init_id: Option<InitId>,
     pub(super) established: bool,
-    pub(super) file_token: Option<u32>,
+    pub(super) file_transfer: Option<(u32, TransferDirection)>,
     pub(super) pierce_token: Option<u32>,
     pub(super) ip: Option<Ipv4Addr>,
     traffic: SharedTraffic,
@@ -40,7 +40,7 @@ impl Conn {
             identity: Some(identity),
             init_id: None,
             established: true,
-            file_token: None,
+            file_transfer: None,
             pierce_token: None,
             ip: None,
             traffic: SharedTraffic::default(),
@@ -118,14 +118,14 @@ impl Actor {
             Err(mpsc::error::TrySendError::Full(rejected)) => (rejected, true),
             Err(mpsc::error::TrySendError::Closed(rejected)) => (rejected, false),
         };
-        if let ConnControl::SendPeer(message) = rejected {
+        if let ConnControl::SendPeer(messages) = rejected {
             let username = conn
                 .identity
                 .as_ref()
                 .expect("peer message pushed to an unidentified connection")
                 .username
                 .clone();
-            self.emit_unsent(username, vec![message]);
+            self.emit_unsent(username, messages);
         }
         if overflowed {
             warn!(conn_id, "connection outbound queue overflowed, dropping");
@@ -175,7 +175,7 @@ impl Actor {
             identity: None,
             init_id: None,
             established: true,
-            file_token: None,
+            file_transfer: None,
             pierce_token: None,
             ip,
             traffic: traffic.clone(),
@@ -215,7 +215,7 @@ impl Actor {
             }),
             init_id,
             established: false,
-            file_token: None,
+            file_transfer: None,
             pierce_token,
             ip: Some(*addr.ip()),
             traffic: traffic.clone(),
@@ -329,11 +329,14 @@ impl Actor {
         };
         match conn_type {
             ConnectionType::File => {
-                self.emit(NetworkEvent::FileConnectionClosed {
-                    username,
-                    token: conn.file_token,
-                    conn_id,
-                });
+                if let Some((token, direction)) = conn.file_transfer {
+                    self.emit(NetworkEvent::FileConnectionClosed {
+                        username,
+                        token,
+                        conn_id,
+                        direction,
+                    });
+                }
             }
             ConnectionType::Distributed => {
                 self.handle_distributed_conn_closed(&username, conn_id);

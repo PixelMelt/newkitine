@@ -417,14 +417,17 @@ async fn run_message_loop(
                 }
             }
             ctrl = control.recv() => {
-                let (bytes, message) = match ctrl {
-                    Some(ConnControl::Send(bytes)) => (bytes, None),
-                    Some(ConnControl::SendPeer(message)) => (message.to_bytes(), Some(message)),
+                let (bytes, messages) = match ctrl {
+                    Some(ConnControl::Send(bytes)) => (bytes, Vec::new()),
+                    Some(ConnControl::SendPeer(messages)) => (
+                        messages.iter().flat_map(PeerMessage::to_bytes).collect(),
+                        messages,
+                    ),
                     Some(ConnControl::Close) | None => break None,
                     Some(other) => unreachable!("invalid message-loop control {other:?}"),
                 };
                 if let Err(error) = outgoing.try_send(bytes) {
-                    unsent.extend(message);
+                    unsent.extend(messages);
                     break match error {
                         TrySendError::Full(_) => Some("outbound queue overflowed".into()),
                         TrySendError::Closed(_) => {
@@ -449,8 +452,8 @@ async fn run_message_loop(
     writer_task.abort();
     control.close();
     while let Ok(control) = control.try_recv() {
-        if let ConnControl::SendPeer(message) = control {
-            unsent.push(message);
+        if let ConnControl::SendPeer(messages) = control {
+            unsent.extend(messages);
         }
     }
     if !unsent.is_empty() {
