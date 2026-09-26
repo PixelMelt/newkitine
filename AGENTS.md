@@ -1,6 +1,6 @@
 ## Constraints
 
-Before flagging an architecture concern, read DECISIONS.md — the calls recorded there are settled with reasoning and are not findings unless you bring new evidence.
+Before flagging an architecture concern, read docs/adr/README.md and the records it indexes — accepted ADRs are settled with reasoning and are not findings unless you bring new evidence; a superseded ADR records why the earlier call was wrong. New architecture decisions get a new ADR there.
 
 This repo changes fast, do not write comments.
 

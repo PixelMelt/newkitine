@@ -9,3 +9,4 @@
 web/src/tabs/Settings.svelte
 docker-compose.yml
 /config/scan-cache.json.gz
+/config/share-catalog.gz

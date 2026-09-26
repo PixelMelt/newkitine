@@ -175,12 +175,9 @@ pub async fn room_message_received(app: &App, room: String, username: String, me
         .await
         .unwrap_or_else(|error| db::fatal(error));
     message.id = Some(id);
-    let mut data = app.projection.write();
-    if !data.chat.rooms.joined.contains_key(&room) {
-        tracing::debug!(room, "room left while persisting its message, dropping");
-        return;
-    }
-    data.broadcast(AppEvent::RoomMessage { room, message });
+    app.projection
+        .write()
+        .broadcast(AppEvent::RoomMessage { room, message });
 }
 
 pub fn room_list(app: &App, rooms: Vec<(String, u32)>) {

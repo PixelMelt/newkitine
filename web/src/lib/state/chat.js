@@ -11,7 +11,7 @@ function messageKey(m) {
 
 function mergeHistory(history, live) {
 	const seen = new Set(history.map(messageKey));
-	const raced = live.filter((m) => m.status || !seen.has(messageKey(m)));
+	const raced = live.filter((m) => !seen.has(messageKey(m)));
 	return [...history, ...raced];
 }
 

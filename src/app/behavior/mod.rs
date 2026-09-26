@@ -5,6 +5,7 @@ mod state;
 pub use state::Behavior;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -14,10 +15,14 @@ use tracing::info;
 
 use crate::types::{DenialMessages, FilterLevel, Restriction};
 
-use db::{downloaded_from_any, has_downloaded_from, repeat_download_users, search_scrape_users};
-
-use super::peer_history::{clear_user_verdict, load_verdicts, set_user_verdict};
-use policy::{CONTRADICTION_MIN_FILES, PRESET_STATS, SWEEP_SECS, Verdict, restriction_for};
+use db::{
+    clear_user_verdict, downloaded_from_any, has_downloaded_from, load_verdicts, repeat_deliveries,
+    repeat_delivery, reset_counters, search_scrape_users, set_user_verdict,
+};
+use policy::{
+    CONTRADICTION_MIN_FILES, PRESET_STATS, REPEAT_WINDOW_DAYS, SECS_PER_DAY, SWEEP_SECS, Verdict,
+    restriction_for,
+};
 use state::{Check, Peer, touch};
 
 use super::db::fatal;
@@ -94,11 +99,7 @@ pub async fn sweep_loop(app: Arc<App>) {
 }
 
 async fn sweep(app: &Arc<App>) {
-    let (mut candidates, repeaters) = tokio::join!(
-        search_scrape_users(&app.db),
-        repeat_download_users(&app.db, now()),
-    );
-    candidates.extend(repeaters);
+    let candidates = search_scrape_users(&app.db).await;
     if candidates.is_empty() {
         return;
     }
@@ -278,7 +279,29 @@ pub async fn message_received(app: &Arc<App>, username: &str) {
     if !app.settings.clear_verdict_on_message() {
         return;
     }
+    forgive(app, username).await;
+}
+
+async fn forgive(app: &Arc<App>, username: &str) {
     clear_verdict(app, username).await;
+    reset_counters(&app.db, username, now())
+        .await
+        .unwrap_or_else(|error| fatal(error));
+    app.client.clear_file_denials(username).await;
+}
+
+pub async fn upload_delivered(app: &Arc<App>, username: &str, virtual_path: &str) {
+    let timestamp = now();
+    if let Some(last_at) = repeat_delivery(&app.db, username, virtual_path, timestamp).await {
+        deny_file(app, username, virtual_path, last_at, timestamp).await;
+    }
+}
+
+async fn deny_file(app: &Arc<App>, username: &str, virtual_path: &str, last_at: i64, now: i64) {
+    let expires_at = last_at + REPEAT_WINDOW_DAYS * SECS_PER_DAY;
+    let ttl = Duration::from_secs(expires_at.saturating_sub(now) as u64);
+    app.client.deny_file(username, virtual_path, ttl).await;
+    info!(username, virtual_path, "repeat downloads capped");
 }
 
 pub async fn clear_verdict(app: &Arc<App>, username: &str) {
@@ -348,6 +371,19 @@ pub async fn load(app: &Arc<App>) {
                 .await;
         }
     }
+    let timestamp = now();
+    let repeats = repeat_deliveries(&app.db, timestamp).await;
+    info!(files = repeats.len(), "repeat download caps loaded");
+    for repeat in repeats {
+        deny_file(
+            app,
+            &repeat.username,
+            &repeat.virtual_path,
+            repeat.last_at,
+            timestamp,
+        )
+        .await;
+    }
 }
 
 pub(in crate::app) fn router() -> Router<Arc<App>> {
@@ -355,6 +391,6 @@ pub(in crate::app) fn router() -> Router<Arc<App>> {
 }
 
 async fn clear(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
-    clear_verdict(&app, &username).await;
+    forgive(&app, &username).await;
     StatusCode::ACCEPTED
 }

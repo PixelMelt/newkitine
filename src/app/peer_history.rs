@@ -44,67 +44,6 @@ pub(super) async fn flush_activity(
     .await?;
     Ok(())
 }
-pub async fn set_user_verdict(
-    pool: &sqlx::MySqlPool,
-    username: &str,
-    verdict: &str,
-    evidence: &str,
-    restriction: &str,
-    timestamp: i64,
-    convicted_at: Option<i64>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO users_seen
-            (username, first_seen, last_seen, verdict, evidence, restriction, convicted_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-            last_seen = GREATEST(last_seen, VALUES(last_seen)),
-            verdict = VALUES(verdict),
-            evidence = VALUES(evidence),
-            restriction = VALUES(restriction),
-            convicted_at = COALESCE(convicted_at, VALUES(convicted_at))",
-    )
-    .bind(username)
-    .bind(timestamp)
-    .bind(timestamp)
-    .bind(verdict)
-    .bind(evidence)
-    .bind(restriction)
-    .bind(convicted_at)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn clear_user_verdict(
-    pool: &sqlx::MySqlPool,
-    username: &str,
-    timestamp: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE users_seen
-         SET verdict = 'clean', restriction = 'none', searches = 0, searches_matched = 0,
-             convicted_at = NULL, counters_reset_at = ?
-         WHERE username = ?",
-    )
-    .bind(timestamp)
-    .bind(username)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-pub async fn load_verdicts(pool: &sqlx::MySqlPool) -> Vec<(String, String, String)> {
-    use sqlx::Row;
-    sqlx::query(
-        "SELECT username, verdict, COALESCE(evidence, '') FROM users_seen WHERE verdict != 'clean'",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("load verdicts")
-    .into_iter()
-    .map(|row| (row.get(0), row.get(1), row.get(2)))
-    .collect()
-}
 pub async fn record_user_shares(
     pool: &MySqlPool,
     username: &str,

@@ -4,6 +4,7 @@ use tokio::time::Instant;
 use tracing::{info, warn};
 
 use super::ClientActor;
+use super::sharing::ScanJob;
 use crate::client::ClientEvent;
 use crate::network::NetworkCommand;
 use crate::protocol::ServerRequest;
@@ -43,6 +44,7 @@ impl Session {
 impl ClientActor {
     pub(super) fn connect(&mut self) {
         self.session.connected = true;
+        self.session.reconnect_at = None;
         self.emit(ClientEvent::Connecting);
         self.net.send(NetworkCommand::ServerConnect {
             address: self.config.login.server,
@@ -53,7 +55,6 @@ impl ClientActor {
     }
 
     pub(super) fn reconnect(&mut self) {
-        self.session.reconnect_at = None;
         if self.session.connected {
             self.session.reconnect_now = true;
             self.net.send(NetworkCommand::ServerDisconnect);
@@ -90,7 +91,7 @@ impl ClientActor {
         if self.config.shared_folders != old.shared_folders
             || self.config.share_filters != old.share_filters
         {
-            self.apply_shared_folders();
+            self.start_scan(ScanJob::RELOAD);
         }
         if !self.config.auto_reconnect {
             self.session.reconnect_at = None;
@@ -159,7 +160,6 @@ impl ClientActor {
     pub(super) fn handle_logged_in(&mut self, username: String, banner: String) {
         self.session.logged_in = true;
         self.session.reconnect_delay = RECONNECT_INITIAL_DELAY;
-        self.session.reconnect_at = None;
         self.users.watch_buddies(&self.net);
         self.net.server(ServerRequest::WatchUser {
             user: username.clone(),
@@ -178,8 +178,7 @@ impl ClientActor {
             });
         }
         self.net.server(ServerRequest::CheckPrivileges);
-        let defer_requests = self.awaiting_share_index();
-        self.downloads.request_queued(defer_requests);
+        self.downloads.request_queued();
         self.schedule_wishlist();
         self.emit(ClientEvent::LoggedIn { username, banner });
     }
@@ -205,7 +204,6 @@ impl ClientActor {
     pub(super) fn handle_server_disconnected(&mut self, manual: bool) {
         self.session.logged_in = false;
         self.session.connected = false;
-        self.search_tokens.clear();
         self.folder_requests.clear();
         let downloads = self.downloads.reset();
         self.emit_transfers(downloads);
@@ -213,12 +211,12 @@ impl ClientActor {
         self.emit_transfers(uploads);
         self.users.reset();
         self.wishlist.at = None;
+        self.emit(ClientEvent::Disconnected);
         if self.session.reconnect_now {
             self.session.reconnect_now = false;
             self.connect();
         } else if !manual && self.config.auto_reconnect {
             self.schedule_reconnect("server connection lost, reconnecting");
         }
-        self.emit(ClientEvent::Disconnected);
     }
 }

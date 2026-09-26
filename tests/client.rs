@@ -239,13 +239,14 @@ async fn client_shares_answers_search_and_uploads() {
         _ => None,
     })
     .await;
-    let (folders, files) = wait_client(&mut eve_events, |event| match event {
-        ClientEvent::SharesScanned { folders, files } => Some((folders, files)),
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled {
+            folders: 2,
+            files: 2,
+        } => Some(()),
         _ => None,
     })
     .await;
-    assert_eq!(folders, 2);
-    assert_eq!(files, 2);
 
     let download_dir = temp_dir("frank-downloads");
     let frank_config = client_config(server_addr, "frank", free_port(), download_dir.clone());
@@ -389,7 +390,7 @@ async fn wishlist_search_runs_on_interval() {
     }];
     let (_grace, mut grace_events, _grace_transfers) = Client::spawn(grace_config);
     wait_client(&mut grace_events, |event| match event {
-        ClientEvent::SharesScanned { .. } => Some(()),
+        ClientEvent::SharesInstalled { .. } => Some(()),
         _ => None,
     })
     .await;
@@ -494,7 +495,7 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     }];
     let (eve, mut eve_events, mut eve_transfers) = Client::spawn(eve_config);
     wait_client(&mut eve_events, |event| match event {
-        ClientEvent::SharesScanned { .. } => Some(()),
+        ClientEvent::SharesInstalled { .. } => Some(()),
         _ => None,
     })
     .await;
@@ -684,7 +685,7 @@ async fn description_template_renders_for_the_asking_user() {
     .unwrap();
     let (gina, mut gina_events, _gina_transfers) = Client::spawn(gina_config);
     wait_client(&mut gina_events, |event| match event {
-        ClientEvent::SharesScanned { .. } => Some(()),
+        ClientEvent::SharesInstalled { .. } => Some(()),
         _ => None,
     })
     .await;
@@ -809,42 +810,52 @@ async fn retry_download_is_resolved_by_the_client_actor() {
 }
 
 #[tokio::test]
-async fn queue_requests_during_scan_are_deferred_until_index_ready() {
+async fn shares_are_served_from_the_catalog_cache_before_any_scan() {
     let (server_addr, _registry) = start_fake_server().await;
 
-    let share_dir = temp_dir("deferred-shared");
+    let share_dir = temp_dir("cached-shared");
     let payload: Vec<u8> = (0u32..50_000)
         .flat_map(|value| value.to_le_bytes())
         .collect();
     let album_dir = share_dir.join("Album");
     std::fs::create_dir_all(&album_dir).unwrap();
     std::fs::write(album_dir.join("song.mp3"), &payload).unwrap();
-    for folder in 0..4000 {
-        let dir = share_dir.join(format!("filler-{folder}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("tune.mp3"), b"tiny").unwrap();
-    }
 
-    let eve_config = client_config(
-        server_addr,
-        "eve",
-        free_port(),
-        temp_dir("deferred-eve-downloads"),
-    );
-    let mut shared_runtime = eve_config.runtime.clone();
-    shared_runtime.shared_folders = vec![SharedFolder {
+    let eve_dir = temp_dir("cached-eve-downloads");
+    let mut eve_config = client_config(server_addr, "eve", free_port(), eve_dir.clone());
+    eve_config.runtime.shared_folders = vec![SharedFolder {
         virtual_name: "Music".into(),
         path: share_dir,
         buddy_only: false,
     }];
-    let (eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config);
+    let (eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config.clone());
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::ShareScanFinished => Some(()),
+        _ => None,
+    })
+    .await;
+    drop(eve);
+    drop(eve_events);
+
+    eve_config.scan_on_startup = false;
+    eve_config.runtime.login.listen_port = free_port();
+    let (_eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config);
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled {
+            folders: 2,
+            files: 1,
+        } => Some(()),
+        ClientEvent::ShareScanProgress { .. } => panic!("cached shares must not walk the disk"),
+        _ => None,
+    })
+    .await;
     wait_client(&mut eve_events, |event| match event {
         ClientEvent::LoggedIn { .. } => Some(()),
         _ => None,
     })
     .await;
 
-    let download_dir = temp_dir("deferred-frank-downloads");
+    let download_dir = temp_dir("cached-frank-downloads");
     let frank_config = client_config(server_addr, "frank", free_port(), download_dir.clone());
     let (frank, mut frank_events, mut frank_transfers) = Client::spawn(frank_config);
     wait_client(&mut frank_events, |event| match event {
@@ -853,7 +864,6 @@ async fn queue_requests_during_scan_are_deferred_until_index_ready() {
     })
     .await;
 
-    eve.apply_config(shared_runtime).await;
     assert_eq!(
         frank
             .download(
@@ -887,4 +897,95 @@ async fn queue_requests_during_scan_are_deferred_until_index_ready() {
     })
     .await;
     assert_eq!(std::fs::read(&file_path).unwrap(), payload);
+}
+
+#[tokio::test]
+async fn banned_peer_browse_gets_an_empty_share_list() {
+    let (server_addr, _registry) = start_fake_server().await;
+
+    let share_dir = temp_dir("banned-browse-music");
+    let album_dir = share_dir.join("Album");
+    std::fs::create_dir_all(&album_dir).unwrap();
+    std::fs::write(album_dir.join("song.mp3"), b"payload".repeat(100)).unwrap();
+
+    let mut eve_config = client_config(
+        server_addr,
+        "eve",
+        free_port(),
+        temp_dir("banned-browse-eve-dl"),
+    );
+    eve_config.runtime.shared_folders = vec![SharedFolder {
+        virtual_name: "Music".into(),
+        path: share_dir,
+        buddy_only: false,
+    }];
+    let (eve, mut eve_events, _eve_transfers) = Client::spawn(eve_config);
+    wait_client(&mut eve_events, |event| match event {
+        ClientEvent::SharesInstalled { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let frank_config = client_config(
+        server_addr,
+        "frank",
+        free_port(),
+        temp_dir("banned-browse-frank-dl"),
+    );
+    let (frank, mut frank_events, _frank_transfers) = Client::spawn(frank_config);
+    wait_client(&mut frank_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    eve.ban_user("frank").await;
+    frank.browse_user("eve").await;
+    let shares = wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SharedFileList {
+            username, shares, ..
+        } if username == "eve" => Some(shares),
+        _ => None,
+    })
+    .await;
+    assert!(shares.is_empty());
+
+    eve.unban_user("frank").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    frank.browse_user("eve").await;
+    let shares = wait_client(&mut frank_events, |event| match event {
+        ClientEvent::SharedFileList {
+            username, shares, ..
+        } if username == "eve" => Some(shares),
+        _ => None,
+    })
+    .await;
+    assert_eq!(shares.len(), 2);
+}
+
+#[tokio::test]
+async fn connect_while_connected_is_ignored() {
+    let (server_addr, _registry) = start_fake_server().await;
+    let config = client_config(server_addr, "carol", free_port(), temp_dir("downloads"));
+    let (carol, mut carol_events, _carol_transfers) = Client::spawn(config);
+    wait_client(&mut carol_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
+    carol.connect().await;
+    carol.reconnect().await;
+
+    let first = wait_client(&mut carol_events, |event| match event {
+        ClientEvent::Connecting | ClientEvent::Disconnected => Some(event),
+        _ => None,
+    })
+    .await;
+    assert!(matches!(first, ClientEvent::Disconnected));
+    wait_client(&mut carol_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
 }

@@ -82,7 +82,6 @@ pub(in crate::client) struct Downloads {
     placements: mpsc::UnboundedSender<PlacementDone>,
     transfers: Registry<Transfer>,
     basename_limits: HashMap<PathBuf, usize>,
-    pending_queue_requests: Vec<TransferKey>,
     queue_positions_at: Instant,
 }
 
@@ -102,7 +101,6 @@ impl Downloads {
             placements,
             transfers: Registry::default(),
             basename_limits: HashMap::new(),
-            pending_queue_requests: Vec::new(),
             queue_positions_at: Instant::now(),
         }
     }
@@ -176,10 +174,9 @@ impl Downloads {
         username: String,
         file: FileInfo,
         root: Option<&str>,
-        defer_requests: bool,
     ) -> (EnqueueResult, Vec<TransferWork>) {
         let folder_path = self.destination(&username, &file.name, root);
-        self.start(ids, username, file, folder_path, defer_requests)
+        self.start(ids, username, file, folder_path)
     }
 
     fn start(
@@ -188,7 +185,6 @@ impl Downloads {
         username: String,
         file: FileInfo,
         folder_path: PathBuf,
-        defer_requests: bool,
     ) -> (EnqueueResult, Vec<TransferWork>) {
         let FileInfo {
             name: virtual_path,
@@ -239,7 +235,7 @@ impl Downloads {
             let finished = TransferWork::Finished {
                 snapshot: transfer.snapshot(),
                 avg_speed_bps: None,
-                delivered: false,
+                delivered_bytes: 0,
             };
             self.transfers.insert(id, key, transfer);
             return (EnqueueResult::Enqueued, vec![finished]);
@@ -249,7 +245,7 @@ impl Downloads {
         self.net.server(ServerRequest::WatchUser {
             user: username.clone(),
         });
-        self.send_queue_request(key, defer_requests);
+        self.send_queue_request(key);
         (EnqueueResult::Enqueued, vec![queued])
     }
 
@@ -257,7 +253,6 @@ impl Downloads {
         &mut self,
         ids: &mut TransferIds,
         id: TransferId,
-        defer_requests: bool,
     ) -> (RetryResult, Vec<TransferWork>) {
         let Some(key) = self.transfers.key_of(id).cloned() else {
             return (RetryResult::NotFound, Vec::new());
@@ -275,7 +270,7 @@ impl Downloads {
                 attributes: transfer.attributes.clone(),
             },
         );
-        let (result, work) = self.start(ids, username, file, folder_path, defer_requests);
+        let (result, work) = self.start(ids, username, file, folder_path);
         match result {
             EnqueueResult::Enqueued => (RetryResult::Requeued, work),
             EnqueueResult::AlreadyActive => {
@@ -332,7 +327,7 @@ impl Downloads {
         removed
     }
 
-    pub fn request_queued(&mut self, defer_requests: bool) {
+    pub fn request_queued(&mut self) {
         let mut watched = HashSet::new();
         let keys: Vec<TransferKey> = self
             .transfers
@@ -346,17 +341,11 @@ impl Downloads {
                     user: key.0.clone(),
                 });
             }
-            self.send_queue_request(key, defer_requests);
+            self.send_queue_request(key);
         }
     }
 
-    fn send_queue_request(&mut self, key: TransferKey, defer_requests: bool) {
-        if defer_requests {
-            if !self.pending_queue_requests.contains(&key) {
-                self.pending_queue_requests.push(key);
-            }
-            return;
-        }
+    fn send_queue_request(&mut self, key: TransferKey) {
         let transfer = self.transfers.get(&key).unwrap();
         let legacy_client = transfer.legacy_attempt;
         self.net.peer(
@@ -366,24 +355,6 @@ impl Downloads {
                 legacy_client,
             },
         );
-    }
-
-    pub fn flush_queued_requests(&mut self) {
-        for key in std::mem::take(&mut self.pending_queue_requests) {
-            let Some(transfer) = self.transfers.get(&key) else {
-                continue;
-            };
-            if transfer.phase != TransferPhase::Queued {
-                continue;
-            }
-            self.net.peer(
-                key.0,
-                PeerMessage::QueueUpload {
-                    file: key.1,
-                    legacy_client: transfer.legacy_attempt,
-                },
-            );
-        }
     }
 
     pub fn request_queue_positions(&mut self) {
@@ -406,7 +377,7 @@ impl Downloads {
         }
     }
 
-    pub fn retry_offline(&mut self, username: &str, defer_requests: bool) {
+    pub fn retry_offline(&mut self, username: &str) {
         let keys: Vec<TransferKey> = self
             .transfers
             .values()
@@ -423,7 +394,7 @@ impl Downloads {
             let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.phase = TransferPhase::Queued;
             transfer.retry_attempt = false;
-            self.send_queue_request(key, defer_requests);
+            self.send_queue_request(key);
         }
     }
 
@@ -520,8 +491,7 @@ impl Downloads {
         self.transfers.attach_conn(&key, conn_id);
         let incomplete_dir = self.incomplete_dir.clone();
         let limit = self.basename_limit(&incomplete_dir);
-        let incomplete_path =
-            files::incomplete_file_path(&incomplete_dir, username, &key.1, limit);
+        let incomplete_path = files::incomplete_file_path(&incomplete_dir, username, &key.1, limit);
         let transfer = self.transfers.get_mut(&key).unwrap();
         transfer.activated_at = None;
         transfer.incomplete_path = Some(incomplete_path.clone());
@@ -623,7 +593,6 @@ impl Downloads {
         username: &str,
         file: &str,
         reason: &str,
-        defer_requests: bool,
     ) -> Vec<TransferWork> {
         let key = (username.to_owned(), file.to_owned());
         let Some(transfer) = self.transfers.get(&key) else {
@@ -645,18 +614,13 @@ impl Downloads {
             let transfer = self.transfers.get_mut(&key).unwrap();
             transfer.legacy_attempt = true;
             transfer.activated_at = None;
-            self.send_queue_request(key, defer_requests);
+            self.send_queue_request(key);
             return Vec::new();
         }
         self.fail(&key, reason.to_owned())
     }
 
-    pub fn handle_upload_failed(
-        &mut self,
-        username: &str,
-        file: &str,
-        defer_requests: bool,
-    ) -> Vec<TransferWork> {
+    pub fn handle_upload_failed(&mut self, username: &str, file: &str) -> Vec<TransferWork> {
         let key = (username.to_owned(), file.to_owned());
         let Some(transfer) = self.transfers.get(&key) else {
             return Vec::new();
@@ -674,7 +638,7 @@ impl Downloads {
             transfer.legacy_attempt = true;
             transfer.phase = TransferPhase::Queued;
             transfer.activated_at = None;
-            self.send_queue_request(key, defer_requests);
+            self.send_queue_request(key);
             return Vec::new();
         }
         self.fail(&key, "upload failed".into())
@@ -807,7 +771,7 @@ impl Downloads {
                 vec![TransferWork::Finished {
                     snapshot: transfer.snapshot(),
                     avg_speed_bps: None,
-                    delivered: true,
+                    delivered_bytes: transfer.size,
                 }]
             }
             Err(error) => self.fail(key, format!("cannot place finished download: {error}")),
@@ -846,7 +810,6 @@ mod tests {
                 attributes: FileAttributes::default(),
             },
             None,
-            false,
         );
         assert_eq!(result, EnqueueResult::Enqueued);
         ("uploader".into(), "Music\\song.mp3".into())
@@ -872,7 +835,6 @@ mod tests {
                 attributes: FileAttributes::default(),
             },
             Some("share\\Soulseek"),
-            true,
         );
         assert_eq!(result, EnqueueResult::Enqueued);
         let key = (
@@ -910,13 +872,12 @@ mod tests {
                 attributes: FileAttributes::default(),
             },
             Some("share\\Album"),
-            false,
         );
         assert_eq!(result, EnqueueResult::Enqueued);
         assert!(matches!(
             work.as_slice(),
             [TransferWork::Finished {
-                delivered: false,
+                delivered_bytes: 0,
                 ..
             }]
         ));
@@ -957,7 +918,6 @@ mod tests {
                 attributes: FileAttributes::default(),
             },
             Some("share\\Album"),
-            true,
         );
         assert!(matches!(work.as_slice(), [TransferWork::Update(_)]));
 
@@ -983,82 +943,10 @@ mod tests {
             "uploader",
             "Music\\song.mp3",
             TransferRejectReason::FILE_NOT_SHARED,
-            false,
         );
         assert!(updates.is_empty());
         let transfer = downloads.transfers.get(&key).unwrap();
         assert_eq!(transfer.phase, TransferPhase::Aborted);
         assert!(!transfer.legacy_attempt);
-    }
-
-    #[tokio::test]
-    async fn legacy_retry_defers_while_awaiting_share_index() {
-        let (net, _events) = spawn_network();
-        let mut downloads = Downloads::new(
-            net,
-            "/tmp".into(),
-            "/tmp".into(),
-            false,
-            mpsc::unbounded_channel().0,
-        );
-        let mut ids = TransferIds::new(&[]);
-        let key = queued_download(&mut downloads, &mut ids);
-        let updates = downloads.handle_upload_denied(
-            "uploader",
-            "Music\\song.mp3",
-            TransferRejectReason::FILE_NOT_SHARED,
-            true,
-        );
-        assert!(updates.is_empty());
-        assert!(downloads.pending_queue_requests.contains(&key));
-        let transfer = downloads.transfers.get(&key).unwrap();
-        assert!(transfer.legacy_attempt);
-        assert_eq!(transfer.phase, TransferPhase::Queued);
-    }
-
-    #[tokio::test]
-    async fn flush_skips_transfers_no_longer_queued() {
-        let (net, mut commands) = crate::network::test_channel();
-        let mut downloads = Downloads::new(
-            net,
-            "/tmp".into(),
-            "/tmp".into(),
-            false,
-            mpsc::unbounded_channel().0,
-        );
-        let mut ids = TransferIds::new(&[]);
-        let (result, _) = downloads.enqueue(
-            &mut ids,
-            "uploader".into(),
-            FileInfo {
-                name: "Music\\song.mp3".into(),
-                size: 100,
-                attributes: FileAttributes::default(),
-            },
-            None,
-            true,
-        );
-        assert_eq!(result, EnqueueResult::Enqueued);
-        let key = ("uploader".to_owned(), "Music\\song.mp3".to_owned());
-        assert!(downloads.pending_queue_requests.contains(&key));
-        let id = downloads.transfers.get(&key).unwrap().id;
-        let (aborted, _) = downloads.abort(id);
-        assert_eq!(aborted, AbortResult::Aborted);
-        downloads.flush_queued_requests();
-        assert!(downloads.pending_queue_requests.is_empty());
-        let transfer = downloads.transfers.get(&key).unwrap();
-        assert_eq!(transfer.phase, TransferPhase::Aborted);
-        while let Ok(command) = commands.try_recv() {
-            assert!(
-                !matches!(
-                    command,
-                    NetworkCommand::SendPeerMessage {
-                        message: PeerMessage::QueueUpload { .. },
-                        ..
-                    }
-                ),
-                "flush must not send a queue request for a non-queued transfer"
-            );
-        }
     }
 }

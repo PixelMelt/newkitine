@@ -1,8 +1,6 @@
-mod error;
 mod lists;
 mod migrations;
 
-pub use error::fatal;
 pub use lists::{add_to_list, load_list, remove_from_list};
 pub use migrations::init_schema;
 
@@ -14,4 +12,9 @@ pub async fn connect(url: &str) -> Result<MySqlPool, sqlx::Error> {
         .max_connections(5)
         .connect(url)
         .await
+}
+
+pub fn fatal(error: sqlx::Error) -> ! {
+    tracing::error!(%error, "database write failed, terminating");
+    std::process::exit(1);
 }

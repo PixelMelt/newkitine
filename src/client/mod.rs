@@ -15,6 +15,7 @@ pub use transfers::{AbortResult, EnqueueResult, RetryResult, TransferWork};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -97,6 +98,14 @@ pub(crate) enum ClientCommand {
     SetUserRestriction {
         username: String,
         restriction: Restriction,
+    },
+    DenyFile {
+        username: String,
+        virtual_path: String,
+        ttl: Duration,
+    },
+    ClearFileDenials {
+        username: String,
     },
     AddInterest {
         thing: String,
@@ -311,6 +320,22 @@ impl Client {
         self.send(ClientCommand::SetUserRestriction {
             username: username.to_owned(),
             restriction,
+        })
+        .await;
+    }
+
+    pub async fn deny_file(&self, username: &str, virtual_path: &str, ttl: Duration) {
+        self.send(ClientCommand::DenyFile {
+            username: username.to_owned(),
+            virtual_path: virtual_path.to_owned(),
+            ttl,
+        })
+        .await;
+    }
+
+    pub async fn clear_file_denials(&self, username: &str) {
+        self.send(ClientCommand::ClearFileDenials {
+            username: username.to_owned(),
         })
         .await;
     }

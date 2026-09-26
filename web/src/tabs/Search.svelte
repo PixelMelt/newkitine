@@ -1,6 +1,6 @@
 <script>
   import { searches, wishlist, rooms, notice } from '../lib/stores.js';
-  import { searchTarget, openBrowse, openUserInfo } from '../lib/ui.js';
+  import { searchTarget, openBrowse, openUserInfo, noAutofill } from '../lib/ui.js';
   import { post, del } from '../lib/api.js';
   import { formatSize, formatAttributes, baseName, folderName } from '../lib/format.js';
   import { emptyFilters, compileFilters } from '../lib/filters.js';
@@ -137,7 +137,7 @@
 </script>
 
 <div class="toolbar">
-  <input
+  <input {...noAutofill}
     placeholder="Search files…"
     bind:value={query}
     on:keydown={(e) => e.key === 'Enter' && startSearch()}
@@ -155,7 +155,7 @@
       {/each}
     </select>
   {:else if mode === 'user'}
-    <input style="min-width: 120px;" placeholder="Username…" bind:value={modeUser} />
+    <input {...noAutofill} style="min-width: 120px;" placeholder="Username…" bind:value={modeUser} />
   {/if}
   <button on:click={startSearch}>Search</button>
   <button class:active={showFilters} on:click={() => (showFilters = !showFilters)}>
@@ -166,24 +166,24 @@
 
 {#if showFilters}
   <div class="toolbar">
-    <input style="min-width: 120px;" placeholder="Include text…" bind:value={filters.include} />
-    <input style="min-width: 120px;" placeholder="Exclude text…" bind:value={filters.exclude} />
-    <input
+    <input {...noAutofill} style="min-width: 120px;" placeholder="Include text…" bind:value={filters.include} />
+    <input {...noAutofill} style="min-width: 120px;" placeholder="Exclude text…" bind:value={filters.exclude} />
+    <input {...noAutofill}
       style="min-width: 100px;"
       placeholder="File type, e.g. flac !mp3"
       bind:value={filters.type}
     />
-    <input
+    <input {...noAutofill}
       style="min-width: 100px;"
       placeholder="Size, e.g. >10.5m <1g"
       bind:value={filters.size}
     />
-    <input
+    <input {...noAutofill}
       style="min-width: 90px;"
       placeholder="Bitrate, e.g. 320 <1412"
       bind:value={filters.bitrate}
     />
-    <input
+    <input {...noAutofill}
       style="min-width: 90px;"
       placeholder="Duration, e.g. >6:00"
       bind:value={filters.duration}
@@ -195,7 +195,7 @@
 
 {#if showWishlist}
   <div class="toolbar">
-    <input
+    <input {...noAutofill}
       placeholder="Add wish…"
       bind:value={wishTerm}
       on:keydown={(e) => e.key === 'Enter' && addWish()}

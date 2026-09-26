@@ -1,6 +1,6 @@
 <script>
   import { privateChats, chatPartners, loadChatHistory, status } from '../lib/stores.js';
-  import { activeTab, chatTarget } from '../lib/ui.js';
+  import { activeTab, chatTarget, noAutofill } from '../lib/ui.js';
   import { post, del } from '../lib/api.js';
   import { formatTime } from '../lib/format.js';
   import { autoscroll } from '../lib/autoscroll.js';
@@ -84,7 +84,7 @@
 </script>
 
 <div class="toolbar">
-  <input
+  <input {...noAutofill}
     placeholder="Start chat with…"
     bind:value={newUser}
     on:keydown={(e) => e.key === 'Enter' && openNew()}
@@ -123,7 +123,7 @@
     {/each}
   </div>
   <div class="toolbar">
-    <input
+    <input {...noAutofill}
       style="flex: 1;"
       placeholder="Message {selected}…"
       bind:value={draft}

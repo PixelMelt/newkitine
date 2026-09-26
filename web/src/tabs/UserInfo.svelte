@@ -1,6 +1,6 @@
 <script>
   import { userInfos, interests } from '../lib/stores.js';
-  import { userInfoTarget, openSearch } from '../lib/ui.js';
+  import { userInfoTarget, openSearch, noAutofill } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { formatSize } from '../lib/format.js';
   import { openMenu } from '../lib/menu.js';
@@ -76,7 +76,7 @@
 <div class="split">
   <div class="side">
     <div class="toolbar">
-      <input
+      <input {...noAutofill}
         style="min-width: 0; flex: 1;"
         placeholder="Username…"
         bind:value={newUser}

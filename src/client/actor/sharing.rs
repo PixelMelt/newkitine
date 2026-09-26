@@ -1,164 +1,160 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use super::ClientActor;
-use crate::client::shares::{
-    self, AttributeCache, ScanError, ScanOutcome, ShareCatalog, SharesIndex,
-    encode_shared_file_list,
-};
+use crate::client::shares::{self, ScanError, SharesIndex};
 use crate::client::{ClientEvent, Observation};
 use crate::protocol::{PeerMessage, ServerRequest};
 use crate::types::Restriction;
 
-const BROWSE_QUEUE_CAPACITY: usize = 32;
-pub(super) const PENDING_REQUEST_LIMIT: usize = 128;
-
-struct BrowseJob {
-    username: String,
-    catalog: Arc<ShareCatalog>,
-    is_buddy: bool,
-    catalog_version: u64,
-}
-
-pub(super) struct BrowseEncoded {
-    username: String,
-    is_buddy: bool,
-    catalog_version: u64,
-    bytes: Vec<u8>,
-}
+const BROWSE_COALESCE_WINDOW: Duration = Duration::from_millis(400);
 
 pub(super) enum ScanUpdate {
     Progress(u64),
-    Complete(Result<ScanOutcome, ScanError>),
+    Index(Box<SharesIndex>),
+    Done(Result<(), ScanError>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScanJob {
+    pub(super) install_cached: bool,
+    pub(super) walk: bool,
+}
+
+impl ScanJob {
+    pub(super) const RESCAN: Self = Self {
+        install_cached: false,
+        walk: true,
+    };
+    pub(super) const RELOAD: Self = Self {
+        install_cached: true,
+        walk: true,
+    };
+
+    fn merge(self, other: Self) -> Self {
+        Self {
+            install_cached: self.install_cached || other.install_cached,
+            walk: self.walk || other.walk,
+        }
+    }
 }
 
 pub(super) struct Sharing {
-    pub(super) index: Option<Arc<SharesIndex>>,
+    pub(super) index: Option<SharesIndex>,
     running: bool,
-    rescan_pending: bool,
-    pub(super) pending_requests: Vec<(String, PeerMessage)>,
+    pending: Option<ScanJob>,
+    cancel: Arc<AtomicBool>,
     scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
-    browse_jobs: mpsc::Sender<BrowseJob>,
-    pending_save: Arc<Mutex<Option<AttributeCache>>>,
-    save_ready: Arc<Notify>,
     scan_cache: PathBuf,
     generation: u64,
-    catalog_version: u64,
     last_progress: u64,
     pub(super) excluded_phrases: Vec<String>,
+    empty_browse_frame: Vec<u8>,
+    browse_times: HashMap<String, Instant>,
 }
 
 impl Sharing {
     pub(super) fn new(
         scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
-        browse_encoded: mpsc::UnboundedSender<BrowseEncoded>,
         scan_cache: PathBuf,
     ) -> Self {
-        let (browse_jobs, mut jobs) = mpsc::channel::<BrowseJob>(BROWSE_QUEUE_CAPACITY);
-        tokio::spawn(async move {
-            while let Some(job) = jobs.recv().await {
-                let BrowseJob {
-                    username,
-                    catalog,
-                    is_buddy,
-                    catalog_version,
-                } = job;
-                let bytes = tokio::task::spawn_blocking(move || {
-                    encode_shared_file_list(&catalog, is_buddy)
-                })
-                .await
-                .expect("browse encoder panicked");
-                let _ = browse_encoded.send(BrowseEncoded {
-                    username,
-                    is_buddy,
-                    catalog_version,
-                    bytes,
-                });
-            }
-        });
-        let pending_save: Arc<Mutex<Option<AttributeCache>>> = Arc::default();
-        let save_ready = Arc::new(Notify::new());
-        let save_path = scan_cache.clone();
-        let (save_slot, save_notify) = (pending_save.clone(), save_ready.clone());
-        tokio::spawn(async move {
-            loop {
-                save_notify.notified().await;
-                loop {
-                    let taken = save_slot.lock().unwrap().take();
-                    let Some(cache) = taken else { break };
-                    let path = save_path.clone();
-                    tokio::task::spawn_blocking(move || shares::save_cache(&path, &cache))
-                        .await
-                        .expect("cache save panicked");
-                }
-            }
-        });
         Self {
             index: None,
             running: false,
-            rescan_pending: false,
-            pending_requests: Vec::new(),
+            pending: None,
+            cancel: Arc::new(AtomicBool::new(false)),
             scan_results,
-            browse_jobs,
-            pending_save,
-            save_ready,
             scan_cache,
             generation: 0,
-            catalog_version: 0,
             last_progress: 0,
             excluded_phrases: Vec::new(),
+            empty_browse_frame: shares::empty_browse_frame(),
+            browse_times: HashMap::new(),
         }
     }
 
     pub(super) fn counts(&self) -> (u32, u32) {
         self.index.as_ref().map_or((0, 0), |index| index.counts())
     }
+
+    fn replace_index(&mut self, index: SharesIndex) {
+        if let Some(old) = self.index.replace(index) {
+            tokio::task::spawn_blocking(move || drop(old));
+        }
+    }
 }
 
 impl ClientActor {
-    pub(super) fn awaiting_share_index(&self) -> bool {
-        self.sharing.index.is_none() && (self.sharing.running || self.sharing.rescan_pending)
-    }
-
-    pub(super) fn start_scan(&mut self) {
-        if self.config.shared_folders.is_empty() {
-            return;
-        }
+    pub(super) fn start_scan(&mut self, job: ScanJob) {
         self.sharing.generation += 1;
+        self.emit(ClientEvent::ShareScanStarted);
         if self.sharing.running {
-            self.sharing.rescan_pending = true;
-            self.emit(ClientEvent::ShareScanStarted);
+            self.sharing.cancel.store(true, Ordering::Relaxed);
+            self.sharing.pending = Some(
+                self.sharing
+                    .pending
+                    .map_or(job, |pending| pending.merge(job)),
+            );
             return;
         }
-        self.spawn_scan();
+        self.spawn_scan(job);
     }
 
-    fn spawn_scan(&mut self) {
+    fn spawn_scan(&mut self, job: ScanJob) {
         self.sharing.last_progress = 0;
         self.sharing.running = true;
+        self.sharing.cancel = Arc::new(AtomicBool::new(false));
         let generation = self.sharing.generation;
-        self.emit(ClientEvent::ShareScanStarted);
         let shared_folders = self.config.shared_folders.clone();
         let share_filters = self.config.share_filters.clone();
         let cache_path = self.sharing.scan_cache.clone();
+        let cancel = self.sharing.cancel.clone();
         let results = self.sharing.scan_results.clone();
+        let walk = job.walk && !shared_folders.is_empty();
         let task = tokio::task::spawn_blocking({
             let results = results.clone();
             move || {
-                let progress = |files| {
-                    let _ = results.send((generation, ScanUpdate::Progress(files)));
+                let send = |update: ScanUpdate| {
+                    let _ = results.send((generation, update));
                 };
-                let result = shares::scan(&shared_folders, &share_filters, &cache_path, &progress);
-                let _ = results.send((generation, ScanUpdate::Complete(result)));
+                let cached = shares::load_catalog(&cache_path);
+                if job.install_cached && !cached.folders.is_empty() {
+                    let restricted = shares::restrict(&cached, &shared_folders);
+                    send(ScanUpdate::Index(Box::new(SharesIndex::from_catalog(
+                        restricted,
+                    ))));
+                }
+                if !walk {
+                    send(ScanUpdate::Done(Ok(())));
+                    return;
+                }
+                let progress = |files| send(ScanUpdate::Progress(files));
+                let result =
+                    shares::walk(&shared_folders, &share_filters, &cached, &cancel, &progress);
+                drop(cached);
+                match result {
+                    Ok(catalog) => {
+                        shares::save_catalog(&cache_path, &catalog);
+                        send(ScanUpdate::Index(Box::new(SharesIndex::from_catalog(
+                            catalog,
+                        ))));
+                        send(ScanUpdate::Done(Ok(())));
+                    }
+                    Err(error) => send(ScanUpdate::Done(Err(error))),
+                }
             }
         });
         tokio::spawn(async move {
             if let Err(error) = task.await {
                 let _ = results.send((
                     generation,
-                    ScanUpdate::Complete(Err(ScanError::Panicked {
+                    ScanUpdate::Done(Err(ScanError::Panicked {
                         reason: error.to_string(),
                     })),
                 ));
@@ -167,95 +163,58 @@ impl ClientActor {
     }
 
     pub(super) fn handle_scan_update(&mut self, generation: u64, update: ScanUpdate) {
+        let current = generation == self.sharing.generation;
         match update {
             ScanUpdate::Progress(files) => {
-                if generation == self.sharing.generation && files > self.sharing.last_progress {
+                if current && files > self.sharing.last_progress {
                     self.sharing.last_progress = files;
                     self.emit(ClientEvent::ShareScanProgress { files });
                 }
             }
-            ScanUpdate::Complete(result) => self.handle_scan_complete(generation, result),
-        }
-    }
-
-    fn handle_scan_complete(&mut self, generation: u64, result: Result<ScanOutcome, ScanError>) {
-        self.sharing.running = false;
-        if generation != self.sharing.generation {
-            tracing::warn!(
-                generation,
-                current = self.sharing.generation,
-                "discarding stale share scan result"
-            );
-        } else {
-            match result {
-                Ok(outcome) => {
-                    let (folders, files) = outcome.index.counts();
-                    self.sharing.index = Some(Arc::new(outcome.index));
-                    self.sharing.catalog_version += 1;
-                    *self.sharing.pending_save.lock().unwrap() = Some(outcome.cache);
-                    self.sharing.save_ready.notify_one();
-                    if self.session.logged_in {
-                        self.net
-                            .server(ServerRequest::SharedFoldersFiles { folders, files });
+            ScanUpdate::Index(index) => {
+                if current {
+                    self.install_index(*index);
+                } else {
+                    tokio::task::spawn_blocking(move || drop(index));
+                }
+            }
+            ScanUpdate::Done(result) => {
+                self.sharing.running = false;
+                if current {
+                    match result {
+                        Ok(()) => self.emit(ClientEvent::ShareScanFinished),
+                        Err(error) => {
+                            tracing::error!(%error, "share scan failed");
+                            self.emit(ClientEvent::ShareScanFailed {
+                                error: error.to_string(),
+                            });
+                        }
                     }
-                    self.emit(ClientEvent::SharesScanned { folders, files });
+                } else {
+                    tracing::info!(
+                        generation,
+                        current = self.sharing.generation,
+                        superseded = matches!(result, Err(ScanError::Superseded)),
+                        "discarding stale share scan result"
+                    );
                 }
-                Err(error) => {
-                    tracing::error!(%error, "share scan failed");
-                    self.emit(ClientEvent::ShareScanFailed {
-                        error: error.to_string(),
-                    });
+                if let Some(job) = self.sharing.pending.take() {
+                    self.spawn_scan(job);
                 }
             }
         }
-        if std::mem::take(&mut self.sharing.rescan_pending) {
-            self.spawn_scan();
-        }
-        self.replay_pending_requests();
-        if !self.awaiting_share_index() {
-            self.downloads.flush_queued_requests();
-        }
     }
 
-    fn replay_pending_requests(&mut self) {
-        let pending = std::mem::take(&mut self.sharing.pending_requests);
-        if pending.is_empty() {
-            return;
-        }
-        tracing::info!(
-            count = pending.len(),
-            "replaying upload requests deferred during share scan"
-        );
-        for (username, message) in pending {
-            self.handle_peer_message(username, message);
-        }
-    }
-
-    pub(super) fn apply_shared_folders(&mut self) {
-        self.sharing.index = None;
-        self.sharing.catalog_version += 1;
-        let revoked = self.uploads.revoke_all();
-        self.emit_transfers(revoked);
+    fn install_index(&mut self, index: SharesIndex) {
+        let (folders, files) = index.counts();
+        let denied = self.uploads.revalidate(&index, &self.users);
+        self.sharing.replace_index(index);
+        self.emit_transfers(denied);
         if self.session.logged_in {
-            self.net.server(ServerRequest::SharedFoldersFiles {
-                folders: 0,
-                files: 0,
-            });
+            self.net
+                .server(ServerRequest::SharedFoldersFiles { folders, files });
         }
-        self.emit(ClientEvent::SharesScanned {
-            folders: 0,
-            files: 0,
-        });
-        if self.config.shared_folders.is_empty() {
-            self.sharing.generation += 1;
-            self.sharing.rescan_pending = false;
-            if !self.sharing.running {
-                self.replay_pending_requests();
-                self.downloads.flush_queued_requests();
-            }
-        } else {
-            self.start_scan();
-        }
+        self.emit(ClientEvent::SharesInstalled { folders, files });
     }
 
     pub(super) fn respond_to_search(&mut self, username: &str, token: u32, search_term: &str) {
@@ -310,50 +269,23 @@ impl ClientActor {
         self.emit(ClientEvent::Observed(Observation::BrowseRequest {
             username: username.clone(),
         }));
-        self.queue_browse_job(username);
-    }
-
-    fn queue_browse_job(&mut self, username: String) {
-        let is_buddy = self.users.is_buddy(&username);
-        let catalog = match (&self.sharing.index, self.users.is_banned(&username)) {
-            (Some(index), false) => index.catalog(),
-            _ => Arc::new(ShareCatalog {
-                folders: Vec::new(),
-                files: Vec::new(),
-                folders_by_path: Vec::new(),
-            }),
-        };
+        let now = Instant::now();
         self.sharing
-            .browse_jobs
-            .try_send(BrowseJob {
-                username,
-                catalog,
-                is_buddy,
-                catalog_version: self.sharing.catalog_version,
-            })
-            .expect("browse response queue overflowed");
-    }
-
-    pub(super) fn handle_browse_encoded(&mut self, encoded: BrowseEncoded) {
-        if encoded.catalog_version != self.sharing.catalog_version {
-            tracing::debug!(
-                username = encoded.username,
-                "re-encoding browse response, catalog changed while encoding"
-            );
-            self.queue_browse_job(encoded.username);
-            return;
-        }
-        if self.users.is_banned(&encoded.username)
-            || self.users.is_buddy(&encoded.username) != encoded.is_buddy
+            .browse_times
+            .retain(|_, at| now.duration_since(*at) < BROWSE_COALESCE_WINDOW);
+        if self
+            .sharing
+            .browse_times
+            .insert(username.clone(), now)
+            .is_some()
         {
-            tracing::debug!(
-                username = encoded.username,
-                "re-encoding browse response, peer access changed while encoding"
-            );
-            self.queue_browse_job(encoded.username);
             return;
         }
-        self.net.peer_frame(encoded.username, encoded.bytes);
+        let frame = match (&self.sharing.index, self.users.is_banned(&username)) {
+            (Some(index), false) => index.browse_frame(self.users.is_buddy(&username)).to_vec(),
+            _ => self.sharing.empty_browse_frame.clone(),
+        };
+        self.net.peer_frame(username, frame);
     }
 
     pub(super) fn handle_folder_contents_request(

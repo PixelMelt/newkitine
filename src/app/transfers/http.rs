@@ -19,7 +19,10 @@ pub(in crate::app) fn router() -> Router<Arc<App>> {
     Router::new()
         .route("/api/downloads", get(list_downloads).post(enqueue_download))
         .route("/api/downloads/folder", post(enqueue_folder_download))
-        .route("/api/downloads/folder/request", post(request_folder_download))
+        .route(
+            "/api/downloads/folder/request",
+            post(request_folder_download),
+        )
         .route("/api/downloads/abort", post(abort_download))
         .route("/api/downloads/retry", post(retry_download))
         .route("/api/downloads/clear", post(clear_downloads))

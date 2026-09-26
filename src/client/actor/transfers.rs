@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use tokio::sync::oneshot;
 
 use super::ClientActor;
@@ -28,7 +30,6 @@ impl ClientActor {
         root: Option<String>,
         ack: oneshot::Sender<EnqueueResult>,
     ) {
-        let defer_requests = self.awaiting_share_index();
         let (result, events) = self.downloads.enqueue(
             &mut self.transfer_ids,
             username,
@@ -38,7 +39,6 @@ impl ClientActor {
                 attributes,
             },
             root.as_deref(),
-            defer_requests,
         );
         self.emit_transfers(events);
         Self::ack(ack, result);
@@ -54,25 +54,17 @@ impl ClientActor {
             return;
         };
         let root = destination_root(&directory).to_owned();
-        let defer_requests = self.awaiting_share_index();
         for mut file in files {
             file.name = format!("{directory}\\{}", file.name);
-            let (_, events) = self.downloads.enqueue(
-                &mut self.transfer_ids,
-                username.clone(),
-                file,
-                Some(&root),
-                defer_requests,
-            );
+            let (_, events) =
+                self.downloads
+                    .enqueue(&mut self.transfer_ids, username.clone(), file, Some(&root));
             self.emit_transfers(events);
         }
     }
 
     pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
-        let defer_requests = self.awaiting_share_index();
-        let (result, events) = self
-            .downloads
-            .retry(&mut self.transfer_ids, id, defer_requests);
+        let (result, events) = self.downloads.retry(&mut self.transfer_ids, id);
         self.emit_transfers(events);
         Self::ack(ack, result);
     }
@@ -129,6 +121,13 @@ impl ClientActor {
         }
         self.users.set_restriction(username, restriction);
         self.uploads.check_queue(&self.users);
+    }
+
+    pub(super) fn deny_file(&mut self, username: String, virtual_path: String, ttl: Duration) {
+        let key = (username, virtual_path);
+        let updates = self.uploads.deny_file(&key, &self.users);
+        self.emit_transfers(updates);
+        self.users.deny_file(key.0, key.1, Instant::now() + ttl);
     }
 
     pub(super) fn sweep(&mut self) {

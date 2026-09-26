@@ -29,7 +29,6 @@ impl Wishlist {
 
 impl ClientActor {
     pub(super) fn start_search(&mut self, token: u32, query: String, scope: SearchScope) {
-        self.search_tokens.insert(token);
         self.net.send(NetworkCommand::AllowSearchToken(token));
         let search_term = sanitize_search_term(&query);
         self.emit(ClientEvent::SearchStarted { token, query });
@@ -101,7 +100,6 @@ impl ClientActor {
         let term = self.wishlist.terms[self.wishlist.cursor % self.wishlist.terms.len()].clone();
         self.wishlist.cursor += 1;
         let token = self.next_token();
-        self.search_tokens.insert(token);
         self.net.send(NetworkCommand::AllowSearchToken(token));
         self.emit(ClientEvent::SearchStarted {
             token,

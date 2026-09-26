@@ -296,7 +296,11 @@ fn is_large_response_allowed(allowed: &SharedAllowed, username: &str, code: u32)
     }
 }
 
-fn is_parsed_message_allowed(allowed: &SharedAllowed, username: &str, message: &PeerMessage) -> bool {
+fn is_parsed_message_allowed(
+    allowed: &SharedAllowed,
+    username: &str,
+    message: &PeerMessage,
+) -> bool {
     let allowed = allowed.read().unwrap();
     match message {
         PeerMessage::FileSearchResponse { token, .. } => allowed.search_tokens.contains(token),

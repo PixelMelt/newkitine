@@ -11,10 +11,9 @@ impl ClientActor {
                 status,
                 privileged,
             } => {
-                self.users.handle_user_status(&user, status, privileged);
+                self.users.handle_user_status(&user, privileged);
                 if status == UserStatus::Online.as_u32() {
-                    let defer_requests = self.awaiting_share_index();
-                    self.downloads.retry_offline(&user, defer_requests);
+                    self.downloads.retry_offline(&user);
                 }
                 self.emit(ClientEvent::UserStatus {
                     username: user,
@@ -29,8 +28,6 @@ impl ClientActor {
                 stats,
                 country: _,
             } => {
-                self.users
-                    .handle_watch_user(&user, user_exists, status, stats.clone());
                 self.emit(ClientEvent::WatchedUser {
                     username: user,
                     exists: user_exists,
@@ -39,7 +36,6 @@ impl ClientActor {
                 });
             }
             ServerResponse::GetUserStats { user, stats } => {
-                self.users.handle_user_stats(&user, stats.clone());
                 self.emit(ClientEvent::UserStats {
                     username: user,
                     stats,

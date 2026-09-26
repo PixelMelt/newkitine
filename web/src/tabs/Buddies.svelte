@@ -1,4 +1,5 @@
 <script>
+  import { noAutofill } from '../lib/ui.js';
   import { buddies, banned, ignored } from '../lib/stores.js';
   import { post, del } from '../lib/api.js';
   import { formatSize } from '../lib/format.js';
@@ -59,7 +60,7 @@
 </script>
 
 <div class="toolbar">
-  <input
+  <input {...noAutofill}
     placeholder="Add buddy…"
     bind:value={buddyName}
     on:keydown={(e) => e.key === 'Enter' && add('/buddies', buddyName, () => (buddyName = ''))}
@@ -98,7 +99,7 @@
   <div class="side" style="flex: 1;">
     <h3>Banned</h3>
     <div class="toolbar">
-      <input
+      <input {...noAutofill}
         style="min-width: 0; flex: 1;"
         placeholder="Ban user…"
         bind:value={banName}
@@ -124,7 +125,7 @@
   <div class="side" style="flex: 1;">
     <h3>Ignored</h3>
     <div class="toolbar">
-      <input
+      <input {...noAutofill}
         style="min-width: 0; flex: 1;"
         placeholder="Ignore user…"
         bind:value={ignoreName}

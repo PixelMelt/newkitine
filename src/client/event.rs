@@ -41,10 +41,11 @@ pub enum ClientEvent {
     ShareScanProgress {
         files: u64,
     },
-    SharesScanned {
+    SharesInstalled {
         folders: u32,
         files: u32,
     },
+    ShareScanFinished,
     ShareScanFailed {
         error: String,
     },

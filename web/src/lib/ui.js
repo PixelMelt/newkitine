@@ -25,3 +25,11 @@ export function openSearch(query) {
 	searchTarget.set(query);
 	activeTab.set('search');
 }
+
+export const noAutofill = {
+	autocomplete: 'off',
+	'data-1p-ignore': '',
+	'data-lpignore': 'true',
+	'data-bwignore': '',
+	'data-form-type': 'other',
+};

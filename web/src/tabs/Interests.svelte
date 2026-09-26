@@ -1,6 +1,6 @@
 <script>
   import { interests } from '../lib/stores.js';
-  import { activeTab, openSearch, openUserInfo } from '../lib/ui.js';
+  import { activeTab, openSearch, openUserInfo, noAutofill } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
@@ -88,7 +88,7 @@
   <div class="side">
     <h3>Personal Interests</h3>
     <div class="toolbar">
-      <input
+      <input {...noAutofill}
         style="min-width: 0; flex: 1;"
         placeholder="Add something you like…"
         bind:value={liked}
@@ -106,7 +106,7 @@
     </div>
     <h3>Personal Dislikes</h3>
     <div class="toolbar">
-      <input
+      <input {...noAutofill}
         style="min-width: 0; flex: 1;"
         placeholder="Add something you dislike…"
         bind:value={hated}

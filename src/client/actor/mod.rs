@@ -24,7 +24,7 @@ use crate::types::{RuntimeConfig, TransferDirection};
 
 use search::Wishlist;
 use session::Session;
-use sharing::Sharing;
+use sharing::{ScanJob, Sharing};
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -34,7 +34,6 @@ struct ClientActor {
     events: mpsc::Sender<ClientEvent>,
     transfers: mpsc::Sender<TransferWork>,
     token_counter: Arc<AtomicU32>,
-    search_tokens: std::collections::HashSet<u32>,
     transfer_ids: TransferIds,
     downloads: Downloads,
     folder_requests: FolderRequests,
@@ -57,14 +56,12 @@ pub(crate) async fn run(
     let (net, mut net_events) = spawn_network();
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel();
     let (place_tx, mut place_rx) = mpsc::unbounded_channel();
-    let (browse_tx, mut browse_rx) = mpsc::unbounded_channel();
 
     let mut actor = ClientActor {
         net: net.clone(),
         events,
         transfers,
         token_counter,
-        search_tokens: std::collections::HashSet::new(),
         transfer_ids: TransferIds::new(&config.transfers),
         downloads: Downloads::new(
             net.clone(),
@@ -87,7 +84,7 @@ pub(crate) async fn run(
             config.ignored.into_iter().collect(),
             config.ip_bans,
         ),
-        sharing: Sharing::new(scan_tx, browse_tx, config.scan_cache),
+        sharing: Sharing::new(scan_tx, config.scan_cache),
         session: Session::new(),
         wishlist: Wishlist::new(config.wishlist),
         liked_interests: config.liked_interests,
@@ -111,11 +108,10 @@ pub(crate) async fn run(
     } else {
         actor.connect();
     }
-    if config.scan_on_startup {
-        actor.start_scan();
-    } else {
-        info!("share scan on startup disabled, shares stay empty until a rescan");
-    }
+    actor.start_scan(ScanJob {
+        install_cached: true,
+        walk: config.scan_on_startup,
+    });
 
     let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
     loop {
@@ -151,14 +147,8 @@ pub(crate) async fn run(
                 let updates = actor.downloads.handle_placement_done(&key, result);
                 actor.emit_transfers(updates);
             }
-            result = browse_rx.recv() => {
-                let encoded =
-                    result.expect("browse channel closed while the actor holds the sender");
-                actor.handle_browse_encoded(encoded);
-            }
             _ = sweep.tick() => actor.sweep(),
             _ = sleep_until(reconnect_deadline), if actor.session.reconnect_at.is_some() => {
-                actor.session.reconnect_at = None;
                 info!("reconnecting to server");
                 actor.connect();
             }
@@ -204,7 +194,6 @@ impl ClientActor {
                 scope,
             } => self.start_search(token, query, scope),
             ClientCommand::CancelSearch { token } => {
-                self.search_tokens.remove(&token);
                 self.net.send(NetworkCommand::DisallowSearchToken(token));
             }
             ClientCommand::Download {
@@ -266,19 +255,30 @@ impl ClientActor {
                 username,
                 restriction,
             } => self.set_user_restriction(username, restriction),
+            ClientCommand::DenyFile {
+                username,
+                virtual_path,
+                ttl,
+            } => self.deny_file(username, virtual_path, ttl),
+            ClientCommand::ClearFileDenials { username } => {
+                self.users.clear_file_denials(&username);
+            }
             ClientCommand::AddInterest { thing, hated } => self.add_interest(thing, hated),
             ClientCommand::RemoveInterest { thing, hated } => self.remove_interest(&thing, hated),
             ClientCommand::AddWish { term } => self.add_wish(term),
             ClientCommand::RemoveWish { term } => self.remove_wish(&term),
-            ClientCommand::RescanShares => self.start_scan(),
+            ClientCommand::RescanShares => self.start_scan(ScanJob::RESCAN),
             ClientCommand::ApplyConfig { config, ack } => {
                 self.apply_config(*config);
                 Self::ack(ack, ());
             }
             ClientCommand::Server(request) => self.net.server(request),
             ClientCommand::Connect => {
-                self.session.reconnect_at = None;
-                self.connect();
+                if self.session.connected {
+                    warn!("already connected, ignoring connect request");
+                } else {
+                    self.connect();
+                }
             }
             ClientCommand::Reconnect => self.reconnect(),
             ClientCommand::Disconnect => {
@@ -300,9 +300,7 @@ impl ClientActor {
             }
             NetworkEvent::ServerDisconnected { manual } => self.handle_server_disconnected(manual),
             NetworkEvent::ServerMessage(message) => self.handle_server_message(message),
-            NetworkEvent::PeerMessage {
-                username, message, ..
-            } => {
+            NetworkEvent::PeerMessage { username, message } => {
                 self.handle_peer_message(username, message);
             }
             NetworkEvent::PeerConnected {
@@ -330,7 +328,6 @@ impl ClientActor {
                 username,
                 unsent,
                 is_offline,
-                ..
             } => self.handle_peer_connection_error(&username, &unsent, is_offline),
             NetworkEvent::DistributedSearch {
                 username,

@@ -14,6 +14,7 @@ use crate::types::{
     FileAttributes, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
 };
 
+use super::behavior;
 use super::contract::AppEvent;
 use super::db::fatal;
 use super::state::{App, now};
@@ -164,28 +165,23 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
             TransferWork::Finished {
                 snapshot,
                 avg_speed_bps,
-                delivered,
+                delivered_bytes,
             } => {
                 let view = TransferView::from_snapshot(snapshot, now());
                 let direction = view.direction;
                 let mut tx = app.db.begin().await.unwrap_or_else(|error| fatal(error));
-                if delivered {
-                    db::record_transfer(
-                        &mut *tx,
-                        view.direction,
-                        &view.username,
-                        &view.virtual_path,
-                        view.size,
-                        avg_speed_bps,
-                        view.updated_at,
-                    )
-                    .await
-                    .unwrap_or_else(|error| fatal(error));
+                if delivered_bytes > 0 {
+                    db::record_transfer(&mut *tx, &view, delivered_bytes, avg_speed_bps)
+                        .await
+                        .unwrap_or_else(|error| fatal(error));
                 }
                 db::upsert_transfer(&mut *tx, &view)
                     .await
                     .unwrap_or_else(|error| fatal(error));
                 tx.commit().await.unwrap_or_else(|error| fatal(error));
+                if delivered_bytes > 0 && direction == TransferDirection::Upload {
+                    behavior::upload_delivered(&app, &view.username, &view.virtual_path).await;
+                }
                 project(&app, view);
                 if app.settings.autoclear(direction) {
                     app.client

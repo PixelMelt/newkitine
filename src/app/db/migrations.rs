@@ -53,6 +53,7 @@ const BASELINE: &[&str] = &[
         username VARCHAR(190) NOT NULL,
         virtual_path TEXT NOT NULL,
         size BIGINT UNSIGNED NOT NULL,
+        bytes BIGINT UNSIGNED NULL,
         speed_bps INT UNSIGNED NULL,
         finished_at BIGINT NOT NULL,
         KEY idx_history_time (direction, finished_at),
@@ -84,7 +85,7 @@ const BASELINE: &[&str] = &[
     )",
 ];
 
-const LATEST_VERSION: i32 = 12;
+const LATEST_VERSION: i32 = 13;
 
 pub async fn init_schema(pool: &MySqlPool) {
     sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version INT NOT NULL PRIMARY KEY)")
@@ -238,6 +239,30 @@ pub async fn init_schema(pool: &MySqlPool) {
         repair_phantom_deliveries(pool).await;
         record_migration(pool, 12).await;
     }
+    if applied < 13 {
+        record_delivered_bytes(pool).await;
+        record_migration(pool, 13).await;
+    }
+}
+
+async fn record_delivered_bytes(pool: &MySqlPool) {
+    if !column_exists(pool, "transfer_history", "bytes").await {
+        migration_statement(
+            pool,
+            13,
+            "ALTER TABLE transfer_history ADD COLUMN bytes BIGINT UNSIGNED NULL AFTER size",
+        )
+        .await;
+    }
+    migration_statement(
+        pool,
+        13,
+        "UPDATE users_seen
+         SET verdict = 'clean', restriction = 'none', evidence = NULL,
+             convicted_at = NULL, counters_reset_at = UNIX_TIMESTAMP()
+         WHERE verdict <> 'clean' AND evidence LIKE '%repeat-downloads%'",
+    )
+    .await;
 }
 
 async fn repair_phantom_deliveries(pool: &MySqlPool) {

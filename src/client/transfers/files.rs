@@ -22,7 +22,9 @@ pub(super) fn clean_file_name(name: &str) -> String {
             }
         })
         .collect();
-    let stripped = replaced.trim_start_matches(' ').trim_end_matches(['.', ' ']);
+    let stripped = replaced
+        .trim_start_matches(' ')
+        .trim_end_matches(['.', ' ']);
     if stripped.is_empty() {
         return "_".repeat(replaced.chars().count());
     }
@@ -247,7 +249,10 @@ mod tests {
             destination(true, "Hello\\Path\\file.mp3", Some("Hello\\Path")),
             "/data/newuser/Path"
         );
-        assert_eq!(destination(true, "Hello\\file.mp3", Some("Hello")), "/data/newuser/Hello");
+        assert_eq!(
+            destination(true, "Hello\\file.mp3", Some("Hello")),
+            "/data/newuser/Hello"
+        );
         assert_eq!(
             destination(
                 true,
@@ -278,7 +283,11 @@ mod tests {
             "/data/share"
         );
         assert_eq!(
-            destination(false, "share\\Soulseek\\folder1\\sub1\\file4.mp3", Some("share")),
+            destination(
+                false,
+                "share\\Soulseek\\folder1\\sub1\\file4.mp3",
+                Some("share")
+            ),
             "/data/share/Soulseek/folder1/sub1"
         );
     }
@@ -295,7 +304,10 @@ mod tests {
     #[test]
     fn clean_file_name_matches_nicotine() {
         assert_eq!(clean_file_name(".."), "__");
-        assert_eq!(clean_file_name("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(
+            clean_file_name("a/b\\c:d*e?f\"g<h>i|j"),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
         assert_eq!(clean_file_name("song\u{7}name\u{1f}.mp3"), "song_name_.mp3");
         assert_eq!(clean_file_name("  spaced out. . "), "spaced out");
         assert_eq!(clean_file_name("///"), "___");

@@ -32,9 +32,10 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::ConnectionCount(count) => session::connection_count(app, count),
         ClientEvent::ShareScanStarted => session::share_scan_started(app),
         ClientEvent::ShareScanProgress { files } => session::share_scan_progress(app, files),
-        ClientEvent::SharesScanned { folders, files } => {
-            session::shares_scanned(app, folders, files);
+        ClientEvent::SharesInstalled { folders, files } => {
+            session::shares_installed(app, folders, files);
         }
+        ClientEvent::ShareScanFinished => session::share_scan_finished(app),
         ClientEvent::ShareScanFailed { error } => session::share_scan_failed(app, error),
         ClientEvent::SearchStarted { token, query } => {
             search::search_started(app, token, query).await;

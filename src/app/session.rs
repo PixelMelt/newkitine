@@ -130,10 +130,15 @@ pub fn share_scan_progress(app: &App, files: u64) {
     update_status(app, |status| status.scan_progress = files);
 }
 
-pub fn shares_scanned(app: &App, folders: u32, files: u32) {
+pub fn shares_installed(app: &App, folders: u32, files: u32) {
     update_status(app, |status| {
         status.shared_folders = folders;
         status.shared_files = files;
+    });
+}
+
+pub fn share_scan_finished(app: &App) {
+    update_status(app, |status| {
         status.scanning = false;
         status.scan_progress = 0;
         status.share_scan_error = None;

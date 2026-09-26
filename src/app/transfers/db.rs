@@ -145,23 +145,22 @@ pub(super) async fn delete_transfers(
 
 pub(super) async fn record_transfer(
     executor: impl sqlx::MySqlExecutor<'_>,
-    direction: TransferDirection,
-    username: &str,
-    virtual_path: &str,
-    size: u64,
+    view: &TransferView,
+    bytes: u64,
     speed_bps: Option<u32>,
-    finished_at: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO transfer_history (direction, username, virtual_path, size, speed_bps, finished_at)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO transfer_history
+            (direction, username, virtual_path, size, bytes, speed_bps, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(direction.as_str())
-    .bind(username)
-    .bind(virtual_path)
-    .bind(size)
+    .bind(view.direction.as_str())
+    .bind(&view.username)
+    .bind(&view.virtual_path)
+    .bind(view.size)
+    .bind(bytes)
     .bind(speed_bps)
-    .bind(finished_at)
+    .bind(view.updated_at)
     .execute(executor)
     .await?;
     Ok(())

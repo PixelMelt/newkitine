@@ -1,4 +1,5 @@
 <script>
+  import { noAutofill } from '../lib/ui.js';
   import { onMount } from 'svelte';
   import { settings, status, applyTheme } from '../lib/stores.js';
   import { put, post, get } from '../lib/api.js';
@@ -16,7 +17,7 @@
   ];
   const filterLevels = [
     ['open', 'Open', 'Never restrict anyone.'],
-    ['guarded', 'Guarded', 'Block search flooding, and repeated same file downloads.'],
+    ['guarded', 'Guarded', 'Block search flooding.'],
     ['strict', 'Strict', "Block peers sharing nothing or faking their share counts in addition to guarded."],
   ];
   const themes = [
@@ -135,19 +136,19 @@
           <h3>Network</h3>
           <div class="form-row">
             <label for="set-username">Username</label>
-            <input id="set-username" bind:value={draft.username} disabled={locked.has('username')} />
+            <input {...noAutofill} id="set-username" bind:value={draft.username} disabled={locked.has('username')} />
             {#if locked.has('username')}<span class="hint">set by environment</span>{/if}
           </div>
           <div class="form-row">
             <label for="set-password">Password</label>
-            <input id="set-password" type="password" bind:value={draft.password}
+            <input {...noAutofill} autocomplete="new-password" id="set-password" type="password" bind:value={draft.password}
               placeholder={draft.password_set ? 'unchanged' : ''}
               disabled={locked.has('password')} />
             {#if locked.has('password')}<span class="hint">set by environment</span>{/if}
           </div>
           <div class="form-row">
             <label for="set-server">Server address</label>
-            <input id="set-server" bind:value={draft.server} disabled={locked.has('server')} />
+            <input {...noAutofill} id="set-server" bind:value={draft.server} disabled={locked.has('server')} />
             {#if locked.has('server')}<span class="hint">set by environment</span>{/if}
           </div>
           <div class="form-row">
@@ -183,8 +184,8 @@
                 </tr>
               {/each}
               <tr>
-                <td><input placeholder="Virtual name…" bind:value={newShare.virtual_name} /></td>
-                <td class="grow"><input placeholder="Folder path on the server…" style="width: 100%"
+                <td><input {...noAutofill} placeholder="Virtual name…" bind:value={newShare.virtual_name} /></td>
+                <td class="grow"><input {...noAutofill} placeholder="Folder path on the server…" style="width: 100%"
                   bind:value={newShare.path} /></td>
                 <td><input type="checkbox" bind:checked={newShare.buddy_only} /></td>
                 <td><button on:click={addShare}>Add</button></td>
@@ -199,17 +200,17 @@
           </div>
           <div class="form-row">
             <label for="set-share-filters">Excluded names</label>
-            <textarea id="set-share-filters" rows="4" bind:value={shareFiltersText}
+            <textarea {...noAutofill} id="set-share-filters" rows="4" bind:value={shareFiltersText}
               placeholder="Thumbs.db&#10;desktop.ini"></textarea>
             <span class="hint">One exact file or folder name per line, skipped when scanning.</span>
           </div>
           <div class="form-row">
             <label for="set-scan-startup">
               <input id="set-scan-startup" type="checkbox" bind:checked={draft.scan_on_startup} />
-              Scan shares on startup
+              Rescan shares on startup
             </label>
             <span class="hint">
-              Until a scan runs you share nothing and appear to have no files.
+              The last scan is served from its cache as soon as the app starts; this also walks the shared folders on every start.
             </span>
           </div>
           <div class="form-row">
@@ -228,13 +229,13 @@
           <h3>Downloads</h3>
           <div class="form-row">
             <label for="set-downdir">Download folder</label>
-            <input id="set-downdir" bind:value={draft.download_dir}
+            <input {...noAutofill} id="set-downdir" bind:value={draft.download_dir}
               disabled={locked.has('download_dir')} />
             {#if locked.has('download_dir')}<span class="hint">set by environment</span>{/if}
           </div>
           <div class="form-row">
             <label for="set-incompletedir">Incomplete file folder</label>
-            <input id="set-incompletedir" bind:value={draft.incomplete_dir}
+            <input {...noAutofill} id="set-incompletedir" bind:value={draft.incomplete_dir}
               placeholder="{draft.download_dir}/incomplete" />
           </div>
           <div class="form-row">
@@ -320,6 +321,11 @@
               <span class="hint">{description}</span>
             </div>
           {/each}
+          <p class="hint">
+            At every level a peer who has already received the same file three times over within
+            two weeks is refused that file, and only that file, until the window passes or they
+            message you.
+          </p>
           <h3>Denial Messages</h3>
           <p class="hint">
             Sent to a peer when they try to queue a download. A peer matching more than one
@@ -327,15 +333,15 @@
           </p>
           <div class="form-row">
             <label for="set-banned">Banned</label>
-            <input id="set-banned" style="width: 100%" bind:value={draft.banned_message} />
+            <input {...noAutofill} id="set-banned" style="width: 100%" bind:value={draft.banned_message} />
           </div>
           <div class="form-row">
             <label for="set-abusive">Abusive</label>
-            <input id="set-abusive" style="width: 100%" bind:value={draft.abusive_message} />
+            <input {...noAutofill} id="set-abusive" style="width: 100%" bind:value={draft.abusive_message} />
           </div>
           <div class="form-row">
             <label for="set-leech">Leech</label>
-            <input id="set-leech" style="width: 100%" bind:value={draft.leech_message} />
+            <input {...noAutofill} id="set-leech" style="width: 100%" bind:value={draft.leech_message} />
           </div>
           <div class="form-row">
             <label for="set-clear-on-dm">
@@ -359,7 +365,7 @@
               {/each}
               <tr>
                 <td class="grow">
-                  <input placeholder="192.168.1.1 or 10.0.*.*" bind:value={newIpBan}
+                  <input {...noAutofill} placeholder="192.168.1.1 or 10.0.*.*" bind:value={newIpBan}
                     on:keydown={(e) => e.key === 'Enter' && addIpBan()} />
                 </td>
                 <td><button on:click={addIpBan}>Add</button></td>
@@ -376,12 +382,12 @@
           </p>
           <div class="form-row">
             <label for="set-pushover-token">API token</label>
-            <input id="set-pushover-token" style="width: 100%"
+            <input {...noAutofill} id="set-pushover-token" style="width: 100%"
               bind:value={draft.pushover_token} />
           </div>
           <div class="form-row">
             <label for="set-pushover-user">User key</label>
-            <input id="set-pushover-user" style="width: 100%"
+            <input {...noAutofill} id="set-pushover-user" style="width: 100%"
               bind:value={draft.pushover_user_key} />
           </div>
           <div class="form-row">
@@ -401,7 +407,7 @@
         {:else if page === 'profile'}
           <h3>User Profile</h3>
           <p class="hint">Shown to users who view your profile.</p>
-          <textarea rows="10" bind:value={draft.description}></textarea>
+          <textarea {...noAutofill} rows="10" bind:value={draft.description}></textarea>
           <p class="hint">
             $&#123;user.name&#125; inserts a value, $&#123;user.is_buddy?Hey buddy:Hi&#125; picks
             text from a yes/no flag, $$ writes a literal dollar sign. Values and flags are

@@ -1,15 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
+use std::time::Instant;
 
 use crate::network::NetworkHandle;
 use crate::protocol::ServerRequest;
-use crate::types::{Restriction, UserStats, UserStatus};
-
-#[derive(Debug, Clone, Default)]
-pub struct WatchedUser {
-    pub status: Option<UserStatus>,
-    pub stats: Option<UserStats>,
-}
+use crate::types::Restriction;
 
 pub(super) struct Users {
     pub buddies: HashSet<String>,
@@ -17,7 +12,7 @@ pub(super) struct Users {
     pub ignored: HashSet<String>,
     ip_bans: Vec<String>,
     restrictions: HashMap<String, Restriction>,
-    watched: HashMap<String, WatchedUser>,
+    file_denials: HashMap<String, HashMap<String, Instant>>,
     privileged: HashSet<String>,
 }
 
@@ -34,7 +29,7 @@ impl Users {
             ignored,
             ip_bans,
             restrictions: HashMap::new(),
-            watched: HashMap::new(),
+            file_denials: HashMap::new(),
             privileged: HashSet::new(),
         }
     }
@@ -69,6 +64,29 @@ impl Users {
 
     pub fn restriction(&self, username: &str) -> Option<&Restriction> {
         self.restrictions.get(username)
+    }
+
+    pub fn deny_file(&mut self, username: String, virtual_path: String, until: Instant) {
+        let now = Instant::now();
+        self.file_denials.retain(|_, files| {
+            files.retain(|_, expiry| *expiry > now);
+            !files.is_empty()
+        });
+        self.file_denials
+            .entry(username)
+            .or_default()
+            .insert(virtual_path, until);
+    }
+
+    pub fn clear_file_denials(&mut self, username: &str) {
+        self.file_denials.remove(username);
+    }
+
+    pub fn is_file_denied(&self, username: &str, virtual_path: &str) -> bool {
+        self.file_denials
+            .get(username)
+            .and_then(|files| files.get(virtual_path))
+            .is_some_and(|until| *until > Instant::now())
     }
 
     pub fn is_buddy(&self, username: &str) -> bool {
@@ -109,40 +127,11 @@ impl Users {
         }
     }
 
-    pub fn handle_watch_user(
-        &mut self,
-        username: &str,
-        user_exists: bool,
-        status: Option<u32>,
-        stats: Option<UserStats>,
-    ) {
-        if !user_exists {
-            self.watched.remove(username);
-            return;
-        }
-        let user = self.watched.entry(username.to_owned()).or_default();
-        if let Some(status) = status {
-            user.status = UserStatus::from_u32(status);
-        }
-        if let Some(stats) = stats {
-            user.stats = Some(stats);
-        }
-    }
-
-    pub fn handle_user_status(&mut self, username: &str, status: u32, privileged: bool) {
-        if let Some(user) = self.watched.get_mut(username) {
-            user.status = UserStatus::from_u32(status);
-        }
+    pub fn handle_user_status(&mut self, username: &str, privileged: bool) {
         if privileged {
             self.privileged.insert(username.to_owned());
         } else {
             self.privileged.remove(username);
-        }
-    }
-
-    pub fn handle_user_stats(&mut self, username: &str, stats: UserStats) {
-        if let Some(user) = self.watched.get_mut(username) {
-            user.stats = Some(stats);
         }
     }
 
@@ -151,7 +140,6 @@ impl Users {
     }
 
     pub fn reset(&mut self) {
-        self.watched.clear();
         self.privileged.clear();
     }
 }
@@ -159,6 +147,19 @@ impl Users {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_denials_expire_and_clear() {
+        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        let later = Instant::now() + std::time::Duration::from_secs(60);
+        users.deny_file("peer".into(), "a\\b.mp3".into(), later);
+        users.deny_file("peer".into(), "a\\c.mp3".into(), Instant::now());
+        assert!(users.is_file_denied("peer", "a\\b.mp3"));
+        assert!(!users.is_file_denied("peer", "a\\c.mp3"));
+        assert!(!users.is_file_denied("other", "a\\b.mp3"));
+        users.clear_file_denials("peer");
+        assert!(!users.is_file_denied("peer", "a\\b.mp3"));
+    }
 
     #[test]
     fn ip_ban_patterns() {
@@ -178,9 +179,9 @@ mod tests {
     #[test]
     fn privilege_revokes_on_false_status() {
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        users.handle_user_status("peer", 2, true);
+        users.handle_user_status("peer", true);
         assert!(users.is_privileged("peer"));
-        users.handle_user_status("peer", 2, false);
+        users.handle_user_status("peer", false);
         assert!(!users.is_privileged("peer"));
         users.handle_privileged_users(vec!["peer".into()]);
         assert!(users.is_privileged("peer"));

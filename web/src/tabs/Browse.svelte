@@ -1,6 +1,6 @@
 <script>
   import { browses, notice } from '../lib/stores.js';
-  import { browseTarget } from '../lib/ui.js';
+  import { browseTarget, noAutofill } from '../lib/ui.js';
   import { get, post } from '../lib/api.js';
   import { formatSize, formatAttributes } from '../lib/format.js';
   import { openMenu } from '../lib/menu.js';
@@ -184,7 +184,7 @@
 </script>
 
 <div class="toolbar">
-  <input
+  <input {...noAutofill}
     placeholder="Username…"
     bind:value={username}
     on:keydown={(e) => e.key === 'Enter' && requestBrowse()}
@@ -211,7 +211,7 @@
 {#if treeLoaded}
   <div class="split">
     <div class="side" style="width: 40%;">
-      <input
+      <input {...noAutofill}
         placeholder="Filter folders…"
         bind:value={filter}
         on:keydown={(e) => e.key === 'Enter' && applyFilter()}

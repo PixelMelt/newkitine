@@ -1,6 +1,6 @@
 <script>
   import { rooms, status } from '../lib/stores.js';
-  import { activeTab } from '../lib/ui.js';
+  import { activeTab, noAutofill } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { formatTime } from '../lib/format.js';
   import { autoscroll } from '../lib/autoscroll.js';
@@ -63,7 +63,7 @@
 </script>
 
 <div class="toolbar">
-  <input
+  <input {...noAutofill}
     placeholder="Join room…"
     bind:value={newRoom}
     on:keydown={(e) => e.key === 'Enter' && join(newRoom)}
@@ -137,7 +137,7 @@
         {/each}
       </div>
       <div class="toolbar">
-        <input
+        <input {...noAutofill}
           style="flex: 1;"
           placeholder="Message {selected}…"
           bind:value={draft}

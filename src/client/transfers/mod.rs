@@ -41,7 +41,7 @@ pub enum TransferWork {
     Finished {
         snapshot: TransferSnapshot,
         avg_speed_bps: Option<u32>,
-        delivered: bool,
+        delivered_bytes: u64,
     },
     Removed {
         direction: TransferDirection,
@@ -118,4 +118,6 @@ impl TransferRejectReason {
     pub(super) const FILE_NOT_SHARED: &'static str = "File not shared.";
     pub(super) const TOO_MANY_FILES: &'static str = "Too many files";
     pub(super) const TOO_MANY_MEGABYTES: &'static str = "Too many megabytes";
+    pub(super) const REPEATED: &'static str =
+        "Already sent to you several times; message me if your client is stuck";
 }
