@@ -160,7 +160,7 @@ impl ClientActor {
     pub(super) fn handle_logged_in(&mut self, username: String, banner: String) {
         self.session.logged_in = true;
         self.session.reconnect_delay = RECONNECT_INITIAL_DELAY;
-        self.users.start_session(&self.net, &username);
+        self.users.start_session(&username);
         let (folders, files) = self.sharing.counts();
         self.net
             .server(ServerRequest::SharedFoldersFiles { folders, files });
@@ -176,6 +176,7 @@ impl ClientActor {
         }
         self.net.server(ServerRequest::CheckPrivileges);
         self.downloads.start_session(&mut self.users);
+        self.users.send_watches(&self.net);
         self.schedule_wishlist();
         self.emit(ClientEvent::LoggedIn { username, banner });
     }

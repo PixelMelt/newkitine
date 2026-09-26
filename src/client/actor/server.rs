@@ -17,10 +17,7 @@ impl ClientActor {
                     .users
                     .handle_user_status(&self.net, &user, status, privileged)
                 {
-                    Presence::WentOffline => {
-                        let updates = self.downloads.user_offline(&user);
-                        self.emit_transfers(updates);
-                    }
+                    Presence::WentOffline => self.downloads.user_offline(&user),
                     Presence::CameOnline => self.downloads.user_online(&user),
                     Presence::Unchanged => {}
                 }

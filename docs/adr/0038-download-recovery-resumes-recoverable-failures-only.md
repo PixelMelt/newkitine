@@ -13,9 +13,9 @@ The client actor mirrors all of this except the breadth of the online resume. A 
 
 Queue-limit refusals (`Too many files`, `Too many megabytes`, `User limit of …`) move the download to a `Limited` phase that the projection shows as queued. The sweep releases up to `max(5, queued - 1)` of them once the user has no queued download left, the batch size Nicotine+ records at refusal time; a refused-again download goes to the back of that user's line, as it does in Nicotine+.
 
-Automatic recovery never sends synchronously. Resumes, timer retries, released batches and the login re-request of queued downloads go through one outbox that the 5 s sweep drains at most 200 per tick, because the network command channel and the persistence queue are bounded and overflow is fatal (ADR 0009, ADR 0012, ADR 0018). An uploader going offline drops their entries from the outbox.
+Automatic recovery never sends synchronously. Resumes, timer retries, released batches, parking downloads as offline and the login re-request of queued downloads go through one outbox that the 5 s sweep drains at most 200 per tick, because the network command channel and the persistence queue are bounded and overflow is fatal (ADR 0009, ADR 0012, ADR 0018). An uploader's status change replaces their pending entries: offline schedules parking, the return schedules a request for every queued, limited or recoverable download, since the uploader forgot its queue. A manual retry or enqueue cancels the entry for that file.
 
-Watches are owned by `Users`: one `WatchUser` plus `GetUserStatus` per user per session regardless of how many files are enqueued, and removing a buddy keeps the watch while a download still needs it.
+Watches are owned by `Users`: one `WatchUser` plus `GetUserStatus` per user per session regardless of how many files are enqueued, sent at most 100 users per sweep tick (a buddy being added is sent at once), and removing a buddy keeps the watch while a download still needs it.
 
 ## Consequences
 

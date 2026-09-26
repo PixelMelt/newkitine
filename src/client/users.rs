@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::time::Instant;
 
@@ -12,6 +12,8 @@ pub(super) enum Presence {
     CameOnline,
     Unchanged,
 }
+
+const WATCH_BATCH: usize = 100;
 
 fn request_watch(net: &NetworkHandle, username: &str) {
     net.server(ServerRequest::WatchUser {
@@ -31,6 +33,7 @@ pub(super) struct Users {
     file_denials: HashMap<String, HashMap<String, Instant>>,
     privileged: HashSet<String>,
     watched: HashMap<String, Option<UserStatus>>,
+    unsent_watches: VecDeque<String>,
 }
 
 impl Users {
@@ -49,6 +52,7 @@ impl Users {
             file_denials: HashMap::new(),
             privileged: HashSet::new(),
             watched: HashMap::new(),
+            unsent_watches: VecDeque::new(),
         }
     }
 
@@ -123,21 +127,35 @@ impl Users {
         self.privileged.contains(username)
     }
 
-    pub fn start_session(&mut self, net: &NetworkHandle, own_username: &str) {
+    pub fn start_session(&mut self, own_username: &str) {
         self.watched.clear();
-        self.watch(net, own_username);
+        self.unsent_watches.clear();
+        self.watch(own_username);
         let buddies: Vec<String> = self.buddies.iter().cloned().collect();
         for buddy in &buddies {
-            self.watch(net, buddy);
+            self.watch(buddy);
         }
     }
 
-    pub fn watch(&mut self, net: &NetworkHandle, username: &str) {
+    pub fn watch(&mut self, username: &str) {
         if self.watched.contains_key(username) {
             return;
         }
         self.watched.insert(username.to_owned(), None);
-        request_watch(net, username);
+        self.unsent_watches.push_back(username.to_owned());
+    }
+
+    pub fn send_watches(&mut self, net: &NetworkHandle) {
+        let mut sent = 0;
+        while sent < WATCH_BATCH {
+            let Some(username) = self.unsent_watches.pop_front() else {
+                break;
+            };
+            if self.watched.contains_key(&username) {
+                request_watch(net, &username);
+                sent += 1;
+            }
+        }
     }
 
     pub fn forget_watch(&mut self, username: &str) {
@@ -148,11 +166,8 @@ impl Users {
         if !self.buddies.insert(username.clone()) {
             return;
         }
-        if self.watched.contains_key(&username) {
-            request_watch(net, &username);
-        } else {
-            self.watch(net, &username);
-        }
+        self.watched.entry(username.clone()).or_insert(None);
+        request_watch(net, &username);
     }
 
     pub fn remove_buddy(&mut self, net: &NetworkHandle, username: &str, keep_watch: bool) {
@@ -277,7 +292,8 @@ mod tests {
             HashSet::new(),
             Vec::new(),
         );
-        users.start_session(&net, "me");
+        users.start_session("me");
+        users.send_watches(&net);
         sent_requests(&mut commands);
         users.remove_buddy(&net, "kept", true);
         users.remove_buddy(&net, "dropped", false);
@@ -287,15 +303,32 @@ mod tests {
                 user: "dropped".into()
             }]
         );
-        users.watch(&net, "kept");
+        users.watch("kept");
+        users.send_watches(&net);
         assert!(sent_requests(&mut commands).is_empty());
+    }
+
+    #[test]
+    fn watch_requests_are_paced_and_skip_dropped_users() {
+        let (net, mut commands) = crate::network::test_channel();
+        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        for index in 0..WATCH_BATCH + 10 {
+            users.watch(&format!("peer{index}"));
+        }
+        users.watch("peer0");
+        users.forget_watch("peer1");
+        users.send_watches(&net);
+        assert_eq!(sent_requests(&mut commands).len(), 2 * WATCH_BATCH);
+        users.send_watches(&net);
+        assert_eq!(sent_requests(&mut commands).len(), 2 * 9);
     }
 
     #[test]
     fn befriending_a_watched_uploader_refreshes_its_details() {
         let (net, mut commands) = crate::network::test_channel();
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        users.watch(&net, "uploader");
+        users.watch("uploader");
+        users.send_watches(&net);
         sent_requests(&mut commands);
         users.add_buddy(&net, "uploader".into());
         assert_eq!(
@@ -322,8 +355,10 @@ mod tests {
             HashSet::new(),
             Vec::new(),
         );
-        users.start_session(&net, "me");
-        users.start_session(&net, "me");
+        users.start_session("me");
+        users.send_watches(&net);
+        users.start_session("me");
+        users.send_watches(&net);
         let sent = sent_requests(&mut commands);
         let buddy_requests = sent
             .iter()
@@ -342,7 +377,8 @@ mod tests {
     fn returning_watched_users_come_online_once_and_refresh_their_stats() {
         let (net, mut commands) = crate::network::test_channel();
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        users.watch(&net, "peer");
+        users.watch("peer");
+        users.send_watches(&net);
         sent_requests(&mut commands);
         let online = Some(UserStatus::Online);
         let away = Some(UserStatus::Away);

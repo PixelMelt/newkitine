@@ -152,6 +152,7 @@ impl ClientActor {
             self.downloads.release_limited();
             let recovered = self.downloads.drain_recovery(&mut self.users);
             self.emit_transfers(recovered);
+            self.users.send_watches(&self.net);
         }
     }
 
