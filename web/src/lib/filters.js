@@ -29,7 +29,7 @@ function numericClauses(text, getValue, parseValue, bareIsMinimum) {
 function bitrate({ bitrate, sample_rate, bit_depth }) {
 	if (bitrate !== null) return bitrate;
 	if (sample_rate && bit_depth) return Math.floor((sample_rate * bit_depth * 2) / 1000);
-	return -1;
+	return 0;
 }
 
 function phrases(text) {

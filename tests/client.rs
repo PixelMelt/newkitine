@@ -257,7 +257,10 @@ async fn client_shares_answers_search_and_uploads() {
     })
     .await;
 
-    let token = frank.search("unique melody", SearchScope::Global).await;
+    let token = frank
+        .search("unique melody", SearchScope::Global)
+        .await
+        .unwrap();
     let (result_username, results) = wait_client(&mut frank_events, |event| match event {
         ClientEvent::SearchResults(result) if result.token == token => {
             Some((result.username, result.results))
@@ -460,7 +463,9 @@ async fn search_results_are_filtered_against_the_query() {
 
     let token = judy
         .search("\"night drive\" -live", SearchScope::Global)
-        .await;
+        .await
+        .unwrap();
+    assert_eq!(judy.search(" \t ", SearchScope::Global).await, None);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let file = |name: &str| newkitine::types::FileInfo {
@@ -524,7 +529,10 @@ async fn client_receives_search_results() {
     })
     .await;
 
-    let token = dave.search("test query", SearchScope::Global).await;
+    let token = dave
+        .search("test query", SearchScope::Global)
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let results = vec![newkitine::types::FileInfo {
@@ -617,7 +625,10 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
 
-    let token = frank.search("guarded song", SearchScope::Global).await;
+    let token = frank
+        .search("guarded song", SearchScope::Global)
+        .await
+        .unwrap();
     let (matched, query) = wait_client(&mut eve_events, |event| match event {
         ClientEvent::Observed(Observation::SearchSeen {
             username,
@@ -674,7 +685,10 @@ async fn restrictions_gate_uploads_and_actions_are_observed() {
     })
     .await;
 
-    frank.search("guarded song", SearchScope::Global).await;
+    frank
+        .search("guarded song", SearchScope::Global)
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(event) = eve_events.try_recv() {
         if let ClientEvent::Observed(Observation::SearchSeen { username, .. }) = &event {

@@ -222,9 +222,6 @@ async fn start_search(
     if let Err(status) = api::require_login(&app) {
         return status.into_response();
     }
-    if body.query.trim().is_empty() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
     let scope = match body.mode.as_str() {
         "global" => SearchScope::Global,
         "buddies" => SearchScope::Buddies,
@@ -238,8 +235,10 @@ async fn start_search(
         },
         _ => return StatusCode::BAD_REQUEST.into_response(),
     };
-    let token = app.client.search(&body.query, scope).await;
-    Json(json!({ "token": token })).into_response()
+    match app.client.search(&body.query, scope).await {
+        Some(token) => Json(json!({ "token": token })).into_response(),
+        None => StatusCode::BAD_REQUEST.into_response(),
+    }
 }
 
 async fn search_results(State(app): State<Arc<App>>, Path(token): Path<u32>) -> impl IntoResponse {

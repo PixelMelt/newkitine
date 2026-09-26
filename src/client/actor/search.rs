@@ -9,8 +9,6 @@ use crate::client::{ClientEvent, SearchResult, SearchScope};
 use crate::network::NetworkCommand;
 use crate::protocol::ServerRequest;
 
-const DEFAULT_WISHLIST_INTERVAL: Duration = Duration::from_secs(720);
-
 pub(super) struct ActiveSearch {
     query: String,
     filter: SearchQuery,
@@ -24,7 +22,7 @@ struct Wish {
 
 pub(super) struct Wishlist {
     wishes: Vec<Wish>,
-    interval: Duration,
+    interval: Option<Duration>,
     cursor: usize,
     pub(super) at: Option<Instant>,
 }
@@ -33,17 +31,27 @@ impl Wishlist {
     pub(super) fn new() -> Self {
         Self {
             wishes: Vec::new(),
-            interval: DEFAULT_WISHLIST_INTERVAL,
+            interval: None,
             cursor: 0,
             at: None,
         }
     }
+
+    pub(super) fn stop(&mut self) {
+        self.interval = None;
+        self.at = None;
+    }
 }
 
 impl ClientActor {
-    pub(super) fn start_search(&mut self, token: u32, query: String, scope: SearchScope) {
+    pub(super) fn start_search(
+        &mut self,
+        token: u32,
+        query: String,
+        filter: SearchQuery,
+        scope: SearchScope,
+    ) {
         self.net.send(NetworkCommand::AllowSearchToken(token));
-        let filter = SearchQuery::parse(&query);
         let search_term = filter.transmitted.clone();
         self.emit(ClientEvent::SearchStarted {
             token,
@@ -154,16 +162,16 @@ impl ClientActor {
         if seconds == 0 {
             return;
         }
-        self.wishlist.interval = Duration::from_secs(seconds as u64);
+        self.wishlist.interval = Some(Duration::from_secs(seconds as u64));
         self.schedule_wishlist();
     }
 
-    pub(super) fn schedule_wishlist(&mut self) {
-        self.wishlist.at = if self.session.logged_in && !self.wishlist.wishes.is_empty() {
-            Some(Instant::now() + self.wishlist.interval)
-        } else {
-            None
-        };
+    fn schedule_wishlist(&mut self) {
+        self.wishlist.at = self
+            .wishlist
+            .interval
+            .filter(|_| !self.wishlist.wishes.is_empty())
+            .map(|interval| Instant::now() + interval);
     }
 
     pub(super) fn do_wishlist_search(&mut self) {

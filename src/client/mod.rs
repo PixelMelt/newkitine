@@ -24,16 +24,18 @@ use crate::protocol::{ServerRequest, initial_token};
 use crate::types::{
     FileAttributes, Restriction, RuntimeConfig, TransferDirection, TransferId, TransferStatus,
 };
+use search::SearchQuery;
 
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
 pub const EVENT_QUEUE_CAPACITY: usize = 4096;
 pub const TRANSFER_QUEUE_CAPACITY: usize = 4096;
 
 #[derive(Debug)]
-pub(crate) enum ClientCommand {
+enum ClientCommand {
     Search {
         token: u32,
         query: String,
+        filter: SearchQuery,
         scope: SearchScope,
     },
     CancelSearch {
@@ -174,15 +176,20 @@ impl Client {
             .expect("client actor terminated");
     }
 
-    pub async fn search(&self, query: &str, scope: SearchScope) -> u32 {
+    pub async fn search(&self, query: &str, scope: SearchScope) -> Option<u32> {
+        let filter = SearchQuery::parse(query);
+        if filter.transmitted.is_empty() {
+            return None;
+        }
         let token = self.token_counter.fetch_add(1, Ordering::Relaxed) + 1;
         self.send(ClientCommand::Search {
             token,
             query: query.to_owned(),
+            filter,
             scope,
         })
         .await;
-        token
+        Some(token)
     }
 
     pub async fn cancel_search(&self, token: u32) {

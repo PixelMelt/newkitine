@@ -48,7 +48,7 @@ struct ClientActor {
     hated_interests: Vec<String>,
 }
 
-pub(crate) async fn run(
+pub(super) async fn run(
     config: ClientBootstrap,
     mut commands: mpsc::Receiver<ClientCommand>,
     events: mpsc::Sender<ClientEvent>,
@@ -197,8 +197,9 @@ impl ClientActor {
             ClientCommand::Search {
                 token,
                 query,
+                filter,
                 scope,
-            } => self.start_search(token, query, scope),
+            } => self.start_search(token, query, filter, scope),
             ClientCommand::CancelSearch { token } => self.cancel_search(token),
             ClientCommand::Download {
                 username,
