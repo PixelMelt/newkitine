@@ -18,7 +18,7 @@ const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 const MPEG_READ_CHUNK: u64 = 16 * 1024;
-const XING_SPAN: usize = 4 + 32 + 16;
+const XING_SPAN: usize = 4 + 2 + 32 + 16;
 
 pub(super) fn has_audio_extension(name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(_, ext)| {
@@ -131,7 +131,8 @@ fn xing_at(window: &[u8], start: usize) -> bool {
         (true, true) | (false, false) => 17,
         (false, true) => 9,
     };
-    let tag = start + 4 + side_info;
+    let crc = if header[1] & 0x01 == 0 { 2 } else { 0 };
+    let tag = start + 4 + crc + side_info;
     let Some(xing) = window.get(tag..tag + 16) else {
         return false;
     };
@@ -186,6 +187,14 @@ mod tests {
             data.extend(frame(b"Xing", 0x0f, 1000, 4_000_000));
             assert!(xing(&data), "padding {padding}");
         }
+    }
+
+    #[test]
+    fn xing_header_after_crc_is_found() {
+        let mut data = frame(b"Xing", 0x0f, 1000, 4_000_000);
+        data[4] = 0xfa;
+        data.splice(7..7, [0xab, 0xcd]);
+        assert!(xing(&data));
     }
 
     #[test]

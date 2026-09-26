@@ -1,4 +1,4 @@
-# 37. The share walk follows symlinks and skips colliding paths
+# 38. The share walk follows symlinks and skips colliding paths
 
 Status: Accepted (refines ADR 0025 and ADR 0034)
 Nicotine+: Matches: Nicotine+ follows symlinked files and folders and skips a folder or file whose decoded path was already shared
