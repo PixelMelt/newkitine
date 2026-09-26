@@ -159,7 +159,7 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
         let peer = touch(&mut peers, username, now());
         let probe = peer.verdict == Verdict::Clean
             && peer.check == Check::Idle
-            && peer.stats.is_none()
+            && peer.stats.is_none_or(|(files, _)| files == 0)
             && level == FilterLevel::Strict;
         if probe {
             peer.check = Check::AwaitingStats(deadline);
