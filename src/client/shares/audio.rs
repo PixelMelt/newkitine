@@ -131,11 +131,14 @@ fn xing_at(window: &[u8], start: usize) -> bool {
         (true, true) | (false, false) => 17,
         (false, true) => 9,
     };
-    let crc = if header[1] & 0x01 == 0 { 2 } else { 0 };
-    let tag = start + 4 + crc + side_info;
-    let Some(xing) = window.get(tag..tag + 16) else {
-        return false;
-    };
+    let crc_offsets: &[usize] = if header[1] & 0x01 == 0 { &[0, 2] } else { &[0] };
+    crc_offsets.iter().any(|crc| {
+        let tag = start + 4 + side_info + crc;
+        window.get(tag..tag + 16).is_some_and(is_vbr_xing_tag)
+    })
+}
+
+fn is_vbr_xing_tag(xing: &[u8]) -> bool {
     if &xing[..4] != b"Xing" {
         return false;
     }
@@ -190,11 +193,13 @@ mod tests {
     }
 
     #[test]
-    fn xing_header_after_crc_is_found() {
-        let mut data = frame(b"Xing", 0x0f, 1000, 4_000_000);
-        data[4] = 0xfa;
-        data.splice(7..7, [0xab, 0xcd]);
-        assert!(xing(&data));
+    fn xing_header_in_crc_protected_frame_is_found() {
+        let mut lame = frame(b"Xing", 0x0f, 1000, 4_000_000);
+        lame[4] = 0xfa;
+        assert!(xing(&lame));
+        let mut shifted = lame.clone();
+        shifted.splice(7..7, [0xab, 0xcd]);
+        assert!(xing(&shifted));
     }
 
     #[test]
