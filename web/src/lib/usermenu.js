@@ -73,7 +73,6 @@ export function userMenu(username, { current = null, primary = false } = {}) {
 	const isBanned = get(banned).includes(username);
 	const isIgnored = get(ignored).includes(username);
 	return [
-		{ title: username },
 		{ label: 'Copy Username', action: () => copy(username, 'username') },
 		{ sep: true },
 		{

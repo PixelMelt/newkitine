@@ -12,6 +12,7 @@
   export let columns;
   export let viewKey = null;
   export let primary = false;
+  export let headless = false;
   export let empty = '';
   export let loading = false;
   export let selection = new Set();
@@ -44,6 +45,7 @@
     return stored && columns.some((c) => c.key === stored.key) ? stored : null;
   }
 
+  $: header = headless ? 0 : ROW;
   $: template = columns
     .map((c) => (c.width ? `${c.width}px` : `minmax(${c.min}px, ${c.grow}fr)`))
     .join(' ');
@@ -129,7 +131,7 @@
 
   function reveal(index) {
     const top = index * ROW;
-    const viewport = height - ROW;
+    const viewport = height - header;
     if (top < container.scrollTop) container.scrollTop = top;
     else if (top + ROW > container.scrollTop + viewport) container.scrollTop = top + ROW - viewport;
   }
@@ -169,7 +171,7 @@
     const box = container.getBoundingClientRect();
     onmenu(selectedRows(), {
       x: box.left + 24,
-      y: box.top + ROW + (index + 1) * ROW - container.scrollTop,
+      y: box.top + header + (index + 1) * ROW - container.scrollTop,
     });
   }
 
@@ -192,7 +194,7 @@
     const command = event.ctrlKey || event.metaKey;
     const count = sorted.length;
     const at = indexOf.has(cursor) ? indexOf.get(cursor) : -1;
-    const page = Math.max(1, Math.floor((height - ROW) / ROW) - 1);
+    const page = Math.max(1, Math.floor((height - header) / ROW) - 1);
     const targets = {
       ArrowDown: Math.min(count - 1, at + 1),
       ArrowUp: Math.max(0, at - 1),
@@ -266,6 +268,7 @@
   on:mousedown={backgroundDown}
   on:mouseover={hint}
 >
+  {#if !headless}
   <div class="head" role="row" style:grid-template-columns={template} style:min-width="{minWidth}px">
     {#each columns as column}
       <div
@@ -281,6 +284,7 @@
       </div>
     {/each}
   </div>
+  {/if}
   {#if sorted.length}
     <div class="body" style:height="{sorted.length * ROW}px" style:min-width="{minWidth}px">
       <div class="window" style:transform="translateY({start * ROW}px)">
@@ -288,7 +292,7 @@
           <div
             class="row"
             class:selected={selection.has(key(row))}
-            class:cursor={cursor === key(row)}
+            class:cursor={cursor === key(row) && !selection.has(cursor)}
             role="row"
             aria-selected={selection.has(key(row))}
             style:grid-template-columns={template}
@@ -390,6 +394,10 @@
   .datatable:focus .row.selected {
     background: var(--selected);
     color: var(--selected-text);
+  }
+  .datatable:focus {
+    outline: none;
+    border-color: var(--accent);
   }
   .datatable:focus .row.cursor {
     outline: 1px dotted var(--text-dim);

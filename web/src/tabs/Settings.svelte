@@ -1,11 +1,11 @@
 <script>
   import { onDestroy, tick } from 'svelte';
   import { settings, status, previewTheme } from '../lib/stores.js';
-  import { route, go, settingsDirty, noAutofill } from '../lib/ui.js';
+  import { route, go, noAutofill } from '../lib/ui.js';
   import { put, post } from '../lib/api.js';
   import { act } from '../lib/act.js';
   import { formatTime } from '../lib/format.js';
-  import { onEnter, hasCommand, keyLabel } from '../lib/keys.js';
+  import { onEnter, hasCommand } from '../lib/keys.js';
   import NumberField from '../lib/NumberField.svelte';
 
   const pages = [
@@ -18,7 +18,6 @@
     ['notifications', 'Notifications'],
     ['profile', 'My Profile'],
     ['ui', 'Appearance'],
-    ['keyboard', 'Keyboard'],
   ];
   const pageFields = {
     network: ['username', 'password', 'server', 'listen_port', 'auto_reconnect'],
@@ -39,7 +38,6 @@
     notifications: ['pushover_token', 'pushover_user_key', 'pushover_private_messages'],
     profile: ['description'],
     ui: ['theme'],
-    keyboard: [],
   };
   const lockedBy = {
     server: 'NEWKITINE_SERVER',
@@ -58,51 +56,6 @@
     ['light', 'Light'],
     ['catppuccin', 'Catppuccin'],
   ];
-  const values = [
-    'user.name', 'user.restriction', 'user.queued_files', 'user.active_uploads', 'me.name',
-    'me.shared_files', 'me.shared_folders', 'me.queue_size', 'me.slots', 'me.free_slots',
-    'me.upload_speed',
-  ];
-  const flags = ['user.is_buddy', 'user.is_ignored', 'user.is_banned', 'user.is_privileged'];
-  const shortcuts = [
-    ['Anywhere', [
-      ['1 – 9, 0', 'Go to a section, in tab order'],
-      [`/ or ${keyLabel('mod+k')}`, 'Search files'],
-      [', and .', 'Previous and next search, chat, room or share list'],
-      [keyLabel('esc'), 'Close a menu, or leave a text field for the list beside it'],
-      ['?', 'Show this page'],
-      ['Back and Forward', 'Return to where you were; every view has its own address'],
-    ]],
-    ['Lists and tables', [
-      ['↑ ↓ Home End PgUp PgDn', 'Move the selection'],
-      [`${keyLabel('shift')} with those, or ${keyLabel('shift')}-click`, 'Select a range'],
-      [`${keyLabel('mod')}-click`, 'Add or remove one row'],
-      [keyLabel('mod+a'), 'Select everything'],
-      [keyLabel('enter'), 'Same as double-click: the bold item in the row menu'],
-      [keyLabel('mod+c'), 'Copy the path or name of the selected rows'],
-      [keyLabel('delete'), 'Stop downloads, remove from a list, close a profile'],
-      ['Menu key or Shift+F10', 'Open the row menu'],
-      ['Typing letters', 'Jump to a name, in lists sorted by name'],
-      ['← →', 'Collapse and expand folders'],
-    ]],
-    ['Menus', [
-      ['↑ ↓ Home End', 'Move'],
-      [`→ or ${keyLabel('enter')}`, 'Open a submenu'],
-      ['←', 'Close a submenu'],
-      ['Typing letters', 'Jump to an item'],
-    ]],
-    ['Text fields', [
-      [keyLabel('enter'), 'Search, send, add or save'],
-      ['↓ in the search box', 'Move to the results'],
-      [`${keyLabel('mod+s')} in Preferences`, 'Save'],
-    ]],
-    ['Mouse', [
-      ['Double-click', 'The bold item in the row menu'],
-      ['Middle-click a tab', 'Close it'],
-      [`${keyLabel('mod')}-click a section`, 'Open it in another browser tab'],
-    ]],
-  ];
-
   let draft = null;
   let version = 0;
   let baseline = null;
@@ -114,8 +67,6 @@
   let savedAt = null;
   let discarded = null;
   let testStatus = null;
-  let showPassword = false;
-  let description;
 
   function payloadOf(source, filtersText, dropped) {
     const payload = {
@@ -150,7 +101,6 @@
   $: portManaged = $settings.gluetun || locked.has('listen_port');
   $: current = draft ? payloadOf(draft, shareFiltersText, removed) : null;
   $: dirty = draft ? JSON.stringify(current) !== JSON.stringify(baseline) : false;
-  $: settingsDirty.set(dirty);
   $: changedPages = new Set(
     draft
       ? pages
@@ -165,12 +115,6 @@
     discarded = null;
   }
   $: pushoverChanged = changedPages.has('notifications');
-  $: localHour = draft
-    ? new Date(Date.UTC(2000, 0, 1, draft.rescan_hour_utc)).toLocaleTimeString([], {
-        hour: '2-digit', minute: '2-digit',
-      })
-    : '';
-
   function addShare() {
     if (!newShare.virtual_name.trim() || !newShare.path.trim()) return false;
     draft.shares = [...draft.shares, { ...newShare }];
@@ -251,14 +195,6 @@
     });
   }
 
-  function insert(text, caret) {
-    const start = description.selectionStart;
-    description.setRangeText(text, start, description.selectionEnd, 'end');
-    description.setSelectionRange(start + caret, start + caret);
-    description.dispatchEvent(new Event('input'));
-    description.focus();
-  }
-
   function windowKey(event) {
     if ($route.tab !== 'settings' || !hasCommand(event) || event.key.toLowerCase() !== 's') return;
     event.preventDefault();
@@ -298,7 +234,7 @@
             class:selected={page === id}
             on:mousedown={() => go('settings', id)}
           >
-            {label}<span class="mark">{changedPages.has(id) ? '•' : ''}</span>
+            {label}
           </div>
         {/each}
       </div>
@@ -320,13 +256,8 @@
           <div class="form-row">
             <label for="set-password">Password</label>
             <div class="control">
-              <input id="set-password" class="medium" autocomplete="new-password"
-                type={showPassword ? 'text' : 'password'}
-                value={draft.password} on:input={(e) => (draft.password = e.target.value)}
-                readonly={locked.has('password')} />
-              <button type="button" on:click={() => (showPassword = !showPassword)}>
-                {showPassword ? 'Hide' : 'Show'}
-              </button>
+              <input id="set-password" type="password" autocomplete="new-password"
+                bind:value={draft.password} readonly={locked.has('password')} />
               <span class="hint">
                 {#if locked.has('password')}Set by {lockedBy.password}.
                 {:else if draft.password_set}A password is saved. Leave empty to keep it.
@@ -438,7 +369,6 @@
             <div class="control">
               <NumberField id="set-rescan-hour" min={0} max={23} unit=":00 UTC"
                 bind:value={draft.rescan_hour_utc} bind:invalid={invalid.rescan_hour_utc} />
-              <span class="hint">That is {localHour} in your time zone.</span>
             </div>
           </div>
 
@@ -447,7 +377,7 @@
           <div class="form-row">
             <label for="set-downdir">Download folder</label>
             <div class="control">
-              <input {...noAutofill} id="set-downdir" type="text" bind:value={draft.download_dir}
+              <input {...noAutofill} id="set-downdir" class="long" type="text" bind:value={draft.download_dir}
                 readonly={locked.has('download_dir')} />
               {#if locked.has('download_dir')}<span class="hint">Set by {lockedBy.download_dir}.</span>{/if}
             </div>
@@ -455,7 +385,7 @@
           <div class="form-row">
             <label for="set-incompletedir">Unfinished files folder</label>
             <div class="control">
-              <input {...noAutofill} id="set-incompletedir" type="text" bind:value={draft.incomplete_dir}
+              <input {...noAutofill} id="set-incompletedir" class="long" type="text" bind:value={draft.incomplete_dir}
                 placeholder="{draft.download_dir}/incomplete" />
               <span class="hint">Leave empty to use the folder shown.</span>
             </div>
@@ -576,15 +506,15 @@
           </p>
           <div class="form-row">
             <label for="set-banned">Banned</label>
-            <div class="control"><input {...noAutofill} id="set-banned" type="text" bind:value={draft.banned_message} /></div>
+            <div class="control"><input {...noAutofill} id="set-banned" class="long" type="text" bind:value={draft.banned_message} /></div>
           </div>
           <div class="form-row">
             <label for="set-abusive">Abusive</label>
-            <div class="control"><input {...noAutofill} id="set-abusive" type="text" bind:value={draft.abusive_message} /></div>
+            <div class="control"><input {...noAutofill} id="set-abusive" class="long" type="text" bind:value={draft.abusive_message} /></div>
           </div>
           <div class="form-row">
             <label for="set-leech">Leech</label>
-            <div class="control"><input {...noAutofill} id="set-leech" type="text" bind:value={draft.leech_message} /></div>
+            <div class="control"><input {...noAutofill} id="set-leech" class="long" type="text" bind:value={draft.leech_message} /></div>
           </div>
           <div class="form-row check">
             <label>
@@ -606,11 +536,11 @@
           </p>
           <div class="form-row">
             <label for="set-pushover-token">API token</label>
-            <div class="control"><input {...noAutofill} id="set-pushover-token" type="text" bind:value={draft.pushover_token} /></div>
+            <div class="control"><input {...noAutofill} id="set-pushover-token" class="long" type="text" bind:value={draft.pushover_token} /></div>
           </div>
           <div class="form-row">
             <label for="set-pushover-user">User key</label>
-            <div class="control"><input {...noAutofill} id="set-pushover-user" type="text" bind:value={draft.pushover_user_key} /></div>
+            <div class="control"><input {...noAutofill} id="set-pushover-user" class="long" type="text" bind:value={draft.pushover_user_key} /></div>
           </div>
           <div class="form-row check">
             <label>
@@ -634,24 +564,20 @@
           <h3>My Profile</h3>
           <p class="hint">Shown to users who view your profile.</p>
           <textarea {...noAutofill} rows="10" aria-label="Profile description"
-            bind:value={draft.description} bind:this={description}></textarea>
+            bind:value={draft.description}></textarea>
           <p class="hint">
-            $&#123;name&#125; inserts a value. $&#123;flag?yes text:no text&#125; picks text from a
-            flag. $$ is a literal dollar sign. Both are resolved for whoever views the profile, at
-            that moment. Click a name to insert it.
+            $&#123;user.name&#125; inserts a value, $&#123;user.is_buddy?Hey buddy:Hi&#125; picks
+            text from a yes/no flag, $$ writes a literal dollar sign. Values and flags are
+            resolved for whoever asked, at the moment they ask.
           </p>
-          <div class="chips">
-            <span class="hint">Values</span>
-            {#each values as name}
-              <button type="button" on:click={() => insert('${' + name + '}', name.length + 3)}>{name}</button>
-            {/each}
-          </div>
-          <div class="chips">
-            <span class="hint">Flags</span>
-            {#each flags as name}
-              <button type="button" on:click={() => insert('${' + name + '?:}', name.length + 3)}>{name}</button>
-            {/each}
-          </div>
+          <p class="hint">
+            Values: user.name, user.restriction, user.queued_files, user.active_uploads, me.name,
+            me.shared_files, me.shared_folders, me.queue_size, me.slots, me.free_slots,
+            me.upload_speed.
+          </p>
+          <p class="hint">
+            Flags: user.is_buddy, user.is_ignored, user.is_banned, user.is_privileged.
+          </p>
 
         {:else if page === 'ui'}
           <h3>Appearance</h3>
@@ -669,23 +595,12 @@
             </div>
           </div>
 
-        {:else}
-          <h3>Keyboard and Mouse</h3>
-          {#each shortcuts as [group, rows]}
-            <h3>{group}</h3>
-            <dl class="facts keys">
-              {#each rows as [keys, what]}
-                <dt>{keys}</dt>
-                <dd>{what}</dd>
-              {/each}
-            </dl>
-          {/each}
         {/if}
         {/key}
       </div>
 
       <div class="toolbar savebar">
-        <button type="submit" title="Save ({keyLabel('mod+s')})">Save</button>
+        <button type="submit">Save</button>
         {#if saveError}<span class="notice">{saveError}</span>
         {:else if dirty}<span>Unsaved changes.</span>
         {:else if discarded}

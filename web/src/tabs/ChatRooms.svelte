@@ -1,11 +1,11 @@
 <script>
   import {
-    rooms, conversations, drafts, unread, roomKey, joinRoom, leaveRoom, status,
+    rooms, conversations, unread, roomKey, joinRoom, leaveRoom, status,
   } from '../lib/stores.js';
   import { route, go, forget, openUserInfo, noAutofill } from '../lib/ui.js';
   import { copy } from '../lib/act.js';
   import { plural, fold, formatCount } from '../lib/format.js';
-  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { onEnter } from '../lib/keys.js';
   import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import Subtabs from '../lib/Subtabs.svelte';
@@ -44,7 +44,6 @@
     id: room,
     label: room,
     unread: $unread.has(roomKey(room)),
-    draft: Boolean($drafts[roomKey(room)]),
   }));
 
   function show(room) {
@@ -71,7 +70,6 @@
 
   function tabMenu(event, room) {
     openMenu(event, [
-      { title: room },
       { label: 'Copy Room Name', action: () => copy(room, 'room name') },
       { sep: true },
       { label: 'Leave Room', action: () => leave(room) },
@@ -82,7 +80,7 @@
     const room = rows[0];
     openMenuAt(point, [
       {
-        label: room.joined ? 'Go to Room' : 'Join Room', primary: true, hint: keyLabel('enter'),
+        label: room.joined ? 'Go to Room' : 'Join Room', primary: true,
         action: () => join(room.name),
       },
       { label: 'Copy Room Name', action: () => copy(room.name, 'room name') },
@@ -141,7 +139,7 @@
     onactivate={(rows) => join(rows[0].name)}
     onmenu={roomMenu}
   />
-  <p class="hint">Double-click a room or press {keyLabel('enter')} to join it.</p>
+  <p class="hint">Double-click a room to join it.</p>
 {:else}
   <div class="split">
     <div class="main">
@@ -167,6 +165,7 @@
         rows={users}
         key={(u) => u}
         columns={userColumns}
+        headless
         viewKey={selected}
         typeahead={(u) => u}
         copyText={(u) => u}

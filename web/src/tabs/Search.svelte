@@ -12,7 +12,7 @@
   } from '../lib/format.js';
   import { emptyFilters, compileFilters, activeFilterCount } from '../lib/filters.js';
   import { shortState, isActive } from '../lib/transferStatus.js';
-  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { onEnter } from '../lib/keys.js';
   import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import Subtabs from '../lib/Subtabs.svelte';
@@ -35,11 +35,6 @@
   const stateOf = (index, row) => index.get(transferKey(row.response.username, row.file.name));
 
   const makeColumns = (index) => [
-    {
-      key: 'state', label: '', width: 64,
-      text: (r) => (stateOf(index, r) ? shortState(stateOf(index, r)) : ''),
-      class: (r) => (stateOf(index, r) && shortState(stateOf(index, r)) === 'Failed' ? 'bad' : 'dim'),
-    },
     { key: 'username', label: 'User', width: 140, text: (r) => r.response.username },
     {
       key: 'speed', label: 'Speed', width: 88, align: 'end', desc: true,
@@ -66,6 +61,11 @@
       key: 'length', label: 'Length', width: 64, align: 'end', desc: true,
       text: (r) => (r.file.attributes.length ? formatDuration(r.file.attributes.length) : ''),
       sortValue: (r) => r.file.attributes.length ?? 0,
+    },
+    {
+      key: 'state', label: 'Download', width: 80,
+      text: (r) => (stateOf(index, r) ? shortState(stateOf(index, r)) : ''),
+      class: (r) => (stateOf(index, r) && shortState(stateOf(index, r)) === 'Failed' ? 'bad' : 'dim'),
     },
   ];
 
@@ -184,7 +184,7 @@
     openMenuAt(point, [
       {
         label: many ? `Download ${picked.length} Files` : 'Download File',
-        primary: true, hint: keyLabel('enter'), action: () => download(picked),
+        primary: true, action: () => download(picked),
       },
       { label: many ? 'Download Folders' : 'Download Folder', action: () => downloadFolders(picked) },
       { sep: true },
@@ -193,7 +193,7 @@
         action: () => openBrowse(first.response.username, first.folder),
       },
       {
-        label: many ? `Copy ${picked.length} File Paths` : 'Copy File Path', hint: keyLabel('mod+c'),
+        label: many ? `Copy ${picked.length} File Paths` : 'Copy File Path',
         action: () => copy(picked.map((r) => r.file.name).join('\n'), many ? 'file paths' : 'file path'),
       },
       { sep: true },
@@ -204,7 +204,6 @@
   function tabMenu(event, id) {
     const search = $searches.find((s) => String(s.token) === id);
     openMenu(event, [
-      { title: search.query },
       { label: 'Search Again', action: () => searchAgain(search) },
       { label: 'Copy Search Term', action: () => copy(search.query, 'search term') },
       { sep: true },
@@ -252,7 +251,6 @@
     data-search-query
     placeholder="Search files…"
     aria-label="Search files"
-    title="Search files ({keyLabel('/')} or {keyLabel('mod+k')})"
     bind:value={query}
     bind:this={queryInput}
     on:keydown={onEnter(submit)}
@@ -341,8 +339,6 @@
         {term}
         <button title="Remove from wishlist" aria-label="Remove {term}" on:click={() => removeWish(term)}>×</button>
       </span>
-    {:else}
-      <span class="hint">Wishes are searched for automatically, again and again, until you remove them.</span>
     {/each}
   </div>
 {/if}
@@ -358,6 +354,7 @@
 />
 
 {#if activeSearch}
+  {#if selected.length > 1 || filteredRows.length !== rows.length}
   <div class="count">
     {#if selected.length > 1}
       {formatCount(selected.length)} of {plural(filteredRows.length, 'result')} selected ·
@@ -366,10 +363,9 @@
       {formatCount(filteredRows.length)} of {plural(rows.length, 'result')} ·
       {formatCount(rows.length - filteredRows.length)} hidden by filters
       <button class="link" on:click={() => (filters = emptyFilters())}>Clear Filters</button>
-    {:else}
-      {plural(rows.length, 'result')}
     {/if}
   </div>
+  {/if}
   <DataTable
     id="search"
     label="Search results"
@@ -382,15 +378,10 @@
     bind:this={table}
     empty={rows.length
       ? 'No results match the filters.'
-      : 'No results yet. Results appear here as other users answer.'}
+      : 'No results yet.'}
     copyText={(r) => r.file.name}
     onactivate={download}
     onmenu={rowMenu}
     onedge={focusQuery}
   />
-{:else}
-  <p class="hint">
-    Type what you are looking for and press {keyLabel('enter')}. Double-click a result to download it;
-    right-click for more.
-  </p>
 {/if}

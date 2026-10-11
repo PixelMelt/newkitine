@@ -6,12 +6,11 @@
   import { get, post } from '../lib/api.js';
   import { act, copy } from '../lib/act.js';
   import {
-    formatSize, formatQuality, formatDuration, formatTime, formatDateTime, effectiveBitrate, plural,
+    formatSize, formatQuality, formatDuration, formatTime, effectiveBitrate, plural,
   } from '../lib/format.js';
-  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
-  import Subtabs from '../lib/Subtabs.svelte';
   import DataTable from '../lib/DataTable.svelte';
   import Tree from '../lib/Tree.svelte';
 
@@ -38,10 +37,6 @@
     index.get(transferKey(listing.username, `${listing.dir}\\${file.name}`));
 
   const makeColumns = (index) => [
-    {
-      key: 'state', label: '', width: 64,
-      text: (f) => (stateOf(index, f) ? shortState(stateOf(index, f)) : ''), class: () => 'dim',
-    },
     { key: 'name', label: 'Filename', grow: 1, min: 200, tail: 12, text: (f) => f.name },
     {
       key: 'size', label: 'Size', width: 84, align: 'end', desc: true,
@@ -55,6 +50,10 @@
       key: 'length', label: 'Length', width: 64, align: 'end', desc: true,
       text: (f) => (f.attributes.length ? formatDuration(f.attributes.length) : ''),
       sortValue: (f) => f.attributes.length ?? 0,
+    },
+    {
+      key: 'state', label: 'Download', width: 80,
+      text: (f) => (stateOf(index, f) ? shortState(stateOf(index, f)) : ''), class: () => 'dim',
     },
   ];
   const folderColumns = [
@@ -79,10 +78,6 @@
   }
   $: if (viewing && loadedAt && !$browses.has(viewing)) reset();
   $: visible = flatten(tree, expanded, '', 0);
-  $: items = [...new Set([...$browses.keys(), ...(viewing ? [viewing] : [])])].map((user) => ({
-    id: user,
-    label: user,
-  }));
   function reset() {
     loadedAt = 0;
     tree = Object.create(null);
@@ -271,12 +266,12 @@
     openMenuAt(point, [
       {
         label: many ? `Download ${files.length} Files` : 'Download File',
-        primary: true, hint: keyLabel('enter'), action: () => downloadFiles(files),
+        primary: true, action: () => downloadFiles(files),
       },
       { label: 'Download Folder', action: () => downloadFolder(listing.dir, false) },
       { sep: true },
       {
-        label: many ? `Copy ${files.length} File Paths` : 'Copy File Path', hint: keyLabel('mod+c'),
+        label: many ? `Copy ${files.length} File Paths` : 'Copy File Path',
         action: () =>
           copy(
             files.map((f) => `${listing.dir}\\${f.name}`).join('\n'),
@@ -307,8 +302,7 @@
   <span class="count">
     {#if summary}
       {plural(summary.folders, 'folder')} · {plural(summary.files, 'file')} ·
-      {formatSize(summary.size)} ·
-      <span title={formatDateTime(loadedAt)}>received {formatTime(loadedAt)}</span>
+      {formatSize(summary.size)}
     {/if}
     {#if request && !request.failed}
       {treeLoaded ? 'Refreshing…' : `Asked ${viewing} for their share list at ${formatTime(request.at)}. Large lists take a while.`}
@@ -316,8 +310,6 @@
   </span>
   {#if request?.failed}<span class="notice">{request.failed}</span>{/if}
 </div>
-
-<Subtabs tab="browse" {items} active={viewing} onselect={(user) => openBrowse(user)} />
 
 {#if treeLoaded}
   <div class="split">
@@ -354,7 +346,7 @@
           onpick={(folder) => selectFolder(folder.directory, folder.file_count > 0)}
           onactivate={revealFromFilter}
           onmenu={(rows, point) => openMenuAt(point, [
-            { label: 'Show in Tree', primary: true, hint: keyLabel('enter'), action: () => revealFromFilter(rows) },
+            { label: 'Show in Tree', primary: true, action: () => revealFromFilter(rows) },
             { sep: true },
             ...folderItems(rows[0].directory),
           ])}
@@ -390,13 +382,7 @@
           onactivate={downloadFiles}
           onmenu={fileMenu}
         />
-      {:else}
-        <p class="hint">Select a folder to see its files. Double-click a file to download it.</p>
       {/if}
     </div>
   </div>
-{:else if !viewing}
-  <p class="hint">
-    Enter a username to see everything they share, or choose Browse Files from any user's menu.
-  </p>
 {/if}

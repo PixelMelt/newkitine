@@ -1,6 +1,5 @@
 import { writable } from 'svelte/store';
 
-const RETAINED = 20;
 const EXPIRY_MS = { info: 6000, done: 6000, error: 20000 };
 const ACTION_EXPIRY_MS = 10000;
 
@@ -26,7 +25,6 @@ export const status = writable({
 });
 export const settings = writable({ settings: null, locked: [], gluetun: false });
 export const loginFailure = writable(null);
-export const reports = writable([]);
 export const shownReport = writable(null);
 
 let nextReportId = 1;
@@ -34,7 +32,6 @@ let expiry = null;
 
 function push(kind, text, action) {
 	const entry = { id: nextReportId++, kind, text, at: Date.now(), action };
-	reports.update((list) => [...list.slice(1 - RETAINED), entry]);
 	shownReport.set(entry);
 	clearTimeout(expiry);
 	expiry = setTimeout(dismissReport, action ? ACTION_EXPIRY_MS : EXPIRY_MS[kind]);

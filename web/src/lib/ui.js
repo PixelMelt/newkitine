@@ -94,8 +94,6 @@ export function openPrivateChat(username) {
 export const openBrowse = (username, folder = null) => go('browse', username, folder);
 export const openUserInfo = (username) => go('user', username);
 
-export const settingsDirty = writable(false);
-
 export const noAutofill = {
 	autocomplete: 'off',
 	'data-1p-ignore': '',

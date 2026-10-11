@@ -1,7 +1,6 @@
 <script>
   import { tick } from 'svelte';
-  import { route, focusPane } from './ui.js';
-  import { isTyping } from './keys.js';
+  import { focusPane } from './ui.js';
 
   export let tab;
   export let items;
@@ -16,13 +15,6 @@
     const next = index + direction;
     if (next >= 0 && next < items.length) onselect(items[next].id);
     else if (wrap) onselect(items[(next + items.length) % items.length].id);
-  }
-
-  function windowKey(event) {
-    if ($route.tab !== tab || !items.length || isTyping(event)) return;
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (event.key === ',' || event.key === '<') step(-1, !event.repeat);
-    else if (event.key === '.' || event.key === '>') step(1, !event.repeat);
   }
 
   let strip;
@@ -51,8 +43,6 @@
   }
 </script>
 
-<svelte:window on:keydown={windowKey} />
-
 {#if items.length}
   <div class="subtabs" role="tablist" bind:this={strip}>
     {#each items as item (item.id)}
@@ -67,10 +57,8 @@
           on:keydown={(e) => stripKey(e, item)}
           on:contextmenu={(e) => onmenu && onmenu(e, item.id)}
         >
-          <span class="dot">{item.unread ? '●' : ''}</span>
           <span class="name">{item.label}</span>
           {#if item.count !== undefined}<span class="count">{item.count}</span>{/if}
-          {#if item.draft}<span class="draft" title="Unsent draft">✎</span>{/if}
         </button>
         {#if onclose}
           <button

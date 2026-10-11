@@ -1,14 +1,14 @@
 <script>
   import { onMount, tick } from 'svelte';
   import {
-    connectWebSocket, link, status, loginFailure, reports, shownReport, dismissReport,
+    connectWebSocket, link, status, loginFailure, shownReport, dismissReport,
     speedTotals, unread, knownUsers,
   } from './lib/stores.js';
-  import { formatSpeed, formatCount, formatTime, plural } from './lib/format.js';
-  import { route, go, hrefOf, focusPane, settingsDirty, TABS } from './lib/ui.js';
+  import { formatSpeed, plural } from './lib/format.js';
+  import { route, go, hrefOf, focusPane } from './lib/ui.js';
   import { post } from './lib/api.js';
   import { act } from './lib/act.js';
-  import { isTyping, hasCommand, keyLabel } from './lib/keys.js';
+  import { isTyping, hasCommand } from './lib/keys.js';
   import { menu } from './lib/menu.js';
   import ContextMenu from './lib/ContextMenu.svelte';
   import Search from './tabs/Search.svelte';
@@ -35,20 +35,12 @@
     ['statistics', 'Statistics', 'Stats', Statistics, {}],
     ['settings', 'Preferences', 'Prefs', Settings, {}],
   ];
-  const DIGITS = '1234567890';
-
-  let showLog = false;
   let lastTab = null;
   let queryWanted = false;
 
   $: live = $link.state === 'live';
   $: unreadChats = [...$unread.keys()].filter((key) => key.startsWith('chat:'));
   $: mentions = [...$unread].filter(([key, value]) => key.startsWith('room:') && value.mention);
-  $: marks = {
-    chat: unreadChats.length ? '●' : '',
-    rooms: mentions.length ? '●' : [...$unread.keys()].some((k) => k.startsWith('room:')) ? '○' : '',
-    settings: $settingsDirty ? '•' : '',
-  };
   $: attention =
     unreadChats.length === 1
       ? `● ${unreadChats[0].slice(5)} · `
@@ -101,16 +93,9 @@
       if (document.activeElement === event.target) event.target.blur();
       return;
     }
-    if (event.repeat) return;
-    if (DIGITS.includes(event.key)) {
-      event.preventDefault();
-      go(TABS[DIGITS.indexOf(event.key)]);
-    } else if (event.key === '/') {
+    if (event.key === '/' && !event.repeat) {
       event.preventDefault();
       focusSearch();
-    } else if (event.key === '?') {
-      event.preventDefault();
-      go('settings', 'keyboard');
     }
   }
 
@@ -129,19 +114,16 @@
 
 <div class="app">
   <nav class="tabs" aria-label="Sections">
-    {#each tabs as [id, label, short], index}
+    {#each tabs as [id, label, short]}
       <a
         href={hrefOf($route, id)}
         class:active={$route.tab === id}
         class:last={id === 'settings'}
-        class:unread={id === 'chat' && marks.chat}
+        class:unread={(id === 'chat' && unreadChats.length) || (id === 'rooms' && mentions.length)}
         aria-current={$route.tab === id ? 'page' : null}
-        title={index < 10 ? `${label} (${DIGITS[index]})` : `${label} (${keyLabel('?')} for shortcuts)`}
         on:click={(e) => tabClick(e, id)}
       >
-        <span class="long">{label}</span><span class="short">{short}</span><span class="mark"
-          >{marks[id] ?? ''}</span
-        >
+        <span class="long">{label}</span><span class="short">{short}</span>
       </a>
     {/each}
   </nav>
@@ -210,30 +192,8 @@
           {$shownReport.action.label}
         </button>
       {/if}
-      <button class="quiet" title="Dismiss" aria-label="Dismiss message" on:click={dismissReport}>×</button>
     {/if}
-    <button
-      class:active={showLog}
-      aria-pressed={showLog}
-      title="Recent messages"
-      on:click={() => (showLog = !showLog)}
-    >
-      Log{$reports.length ? ` (${formatCount($reports.length)})` : ''}
-    </button>
   </div>
-
-  {#if showLog}
-    <div class="logpanel" role="log" aria-label="Recent messages">
-      {#each [...$reports].reverse() as entry (entry.id)}
-        <div class="entry {entry.kind}">
-          <span class="time">{formatTime(entry.at / 1000)}</span>
-          <span>{entry.text}</span>
-        </div>
-      {:else}
-        <div class="hint">Nothing has happened yet. Confirmations and errors are kept here.</div>
-      {/each}
-    </div>
-  {/if}
 
   <datalist id="known-users">
     {#each $knownUsers as user}<option value={user}></option>{/each}

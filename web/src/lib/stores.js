@@ -1,5 +1,5 @@
 export {
-	status, settings, previewTheme, report, reports, shownReport, dismissReport, loginFailure,
+	status, settings, previewTheme, report, shownReport, dismissReport, loginFailure,
 } from './state/session.js';
 export {
 	downloads, uploads, isCleared, speedTotals, downloadIndex, transferKey,

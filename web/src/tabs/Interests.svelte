@@ -4,7 +4,7 @@
   import { post } from '../lib/api.js';
   import { act } from '../lib/act.js';
   import { formatCount } from '../lib/format.js';
-  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import DataTable from '../lib/DataTable.svelte';
@@ -74,12 +74,12 @@
   const ownMenu = (kind) => (rows, point) =>
     openMenuAt(point, [
       {
-        label: 'Recommendations for Item', primary: true, hint: keyLabel('enter'),
+        label: 'Recommendations for Item', primary: true,
         action: () => recommendItem(rows[0]),
       },
       { label: 'Search for Item', action: () => openSearch(rows[0]) },
       { sep: true },
-      { label: 'Remove', hint: keyLabel('delete'), action: () => rows.forEach((t) => remove(kind, t)) },
+      { label: 'Remove', action: () => rows.forEach((t) => remove(kind, t)) },
     ]);
 
   function recommendationMenu(rows, point) {
@@ -88,7 +88,7 @@
     const isHated = $interests.hated.includes(thing);
     openMenuAt(point, [
       {
-        label: 'Recommendations for Item', primary: true, hint: keyLabel('enter'),
+        label: 'Recommendations for Item', primary: true,
         action: () => recommendItem(thing),
       },
       { label: 'Search for Item', action: () => openSearch(thing) },
@@ -131,9 +131,10 @@
       rows={$interests.liked}
       key={(thing) => thing}
       columns={thingColumn('Like')}
+      headless
       typeahead={(thing) => thing}
       copyText={(thing) => thing}
-      empty="Nothing yet. Likes drive your recommendations."
+      empty="Nothing yet."
       onactivate={(rows) => recommendItem(rows[0])}
       onmenu={ownMenu('liked')}
       ondelete={(rows) => rows.forEach((thing) => remove('liked', thing))}
@@ -155,6 +156,7 @@
       rows={$interests.hated}
       key={(thing) => thing}
       columns={thingColumn('Dislike')}
+      headless
       typeahead={(thing) => thing}
       copyText={(thing) => thing}
       empty="Nothing yet."

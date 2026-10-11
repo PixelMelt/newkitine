@@ -5,7 +5,7 @@
   import { get, post } from '../lib/api.js';
   import { act } from '../lib/act.js';
   import { formatSpeed, formatCount, plural } from '../lib/format.js';
-  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu, addBuddy, removeBuddy, ban, unban, ignore, unignore } from '../lib/usermenu.js';
   import DataTable from '../lib/DataTable.svelte';
@@ -113,7 +113,7 @@
   const removal = (label, run, withUser) => (rows, point) =>
     openMenuAt(point, [
       ...(withUser ? [...userMenu(rows[0], { primary: true }), { sep: true }] : []),
-      { label, hint: keyLabel('delete'), action: () => run(rows) },
+      { label, action: () => run(rows) },
     ]);
 </script>
 
@@ -154,7 +154,7 @@
   primary
   typeahead={(b) => b.username}
   copyText={(b) => b.username}
-  empty="No buddies yet. Buddies can see your buddy-only shares and are never filtered."
+  empty="No buddies."
   onactivate={(rows) => openUserInfo(rows[0].username)}
   onmenu={buddyMenu}
   ondelete={(rows) => rows.forEach((b) => removeBuddy(b.username))}
@@ -180,6 +180,7 @@
       rows={banRows}
       key={(name) => name}
       columns={nameColumn('User')}
+      headless
       typeahead={(name) => name}
       copyText={(name) => name}
       empty="Nobody is banned."
@@ -207,6 +208,7 @@
       rows={ignoreRows}
       key={(name) => name}
       columns={nameColumn('User')}
+      headless
       typeahead={(name) => name}
       copyText={(name) => name}
       empty="Nobody is ignored."
@@ -235,8 +237,9 @@
       rows={ipBans}
       key={(pattern) => pattern}
       columns={nameColumn('Address or Pattern')}
+      headless
       copyText={(pattern) => pattern}
-      empty="No addresses are banned. Connections from banned addresses are dropped at once."
+      empty="No addresses are banned."
       onmenu={removal('Remove IP Ban', removeIpBans, false)}
       ondelete={removeIpBans}
     />

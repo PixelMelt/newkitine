@@ -1,14 +1,5 @@
 const mac = /Mac|iPhone|iPad/.test(navigator.platform);
 
-const NAMES = mac
-	? { mod: '⌘', shift: '⇧', enter: '↩', delete: '⌫', esc: '⎋', up: '↑', down: '↓', left: '←', right: '→' }
-	: { mod: 'Ctrl', shift: 'Shift', enter: 'Enter', delete: 'Del', esc: 'Esc', up: '↑', down: '↓', left: '←', right: '→' };
-
-export function keyLabel(combo) {
-	const parts = combo.split('+').map((part) => NAMES[part] ?? part.toUpperCase());
-	return parts.join(mac ? '' : '+');
-}
-
 export const hasCommand = (event) => (mac ? event.metaKey : event.ctrlKey);
 
 export function isTyping(event) {

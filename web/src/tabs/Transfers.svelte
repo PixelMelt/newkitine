@@ -1,15 +1,14 @@
 <script>
   import { tick } from 'svelte';
   import { downloads, uploads, isCleared, report } from '../lib/stores.js';
-  import { openBrowse, openUserInfo, noAutofill } from '../lib/ui.js';
+  import { openBrowse, openUserInfo } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { act, copy } from '../lib/act.js';
   import {
     formatSize, formatSpeed, formatDuration, formatQuality, formatCount,
-    effectiveBitrate, baseName, folderName, plural, fold,
+    effectiveBitrate, baseName, folderName, plural,
   } from '../lib/format.js';
   import { describe, toneRank } from '../lib/transferStatus.js';
-  import { keyLabel } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import DataTable from '../lib/DataTable.svelte';
@@ -66,17 +65,12 @@
       : []),
   ];
 
-  let filter = '';
   let selection = new Set();
 
   const running = (t) => (t.status === 'transferring' ? 0 : 1);
 
   $: all = Object.values($store).sort((a, b) => running(a) - running(b) || b.id - a.id);
-  $: wanted = fold(filter.trim());
-  $: list = wanted
-    ? all.filter((t) => fold(`${t.username} ${t.virtual_path} ${status(t).text}`).includes(wanted))
-    : all;
-  $: selected = list.filter((t) => selection.has(t.id));
+  $: selected = all.filter((t) => selection.has(t.id));
   $: activeCount = all.filter((t) => !isCleared(t.status)).length;
   $: finishedCount = all.filter((t) => t.status === 'finished').length;
   $: inactiveCount = all.filter((t) => t.status === 'aborted' || t.status === 'failed').length;
@@ -139,33 +133,29 @@
     const retries = retryable(rows).length;
     const many = rows.length > 1;
     const sameUser = rows.every((t) => t.username === rows[0].username);
-    const items = [
-      {
-        label: isDownload ? 'Browse Folder' : 'View User Profile',
-        primary: true, hint: keyLabel('enter'), disabled: many, action: () => activate(rows),
-      },
-      { sep: true },
-    ];
+    const items = [];
     if (isDownload) {
+      items.push({ label: 'Browse Folder', primary: true, disabled: many, action: () => activate(rows) });
+      items.push({ sep: true });
       items.push({
         label: many ? `Retry ${retries}` : 'Retry', disabled: !retries, action: () => retry(rows),
       });
     }
     items.push(
       {
-        label: many ? `Stop ${aborts}` : 'Stop', disabled: !aborts, hint: isDownload ? keyLabel('delete') : '',
+        label: many ? `Stop ${aborts}` : 'Stop', disabled: !aborts,
         action: () => abort(rows),
       },
       ...(isDownload
         ? []
         : [{
-            label: `Stop All ${uploadsTo(rows[0].username).length} Uploads to ${rows[0].username}`,
+            label: `Stop All Uploads to ${rows[0].username}`,
             disabled: !sameUser || !uploadsTo(rows[0].username).length,
             action: () => abort(uploadsTo(rows[0].username)),
           }]),
       { sep: true },
       {
-        label: many ? `Copy ${rows.length} File Paths` : 'Copy File Path', hint: keyLabel('mod+c'),
+        label: many ? `Copy ${rows.length} File Paths` : 'Copy File Path',
         action: () =>
           copy(rows.map((t) => t.virtual_path).join('\n'), many ? 'file paths' : 'file path'),
       },
@@ -221,29 +211,18 @@
       Cancel
     </button>
   {:else}
-    <button on:click={() => clear(['finished'], finishedCount, 'finished')}>
-      Clear Finished ({formatCount(finishedCount)})
-    </button>
+    <button on:click={() => clear(['finished'], finishedCount, 'finished')}>Clear Finished</button>
     <button on:click={() => clear(['aborted', 'failed'], inactiveCount, 'failed or stopped')}>
-      Clear Failed and Stopped ({formatCount(inactiveCount)})
+      Clear Inactive
     </button>
     <button on:click={askClearAll}>{activeCount ? 'Clear All…' : 'Clear All'}</button>
   {/if}
-  <input {...noAutofill}
-    type="search"
-    placeholder="Filter {noun}s…"
-    aria-label="Filter {noun}s"
-    bind:value={filter}
-    on:keydown={(e) => e.key === 'Escape' && (filter = '')}
-  />
   <span class="count">
     {#if selected.length > 1}
-      {formatCount(selected.length)} of {plural(list.length, noun)} selected ·
+      {formatCount(selected.length)} of {plural(all.length, noun)} selected ·
       {formatSize(selected.reduce((sum, t) => sum + t.size, 0))}
-    {:else if list.length !== all.length}
-      {formatCount(list.length)} of {plural(all.length, noun)}
     {:else}
-      {plural(all.length, noun)}{#if activeCount}, {formatCount(activeCount)} active{/if}
+      {plural(all.length, noun)}
     {/if}
   </span>
 </div>
@@ -251,12 +230,12 @@
 <DataTable
   id={noun + 's'}
   label={isDownload ? 'Downloads' : 'Uploads'}
-  rows={list}
+  rows={all}
   key={(t) => t.id}
   {columns}
   primary
   bind:selection
-  empty={all.length ? `No ${noun}s match “${filter.trim()}”.` : `No ${noun}s.`}
+  empty={`No ${noun}s.`}
   copyText={(t) => t.virtual_path}
   onactivate={activate}
   onmenu={rowMenu}

@@ -1,6 +1,6 @@
 <script>
   import {
-    chatPartners, conversations, drafts, unread, chatKey, closeChat, openChat, status, report,
+    chatPartners, conversations, unread, chatKey, closeChat, openChat, status, report,
   } from '../lib/stores.js';
   import { route, go, forget, openPrivateChat, noAutofill } from '../lib/ui.js';
   import { del } from '../lib/api.js';
@@ -23,7 +23,6 @@
     id: partner,
     label: partner,
     unread: $unread.has(chatKey(partner)),
-    draft: Boolean($drafts[chatKey(partner)]),
   }));
 
   function openNew() {
@@ -94,5 +93,5 @@
   />
   <Composer key={chatKey(selected)} placeholder="Message {selected}…" onsent={() => log.toBottom()} />
 {:else}
-  <p class="hint">No open chats. Type a username above, or choose Send Message from any user's menu.</p>
+  <p class="hint">No open chats.</p>
 {/if}

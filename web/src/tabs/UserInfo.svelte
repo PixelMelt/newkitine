@@ -1,12 +1,12 @@
 <script>
   import { tick } from 'svelte';
-  import { userInfos, interests, openSearch, status, link } from '../lib/stores.js';
+  import { userInfos, interests, openSearch, link } from '../lib/stores.js';
   import { persisted } from '../lib/persisted.js';
   import { route, go, forget, openUserInfo, noAutofill } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { act } from '../lib/act.js';
   import { formatSpeed, formatCount, formatTime, segments } from '../lib/format.js';
-  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import DataTable from '../lib/DataTable.svelte';
@@ -65,7 +65,7 @@
     openMenuAt(point, [
       ...userMenu(rows[0], { current: 'profile' }),
       { sep: true },
-      { label: 'Close Profile', hint: keyLabel('delete'), action: () => close(rows) },
+      { label: 'Close Profile', action: () => close(rows) },
     ]);
   }
 
@@ -78,7 +78,7 @@
         failed: `"${thing}" not changed`,
       });
     openMenuAt(point, [
-      { label: 'Search for Item', primary: true, hint: keyLabel('enter'), action: () => openSearch(thing) },
+      { label: 'Search for Item', primary: true, action: () => openSearch(thing) },
       {
         label: 'Recommendations for Item',
         action: () =>
@@ -113,6 +113,7 @@
       rows={users}
       key={(u) => u}
       columns={userColumn}
+      headless
       primary
       bind:selection
       typeahead={(u) => u}
@@ -206,10 +207,6 @@
         {requests[wanted].failed ??
           `Asked the server about ${wanted} at ${formatTime(requests[wanted].at)}…`}
       </p>
-    {:else if $status.logged_in}
-      <p class="hint">Enter a username, or choose View User Profile from any user's menu.</p>
-    {:else}
-      <p class="hint">Not connected to Soulseek. Profiles can be requested after login.</p>
     {/if}
   </div>
 </div>

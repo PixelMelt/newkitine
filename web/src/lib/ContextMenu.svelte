@@ -31,6 +31,7 @@
     clearTimeout(switchTimer);
   }
 
+  const checks = (list) => list.some((item) => item.checked !== undefined);
   const selectable = (item) => !item.sep && !item.title && !item.disabled;
 
   function placeRoot(node, point) {
@@ -244,9 +245,9 @@
             on:pointermove={(e) => hoverRoot(e, index)}
             on:click={() => clickRoot(index)}
           >
-            <span class="check">{item.checked ? '✓' : ''}</span>
+            {#if checks(items)}<span class="check">{item.checked ? '✓' : ''}</span>{/if}
             <span class="label">{item.label}</span>
-            <span class="hint">{item.submenu ? '▸' : (item.hint ?? '')}</span>
+            {#if item.submenu}<span class="arrow">▸</span>{/if}
           </div>
         {/if}
       {/each}
@@ -272,9 +273,8 @@
                 on:pointermove={() => hoverSub(index)}
                 on:click={() => run(item)}
               >
-                <span class="check">{item.checked ? '✓' : ''}</span>
+                {#if checks(subItems)}<span class="check">{item.checked ? '✓' : ''}</span>{/if}
                 <span class="label">{item.label}</span>
-                <span class="hint">{item.hint ?? ''}</span>
               </div>
             {/if}
           {/each}
