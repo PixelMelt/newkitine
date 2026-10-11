@@ -1,132 +1,98 @@
 <script>
-  import { privateChats, chatPartners, ensureChatHistory, status } from '../lib/stores.js';
-  import { activeTab, chatTarget, noAutofill } from '../lib/ui.js';
-  import { post, del } from '../lib/api.js';
-  import { formatTime } from '../lib/format.js';
-  import { autoscroll } from '../lib/autoscroll.js';
+  import {
+    chatPartners, conversations, drafts, unread, chatKey, closeChat, openChat, status, report,
+  } from '../lib/stores.js';
+  import { route, go, forget, openPrivateChat, noAutofill } from '../lib/ui.js';
+  import { del } from '../lib/api.js';
+  import { act } from '../lib/act.js';
+  import { plural } from '../lib/format.js';
+  import { onEnter } from '../lib/keys.js';
   import { openMenu } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import Subtabs from '../lib/Subtabs.svelte';
+  import MessageLog from '../lib/MessageLog.svelte';
+  import Composer from '../lib/Composer.svelte';
 
-  let selected = null;
   let newUser = '';
-  let draft = '';
-  let unread = Object.create(null);
-  let counts = Object.create(null);
+  let strip;
+  let log;
 
-  $: messages = selected ? ($privateChats.get(selected) ?? []) : [];
-  $: if (!$chatPartners.includes(selected) && $chatPartners.length) selected = $chatPartners[0];
-  $: if (selected) ensureChatHistory(selected);
-
-  $: {
-    for (const [user, msgs] of $privateChats) {
-      if (counts[user] !== undefined && msgs.length > counts[user]
-          && !(user === selected && $activeTab === 'chat')) {
-        unread[user] = true;
-      }
-      counts[user] = msgs.length;
-    }
-  }
-  $: if ($activeTab === 'chat' && selected && unread[selected]) {
-    delete unread[selected];
-    unread = unread;
-  }
-
-  $: if ($chatTarget) {
-    open($chatTarget);
-    chatTarget.set(null);
-  }
-
-  function open(username) {
-    selected = username;
-    delete unread[username];
-    unread = unread;
-    if (!$chatPartners.includes(username)) {
-      post(`/chats/${encodeURIComponent(username)}/open`);
-      chatPartners.update((list) => [username, ...list]);
-    }
-  }
+  $: wanted = $route.items.chat;
+  $: selected = $chatPartners.includes(wanted) ? wanted : ($chatPartners[0] ?? null);
+  $: items = $chatPartners.map((partner) => ({
+    id: partner,
+    label: partner,
+    unread: $unread.has(chatKey(partner)),
+    draft: Boolean($drafts[chatKey(partner)]),
+  }));
 
   function openNew() {
-    if (!newUser.trim()) return;
-    open(newUser.trim());
+    const username = newUser.trim();
+    if (!username) return;
+    openPrivateChat(username);
     newUser = '';
   }
 
   function close(username) {
-    del(`/chats/${encodeURIComponent(username)}`);
-    chatPartners.update((list) => list.filter((user) => user !== username));
-    if (selected === username) selected = null;
+    const next = strip.neighbour(username);
+    if (selected === username) {
+      if (next) go('chat', next);
+      else forget('chat', username);
+    }
+    closeChat(username);
   }
 
   function closeAll() {
-    if (!confirm('Close all chat tabs?')) return;
-    for (const partner of $chatPartners) close(partner);
+    const partners = [...$chatPartners];
+    chatPartners.set([]);
+    act(() => Promise.all(partners.map((user) => del(`/chats/${encodeURIComponent(user)}`))), {
+      failed: 'Chats not closed',
+      done: `Closed ${plural(partners.length, 'chat')}`,
+      action: { label: 'Undo', run: () => partners.forEach(openChat) },
+    });
   }
 
   function tabMenu(event, partner) {
     openMenu(event, [
-      ...userMenu(partner, { skip: ['privatechat'] }),
+      ...userMenu(partner, { current: 'chat' }),
       { sep: true },
-      { label: 'Close All Tabs…', action: closeAll },
-      { label: 'Close Tab', action: () => close(partner) },
+      { label: 'Close All Chats', action: closeAll },
+      { sep: true },
+      { label: 'Close Chat', action: () => close(partner) },
     ]);
-  }
-
-  function send() {
-    if (!draft.trim() || !selected) return;
-    post(`/chats/${encodeURIComponent(selected)}`, { message: draft });
-    draft = '';
   }
 </script>
 
 <div class="toolbar">
   <input {...noAutofill}
+    list="known-users"
     placeholder="Start chat with…"
+    aria-label="Start chat with user"
     bind:value={newUser}
-    on:keydown={(e) => e.key === 'Enter' && openNew()}
+    on:keydown={onEnter(openNew)}
   />
-  <button on:click={openNew}>Open</button>
+  <button on:click={openNew}>Open Chat</button>
 </div>
 
-{#if $chatPartners.length}
-  <div class="subtabs">
-    {#each $chatPartners as partner}
-      <span class="subtab">
-        <button
-          class:active={selected === partner}
-          class:unread={unread[partner]}
-          on:click={() => open(partner)}
-          on:contextmenu={(e) => tabMenu(e, partner)}
-        >
-          {partner}
-        </button>
-        <button on:click={() => close(partner)}>Close</button>
-      </span>
-    {/each}
-  </div>
-{/if}
+<Subtabs
+  tab="chat"
+  {items}
+  active={selected}
+  bind:this={strip}
+  onselect={(user) => go('chat', user)}
+  onclose={close}
+  onmenu={tabMenu}
+/>
 
 {#if selected}
-  <div class="messages" tabindex="0" use:autoscroll={messages}>
-    {#each messages as message}
-      <div class="message">
-        <span class="time">{formatTime(message.timestamp)}</span>
-        <span class="sender" class:self={message.sender === $status.username}>
-          {message.sender}:
-        </span>
-        <span>{message.message}</span>
-      </div>
-    {/each}
-  </div>
-  <div class="toolbar">
-    <input {...noAutofill}
-      style="flex: 1;"
-      placeholder="Message {selected}…"
-      bind:value={draft}
-      on:keydown={(e) => e.key === 'Enter' && send()}
-    />
-    <button on:click={send}>Send</button>
-  </div>
+  <MessageLog
+    key={chatKey(selected)}
+    messages={$conversations.get(chatKey(selected)) ?? []}
+    self={$status.username}
+    active={$route.tab === 'chat'}
+    bind:this={log}
+  />
+  <Composer key={chatKey(selected)} placeholder="Message {selected}…" onsent={() => log.toBottom()} />
 {:else}
-  <span>Open a chat to start messaging.</span>
+  <p class="hint">No open chats. Type a username above, or choose Send Message from any user's menu.</p>
 {/if}

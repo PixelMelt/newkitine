@@ -1,13 +1,16 @@
-export function sortRows(rows, sort, accessors = {}) {
-	if (!sort.key) return rows;
-	const value = accessors[sort.key] ?? ((row) => row[sort.key]);
-	return [...rows].sort((a, b) => compare(value(a), value(b)) * sort.dir);
-}
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
 function compare(a, b) {
 	if (typeof a === 'number' && typeof b === 'number') return a - b;
-	return String(a ?? '').localeCompare(String(b ?? ''), undefined, {
-		numeric: true,
-		sensitivity: 'base',
-	});
+	return collator.compare(String(a), String(b));
+}
+
+export function sortRows(rows, sort, columns) {
+	if (!sort) return rows;
+	const column = columns.find((c) => c.key === sort.key);
+	const value = column.sortValue ?? column.text;
+	return rows
+		.map((row, index) => ({ row, index, value: value(row) }))
+		.sort((a, b) => compare(a.value, b.value) * sort.dir || a.index - b.index)
+		.map((entry) => entry.row);
 }

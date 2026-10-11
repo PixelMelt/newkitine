@@ -49,3 +49,5 @@ To add one: next number, one decision per file, sections Context / Decision / Co
 | [0039](0039-the-share-walk-follows-symlinks-and-skips-colliding-paths.md) | The share walk follows symlinks and skips colliding paths | Accepted | Matches: Nicotine+ follows symlinks and skips already-shared decoded paths |
 | [0040](0040-the-client-actor-owns-outgoing-search-state.md) | The client actor owns outgoing search state | Accepted | Matches: Nicotine+ keeps per-token search requests, one token per wish, and shows wish results on the first match |
 | [0041](0041-download-recovery-resumes-recoverable-failures-only.md) | Download recovery resumes recoverable failures only | Accepted | Diverges: Nicotine+ re-enqueues every failed download when its uploader comes online |
+| [0042](0042-the-url-owns-location.md) | The URL owns location in the web UI | Accepted | No counterpart |
+| [0043](0043-every-mutating-call-reports-its-outcome.md) | Every mutating call in the web UI reports its outcome through one wrapper | Accepted | No counterpart |

@@ -1,15 +1,18 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
-    connectWebSocket, status, notices, speedTotals,
+    connectWebSocket, link, status, loginFailure, reports, shownReport, dismissReport,
+    speedTotals, unread, knownUsers,
   } from './lib/stores.js';
-  import { formatSize } from './lib/format.js';
-  import { activeTab } from './lib/ui.js';
+  import { formatSpeed, formatCount, formatTime, plural } from './lib/format.js';
+  import { route, go, hrefOf, focusPane, settingsDirty, TABS } from './lib/ui.js';
   import { post } from './lib/api.js';
+  import { act } from './lib/act.js';
+  import { isTyping, hasCommand, keyLabel } from './lib/keys.js';
+  import { menu } from './lib/menu.js';
   import ContextMenu from './lib/ContextMenu.svelte';
   import Search from './tabs/Search.svelte';
-  import Downloads from './tabs/Downloads.svelte';
-  import Uploads from './tabs/Uploads.svelte';
+  import Transfers from './tabs/Transfers.svelte';
   import Browse from './tabs/Browse.svelte';
   import UserInfo from './tabs/UserInfo.svelte';
   import PrivateChat from './tabs/PrivateChat.svelte';
@@ -20,74 +23,221 @@
   import Settings from './tabs/Settings.svelte';
 
   const tabs = [
-    ['search', 'Search Files', Search],
-    ['downloads', 'Downloads', Downloads],
-    ['uploads', 'Uploads', Uploads],
-    ['browse', 'Browse Shares', Browse],
-    ['userinfo', 'User Info', UserInfo],
-    ['chat', 'Private Chat', PrivateChat],
-    ['rooms', 'Chat Rooms', ChatRooms],
-    ['interests', 'Interests', Interests],
-    ['buddies', 'Buddies', Buddies],
-    ['statistics', 'Statistics', Statistics],
-    ['settings', 'Preferences', Settings],
+    ['search', 'Search Files', 'Search', Search, {}],
+    ['downloads', 'Downloads', 'Downloads', Transfers, { direction: 'download' }],
+    ['uploads', 'Uploads', 'Uploads', Transfers, { direction: 'upload' }],
+    ['browse', 'Browse Shares', 'Browse', Browse, {}],
+    ['user', 'User Profiles', 'Profiles', UserInfo, {}],
+    ['chat', 'Private Chat', 'Chat', PrivateChat, {}],
+    ['rooms', 'Chat Rooms', 'Rooms', ChatRooms, {}],
+    ['interests', 'Interests', 'Interests', Interests, {}],
+    ['buddies', 'Buddies', 'Buddies', Buddies, {}],
+    ['statistics', 'Statistics', 'Stats', Statistics, {}],
+    ['settings', 'Preferences', 'Prefs', Settings, {}],
   ];
+  const DIGITS = '1234567890';
 
-  onMount(() => {
-    connectWebSocket();
-  });
+  let showLog = false;
+  let lastTab = null;
+  let queryWanted = false;
+
+  $: live = $link.state === 'live';
+  $: unreadChats = [...$unread.keys()].filter((key) => key.startsWith('chat:'));
+  $: mentions = [...$unread].filter(([key, value]) => key.startsWith('room:') && value.mention);
+  $: marks = {
+    chat: unreadChats.length ? '●' : '',
+    rooms: mentions.length ? '●' : [...$unread.keys()].some((k) => k.startsWith('room:')) ? '○' : '',
+    settings: $settingsDirty ? '•' : '',
+  };
+  $: attention =
+    unreadChats.length === 1
+      ? `● ${unreadChats[0].slice(5)} · `
+      : unreadChats.length
+        ? `● ${unreadChats.length} chats · `
+        : mentions.length
+          ? `● ${mentions[0][0].slice(5)} · `
+          : '';
+  $: document.title = `${attention}Newkitine${live ? '' : ' (offline)'}`;
+  $: arrived($route);
+
+  async function arrived(current) {
+    if (current.tab === lastTab) return;
+    lastTab = current.tab;
+    await tick();
+    focusPane(current.tab);
+    if (queryWanted) focusQuery();
+  }
+
+  function focusQuery() {
+    queryWanted = false;
+    const query = document.querySelector('[data-search-query]');
+    query.focus();
+    query.select();
+  }
+
+  function focusSearch() {
+    if ($route.tab === 'search') return focusQuery();
+    queryWanted = true;
+    go('search');
+  }
+
+  function keydown(event) {
+    if ($menu) return;
+    if (hasCommand(event) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      focusSearch();
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (isTyping(event)) {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      if (event.target.type === 'search' && event.target.value !== '') {
+        event.target.value = '';
+        event.target.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+      focusPane($route.tab);
+      if (document.activeElement === event.target) event.target.blur();
+      return;
+    }
+    if (event.repeat) return;
+    if (DIGITS.includes(event.key)) {
+      event.preventDefault();
+      go(TABS[DIGITS.indexOf(event.key)]);
+    } else if (event.key === '/') {
+      event.preventDefault();
+      focusSearch();
+    } else if (event.key === '?') {
+      event.preventDefault();
+      go('settings', 'keyboard');
+    }
+  }
+
+  function tabClick(event, id) {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.preventDefault();
+    go(id);
+  }
+
+  const connect = () => act(() => post('/connect'), { failed: 'Not connected to Soulseek' });
+
+  onMount(connectWebSocket);
 </script>
 
-<div style="display: flex; flex-direction: column; height: 100vh;">
-  <div class="tabs">
-    {#each tabs as [id, label]}
-      <button
-        class:active={$activeTab === id}
-        style:margin-left={id === 'settings' ? 'auto' : null}
-        on:click={() => activeTab.set(id)}
-      >
-        {label}
-      </button>
-    {/each}
-  </div>
+<svelte:window on:keydown={keydown} />
 
-  {#each tabs as [id, , component]}
-    <div class="pane" style:display={$activeTab === id ? 'flex' : 'none'}>
-      <svelte:component this={component} />
+<div class="app">
+  <nav class="tabs" aria-label="Sections">
+    {#each tabs as [id, label, short], index}
+      <a
+        href={hrefOf($route, id)}
+        class:active={$route.tab === id}
+        class:last={id === 'settings'}
+        class:unread={id === 'chat' && marks.chat}
+        aria-current={$route.tab === id ? 'page' : null}
+        title={index < 10 ? `${label} (${DIGITS[index]})` : `${label} (${keyLabel('?')} for shortcuts)`}
+        on:click={(e) => tabClick(e, id)}
+      >
+        <span class="long">{label}</span><span class="short">{short}</span><span class="mark"
+          >{marks[id] ?? ''}</span
+        >
+      </a>
+    {/each}
+  </nav>
+
+  {#each tabs as [id, , , component, props]}
+    <div class="pane" class:stale={!live} data-tab={id} hidden={$route.tab !== id}>
+      <svelte:component this={component} {...props} />
     </div>
   {/each}
 
   <div class="statusbar">
-    <span>
-      {#if $status.logged_in}
-        Connected as {$status.username}
-      {:else if $status.connected}
-        Connecting…
-      {:else}
-        Disconnected
-        <button on:click={() => post('/connect')}>Connect</button>
-      {/if}
-    </span>
-    <span>Port: {$status.listen_port}</span>
-    {#if $status.scanning}
-      <span>
-        Scanning shares…
-        {#if $status.scan_progress}
-          {$status.scan_progress.toLocaleString()} files
-        {/if}
+    {#if $link.state === 'connecting'}
+      <span>Connecting to the Newkitine server…</span>
+    {:else if $link.state === 'lost'}
+      <span class="notice">
+        {$link.known ? 'Lost the Newkitine server' : "Can't reach the Newkitine server"}, retrying
+        every 3 seconds
       </span>
-    {:else if $status.share_scan_error}
-      <span class="notice">Share scan failed: {$status.share_scan_error}</span>
+      <button on:click={connectWebSocket}>Retry Now</button>
+    {:else if $link.state === 'broken'}
+      <span class="notice" title={$link.error}>This page no longer matches the server.</span>
+      <button on:click={() => location.reload()}>Reload</button>
+    {:else if $status.logged_in}
+      <span>Connected as {$status.username}</span>
+    {:else if $status.connected}
+      <span>Logging in to Soulseek…</span>
     {:else}
-      <span>Shares: {$status.shared_files} files / {$status.shared_folders} folders</span>
+      <span class:notice={$loginFailure}>
+        {$loginFailure ? `Soulseek login failed: ${$loginFailure}` : 'Not connected to Soulseek'}
+      </span>
+      <button on:click={connect}>Connect</button>
+      {#if $loginFailure}<button on:click={() => go('settings', 'network')}>Preferences</button>{/if}
     {/if}
-    <span>Connections: {$status.peer_connections}</span>
-    <span>↓ {formatSize($speedTotals.down)}/s</span>
-    <span>↑ {formatSize($speedTotals.up)}/s</span>
-    {#if $notices.length}
-      <span class="notice">{$notices[$notices.length - 1].text}</span>
+    {#if $link.known}
+      <span class="facts-line" class:dim={!live}>
+        <span>Port {$status.listen_port}</span>
+        {#if $status.scanning}
+          <span>
+            Scanning shares…
+            {#if $status.scan_progress}{plural($status.scan_progress, 'file')}{/if}
+          </span>
+        {:else if $status.share_scan_error}
+          <span class="notice" title={$status.share_scan_error}>Share scan failed</span>
+        {:else}
+          <span>
+            Sharing {plural($status.shared_files, 'file')} in {plural($status.shared_folders, 'folder')}
+          </span>
+        {/if}
+        <span class="conns">{plural($status.peer_connections, 'connection')}</span>
+        <span class="speed">↓ {live ? formatSpeed($speedTotals.down) : '–'}</span>
+        <span class="speed">↑ {live ? formatSpeed($speedTotals.up) : '–'}</span>
+      </span>
     {/if}
+    <span class="report {$shownReport ? $shownReport.kind : ''}" role="status" title={$shownReport?.text}>
+      {$shownReport ? $shownReport.text : ''}
+    </span>
+    {#if $shownReport}
+      {#if $shownReport.action}
+        <button
+          on:click={() => {
+            const { run } = $shownReport.action;
+            dismissReport();
+            run();
+          }}
+        >
+          {$shownReport.action.label}
+        </button>
+      {/if}
+      <button class="quiet" title="Dismiss" aria-label="Dismiss message" on:click={dismissReport}>×</button>
+    {/if}
+    <button
+      class:active={showLog}
+      aria-pressed={showLog}
+      title="Recent messages"
+      on:click={() => (showLog = !showLog)}
+    >
+      Log{$reports.length ? ` (${formatCount($reports.length)})` : ''}
+    </button>
   </div>
+
+  {#if showLog}
+    <div class="logpanel" role="log" aria-label="Recent messages">
+      {#each [...$reports].reverse() as entry (entry.id)}
+        <div class="entry {entry.kind}">
+          <span class="time">{formatTime(entry.at / 1000)}</span>
+          <span>{entry.text}</span>
+        </div>
+      {:else}
+        <div class="hint">Nothing has happened yet. Confirmations and errors are kept here.</div>
+      {/each}
+    </div>
+  {/if}
+
+  <datalist id="known-users">
+    {#each $knownUsers as user}<option value={user}></option>{/each}
+  </datalist>
 
   <ContextMenu />
 </div>

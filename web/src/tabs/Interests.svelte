@@ -1,174 +1,195 @@
 <script>
-  import { interests } from '../lib/stores.js';
-  import { activeTab, openSearch, openUserInfo, noAutofill } from '../lib/ui.js';
+  import { interests, status, openSearch } from '../lib/stores.js';
+  import { route, openUserInfo, noAutofill } from '../lib/ui.js';
   import { post } from '../lib/api.js';
-  import { openMenu } from '../lib/menu.js';
+  import { act } from '../lib/act.js';
+  import { formatCount } from '../lib/format.js';
+  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
-  import { sortRows } from '../lib/sort.js';
-  import Th from '../lib/Th.svelte';
+  import DataTable from '../lib/DataTable.svelte';
+
+  const thingColumn = (label) => [{ key: 'thing', label, grow: 1, min: 100, text: (thing) => thing }];
+  const recommendationColumns = [
+    { key: 'item', label: 'Item', grow: 1, min: 160, text: (r) => r[0] },
+    {
+      key: 'rating', label: 'Rating', width: 84, align: 'end', desc: true,
+      text: (r) => formatCount(r[1]), sortValue: (r) => r[1],
+    },
+  ];
+  const similarColumns = [
+    { key: 'username', label: 'User', grow: 1, min: 160, text: (u) => u.username },
+    {
+      key: 'rating', label: 'Rating', width: 84, align: 'end', desc: true,
+      text: (u) => (u.rating ? formatCount(u.rating) : ''), sortValue: (u) => u.rating,
+    },
+  ];
 
   let liked = '';
   let hated = '';
   let populated = false;
-  let recSort = { key: null, dir: 1 };
-  let similarSort = { key: null, dir: 1 };
 
-  $: if ($activeTab === 'interests' && !populated) {
+  $: if ($route.tab === 'interests' && $status.logged_in && !populated) {
     populated = true;
-    post('/interests/refresh');
+    refresh();
   }
-
-  $: recommendations = sortRows(
-    [...$interests.recommendations, ...$interests.unrecommendations].sort((a, b) => b[1] - a[1]),
-    recSort,
-    { item: (r) => r[0], rating: (r) => r[1] },
+  $: recommendations = [...$interests.recommendations, ...$interests.unrecommendations].sort(
+    (a, b) => b[1] - a[1],
   );
-  $: similarUsers = sortRows($interests.similar_users, similarSort, {
-    rating: (u) => u.rating ?? 0,
-  });
   $: recommendationsTitle = $interests.recommendations_global
     ? 'Popular Interests'
     : $interests.recommendations_for
       ? `Recommendations for ${$interests.recommendations_for}`
       : 'Recommendations';
   $: similarTitle = $interests.similar_users_for
-    ? `Users who like ${$interests.similar_users_for}`
+    ? `Users Who Like ${$interests.similar_users_for}`
     : 'Similar Users';
 
-  function add(kind, thing) {
-    if (!thing.trim()) return;
-    post('/interests/add', { kind, thing: thing.trim() });
-    liked = '';
-    hated = '';
+  const refresh = () =>
+    act(() => post('/interests/refresh'), { failed: 'Recommendations not refreshed' });
+
+  const add = (kind, thing) =>
+    act(() => post('/interests/add', { kind, thing }), { failed: `"${thing}" not added` });
+
+  const remove = (kind, thing) =>
+    act(() => post('/interests/remove', { kind, thing }), {
+      failed: `"${thing}" not removed`,
+      done: `Removed "${thing}"`,
+      action: { label: 'Undo', run: () => add(kind, thing) },
+    });
+
+  const recommendItem = (thing) =>
+    act(() => post('/interests/item', { thing }), {
+      failed: `Recommendations for "${thing}" not requested`,
+    });
+
+  async function addLiked() {
+    if (liked.trim() && (await add('liked', liked.trim()))) liked = '';
   }
 
-  function remove(kind, thing) {
-    post('/interests/remove', { kind, thing });
+  async function addHated() {
+    if (hated.trim() && (await add('hated', hated.trim()))) hated = '';
   }
 
-  function recommendItem(thing) {
-    post('/interests/item', { thing });
-  }
-
-  function interestMenu(event, kind, thing) {
-    openMenu(event, [
-      { label: 'Recommendations for Item', action: () => recommendItem(thing) },
-      { label: 'Search for Item', action: () => openSearch(thing) },
+  const ownMenu = (kind) => (rows, point) =>
+    openMenuAt(point, [
+      {
+        label: 'Recommendations for Item', primary: true, hint: keyLabel('enter'),
+        action: () => recommendItem(rows[0]),
+      },
+      { label: 'Search for Item', action: () => openSearch(rows[0]) },
       { sep: true },
-      { label: 'Remove', action: () => remove(kind, thing) },
+      { label: 'Remove', hint: keyLabel('delete'), action: () => rows.forEach((t) => remove(kind, t)) },
     ]);
-  }
 
-  function recommendationMenu(event, thing) {
+  function recommendationMenu(rows, point) {
+    const thing = rows[0][0];
     const isLiked = $interests.liked.includes(thing);
     const isHated = $interests.hated.includes(thing);
-    openMenu(event, [
+    openMenuAt(point, [
       {
-        label: 'I Like This',
-        checked: isLiked,
+        label: 'Recommendations for Item', primary: true, hint: keyLabel('enter'),
+        action: () => recommendItem(thing),
+      },
+      { label: 'Search for Item', action: () => openSearch(thing) },
+      { sep: true },
+      {
+        label: 'I Like This', checked: isLiked,
         action: () => (isLiked ? remove('liked', thing) : add('liked', thing)),
       },
       {
-        label: 'I Dislike This',
-        checked: isHated,
+        label: 'I Dislike This', checked: isHated,
         action: () => (isHated ? remove('hated', thing) : add('hated', thing)),
       },
-      { sep: true },
-      { label: 'Recommendations for Item', action: () => recommendItem(thing) },
-      { label: 'Search for Item', action: () => openSearch(thing) },
     ]);
   }
 </script>
 
 <div class="toolbar">
-  <button on:click={() => post('/interests/refresh')}>Refresh Recommendations</button>
+  <button on:click={refresh}>Refresh Recommendations</button>
+  {#if !$status.logged_in}
+    <span class="hint">Not connected to Soulseek. Recommendations load after login.</span>
+  {/if}
 </div>
 
 <div class="split">
-  <div class="side">
-    <h3>Personal Interests</h3>
+  <div class="side wide">
+    <h3>Things I Like</h3>
     <div class="toolbar">
       <input {...noAutofill}
-        style="min-width: 0; flex: 1;"
+        class="fill"
         placeholder="Add something you like…"
+        aria-label="Add something you like"
         bind:value={liked}
-        on:keydown={(e) => e.key === 'Enter' && add('liked', liked)}
+        on:keydown={onEnter(addLiked)}
       />
-      <button on:click={() => add('liked', liked)}>Add</button>
+      <button on:click={addLiked}>Add</button>
     </div>
-    <div class="list">
-      {#each $interests.liked as thing}
-        <div class="row" on:contextmenu={(e) => interestMenu(e, 'liked', thing)}>
-          {thing}
-          <button on:click={() => remove('liked', thing)}>Remove</button>
-        </div>
-      {/each}
-    </div>
-    <h3>Personal Dislikes</h3>
+    <DataTable
+      id="liked"
+      label="Things I like"
+      rows={$interests.liked}
+      key={(thing) => thing}
+      columns={thingColumn('Like')}
+      typeahead={(thing) => thing}
+      copyText={(thing) => thing}
+      empty="Nothing yet. Likes drive your recommendations."
+      onactivate={(rows) => recommendItem(rows[0])}
+      onmenu={ownMenu('liked')}
+      ondelete={(rows) => rows.forEach((thing) => remove('liked', thing))}
+    />
+    <h3>Things I Dislike</h3>
     <div class="toolbar">
       <input {...noAutofill}
-        style="min-width: 0; flex: 1;"
+        class="fill"
         placeholder="Add something you dislike…"
+        aria-label="Add something you dislike"
         bind:value={hated}
-        on:keydown={(e) => e.key === 'Enter' && add('hated', hated)}
+        on:keydown={onEnter(addHated)}
       />
-      <button on:click={() => add('hated', hated)}>Add</button>
+      <button on:click={addHated}>Add</button>
     </div>
-    <div class="list">
-      {#each $interests.hated as thing}
-        <div class="row" on:contextmenu={(e) => interestMenu(e, 'hated', thing)}>
-          {thing}
-          <button on:click={() => remove('hated', thing)}>Remove</button>
-        </div>
-      {/each}
-    </div>
+    <DataTable
+      id="hated"
+      label="Things I dislike"
+      rows={$interests.hated}
+      key={(thing) => thing}
+      columns={thingColumn('Dislike')}
+      typeahead={(thing) => thing}
+      copyText={(thing) => thing}
+      empty="Nothing yet."
+      onactivate={(rows) => recommendItem(rows[0])}
+      onmenu={ownMenu('hated')}
+      ondelete={(rows) => rows.forEach((thing) => remove('hated', thing))}
+    />
   </div>
   <div class="main">
     <h3>{recommendationsTitle}</h3>
-    <div class="scroll" tabindex="0">
-      <table>
-        <thead>
-          <tr>
-            <Th bind:sort={recSort} key="item" grow>Item</Th>
-            <Th bind:sort={recSort} key="rating">Rating</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each recommendations as [thing, rating]}
-            <tr
-              class="clickable"
-              on:contextmenu={(e) => recommendationMenu(e, thing)}
-              on:dblclick={() => recommendItem(thing)}
-            >
-              <td class="grow">{thing}</td>
-              <td>{rating.toLocaleString()}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      id="recommendations"
+      label={recommendationsTitle}
+      rows={recommendations}
+      key={(r) => `${r[0]}\u0000${r[1]}`}
+      columns={recommendationColumns}
+      primary
+      typeahead={(r) => r[0]}
+      copyText={(r) => r[0]}
+      empty="No recommendations yet."
+      onactivate={(rows) => recommendItem(rows[0][0])}
+      onmenu={recommendationMenu}
+    />
     <h3>{similarTitle}</h3>
-    <div class="scroll" tabindex="0" style="max-height: 200px;">
-      <table>
-        <thead>
-          <tr>
-            <Th bind:sort={similarSort} key="username" grow>User</Th>
-            <Th bind:sort={similarSort} key="rating">Rating</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each similarUsers as user}
-            <tr
-              class="clickable"
-              on:contextmenu={(e) => openMenu(e, userMenu(user.username))}
-              on:dblclick={() => openUserInfo(user.username)}
-            >
-              <td class="grow">{user.username}</td>
-              <td>{user.rating || ''}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      id="similar-users"
+      label={similarTitle}
+      rows={$interests.similar_users}
+      key={(u) => u.username}
+      columns={similarColumns}
+      typeahead={(u) => u.username}
+      copyText={(u) => u.username}
+      empty="No similar users yet."
+      onactivate={(rows) => openUserInfo(rows[0].username)}
+      onmenu={(rows, point) => openMenuAt(point, userMenu(rows[0].username, { primary: true }))}
+    />
   </div>
 </div>

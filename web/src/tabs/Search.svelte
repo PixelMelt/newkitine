@@ -1,195 +1,329 @@
 <script>
-  import { searches, wishlist, rooms, notice } from '../lib/stores.js';
-  import { searchTarget, openBrowse, openUserInfo, noAutofill } from '../lib/ui.js';
+  import { tick } from 'svelte';
+  import {
+    searches, wishlist, rooms, downloadIndex, transferKey, startSearch, searchAgain, pendingTokens,
+    report,
+  } from '../lib/stores.js';
+  import { route, go, remember, forget, openBrowse, noAutofill } from '../lib/ui.js';
   import { post, del } from '../lib/api.js';
-  import { formatSize, formatAttributes, baseName, folderName } from '../lib/format.js';
-  import { emptyFilters, compileFilters } from '../lib/filters.js';
-  import { openMenu } from '../lib/menu.js';
+  import { act, copy } from '../lib/act.js';
+  import {
+    formatSize, formatSpeed, formatQuality, formatDuration, formatCount, effectiveBitrate, plural,
+  } from '../lib/format.js';
+  import { emptyFilters, compileFilters, activeFilterCount } from '../lib/filters.js';
+  import { shortState, isActive } from '../lib/transferStatus.js';
+  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
-  import { sortRows } from '../lib/sort.js';
-  import Th from '../lib/Th.svelte';
-
-  const MAX_ROWS = 1000;
-  const RESULT_ACCESSORS = {
-    username: (r) => r.response.username,
-    speed: (r) => r.response.upload_speed,
-    queue: (r) => r.response.queue_size,
-    folder: (r) => folderName(r.file.name),
-    filename: (r) => baseName(r.file.name),
-    size: (r) => r.file.size,
-    quality: (r) => formatAttributes(r.file.attributes),
-  };
+  import Subtabs from '../lib/Subtabs.svelte';
+  import DataTable from '../lib/DataTable.svelte';
 
   let query = '';
   let wishTerm = '';
-  let activeToken = null;
   let showWishlist = false;
   let mode = 'global';
   let modeRoom = '';
   let modeUser = '';
   let showFilters = false;
   let filters = emptyFilters();
-  let resultsEl = null;
-  let sort = { key: null, dir: 1 };
+  let queryInput;
+  let table;
+  let strip;
+  let selection = new Set();
+  let started = null;
 
-  async function focusResults() {
-    for (let i = 0; i < 20 && !resultsEl; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    resultsEl?.focus();
-  }
+  const stateOf = (index, row) => index.get(transferKey(row.response.username, row.file.name));
 
+  const makeColumns = (index) => [
+    {
+      key: 'state', label: '', width: 64,
+      text: (r) => (stateOf(index, r) ? shortState(stateOf(index, r)) : ''),
+      class: (r) => (stateOf(index, r) && shortState(stateOf(index, r)) === 'Failed' ? 'bad' : 'dim'),
+    },
+    { key: 'username', label: 'User', width: 140, text: (r) => r.response.username },
+    {
+      key: 'speed', label: 'Speed', width: 88, align: 'end', desc: true,
+      text: (r) => formatSpeed(r.response.upload_speed), sortValue: (r) => r.response.upload_speed,
+    },
+    {
+      key: 'queue', label: 'Queue', width: 64, align: 'end',
+      text: (r) => (r.response.free_upload_slots ? 'Free' : formatCount(r.response.queue_size)),
+      sortValue: (r) => (r.response.free_upload_slots ? -1 : r.response.queue_size),
+      class: (r) => (r.response.free_upload_slots ? '' : 'dim'),
+    },
+    { key: 'folder', label: 'Folder', grow: 2, min: 160, tail: 20, text: (r) => r.folder },
+    { key: 'filename', label: 'Filename', grow: 3, min: 200, tail: 12, text: (r) => r.filename },
+    {
+      key: 'size', label: 'Size', width: 84, align: 'end', desc: true,
+      text: (r) => formatSize(r.file.size), sortValue: (r) => r.file.size,
+    },
+    {
+      key: 'quality', label: 'Quality', width: 124, desc: true,
+      text: (r) => formatQuality(r.file.attributes),
+      sortValue: (r) => effectiveBitrate(r.file.attributes),
+    },
+    {
+      key: 'length', label: 'Length', width: 64, align: 'end', desc: true,
+      text: (r) => (r.file.attributes.length ? formatDuration(r.file.attributes.length) : ''),
+      sortValue: (r) => r.file.attributes.length ?? 0,
+    },
+  ];
+
+  $: columns = makeColumns($downloadIndex);
   $: joinedRooms = [...$rooms.joined.keys()].sort();
   $: if (mode === 'rooms' && !joinedRooms.includes(modeRoom)) modeRoom = joinedRooms[0] ?? '';
-  $: activeSearch =
-    $searches.find((s) => s.token === activeToken) ?? $searches[$searches.length - 1];
-  $: rows = activeSearch
-    ? activeSearch.results.flatMap((response) =>
-        response.files.map((file) => ({ response, file })))
-    : [];
-  $: matches = compileFilters(filters);
-  $: filteredRows = rows.filter(matches);
-  $: shownRows = sortRows(filteredRows, sort, RESULT_ACCESSORS).slice(0, MAX_ROWS);
-
-  $: if ($searchTarget) {
-    query = $searchTarget;
-    searchTarget.set(null);
-    mode = 'global';
-    startSearch();
+  $: wanted = $route.items.search ?? null;
+  $: activeSearch = $searches.find((s) => String(s.token) === wanted) ?? null;
+  $: if (!activeSearch && $searches.length && !pendingTokens.has(wanted)) {
+    const newest = String($searches.at(-1).token);
+    tick().then(() => remember('search', newest));
   }
+  $: rows = activeSearch ? activeSearch.rows : [];
+  $: compiled = compileFilters(filters);
+  $: filterCount = activeFilterCount(filters);
+  $: filteredRows = filterCount ? rows.filter(compiled.matches) : rows;
+  $: selected = filteredRows.filter((r) => selection.has(r.key));
+  $: items = $searches.map((search) => ({
+    id: String(search.token),
+    label: search.query,
+    count: formatCount(search.rows.length),
+  }));
 
-  async function startSearch() {
-    if (!query.trim()) return;
+  function scope() {
     const body = { query: query.trim(), mode };
-    if (mode === 'rooms') {
-      if (!modeRoom) return;
-      body.room = modeRoom;
+    if (mode === 'rooms') body.room = modeRoom;
+    if (mode === 'user') body.user = modeUser.trim();
+    return body;
+  }
+
+  async function submit() {
+    const body = scope();
+    if (!body.query) return;
+    if (mode === 'rooms' && !body.room) {
+      report.error('Search not started: join a room first, or search globally.');
+      return;
     }
-    if (mode === 'user') {
-      if (!modeUser.trim()) return;
-      body.user = modeUser.trim();
+    if (mode === 'user' && !body.user) {
+      report.error('Search not started: enter the user whose files to search.');
+      return;
     }
-    const { token } = await post('/searches', body);
-    activeToken = token;
-    query = '';
-    focusResults();
+    const signature = JSON.stringify(body);
+    if (started?.signature === signature && $searches.some((s) => s.token === started.token)) {
+      go('search', String(started.token));
+      return;
+    }
+    if (await startSearch(body)) {
+      started = { signature, token: Number($route.items.search) };
+      queryInput.select();
+    }
   }
 
-  function closeSearch(token) {
-    del(`/searches/${token}`);
-    if (activeToken === token) activeToken = null;
+  function closeSearch(id) {
+    const search = $searches.find((s) => String(s.token) === id);
+    const next = strip.neighbour(id);
+    if (wanted === id) {
+      if (next) go('search', next);
+      else forget('search', id);
+    }
+    act(() => del(`/searches/${id}`), {
+      failed: `Search "${search.query}" not closed`,
+      done: `Closed search "${search.query}" (${plural(search.rows.length, 'result')})`,
+      action: { label: 'Search Again', run: () => searchAgain(search) },
+    });
   }
 
-  function download(username, file) {
-    post('/downloads', {
-      username,
-      virtual_path: file.name,
-      size: file.size,
-      attributes: file.attributes,
-    }).catch((error) =>
-      notice(error.status === 409 ? 'download already active' : error.message),
+  async function download(picked) {
+    const fresh = picked.filter((r) => {
+      const transfer = stateOf($downloadIndex, r);
+      return !transfer || !isActive(transfer);
+    });
+    const outcomes = await Promise.allSettled(
+      fresh.map(({ response, file }) =>
+        post('/downloads', {
+          username: response.username,
+          virtual_path: file.name,
+          size: file.size,
+          attributes: file.attributes,
+        }),
+      ),
     );
+    const failures = outcomes.filter((o) => o.status === 'rejected' && o.reason.status !== 409);
+    const queued = outcomes.filter((o) => o.status === 'fulfilled').length;
+    const skipped = picked.length - queued - failures.length;
+    if (failures.length) {
+      const cause =
+        failures[0].reason.status === undefined
+          ? "can't reach the Newkitine server"
+          : failures[0].reason.message;
+      report.error(`${plural(failures.length, 'download')} not queued: ${cause}.`);
+    } else if (!queued) {
+      report.info(picked.length > 1 ? 'Those files are already downloading.' : 'That file is already downloading.');
+    } else if (picked.length > 1) {
+      report.done(
+        `Queued ${plural(queued, 'file')}` + (skipped ? ` (${skipped} already in Downloads)` : ''),
+        { label: 'Show Downloads', run: () => go('downloads') },
+      );
+    }
   }
 
-  function downloadFolder(username, file) {
-    post('/downloads/folder/request', { username, dir: folderName(file.name) }).catch((error) =>
-      notice(error.message),
-    );
+  function downloadFolders(picked) {
+    const folders = new Map(picked.map((r) => [`${r.response.username}\u0000${r.folder}`, r]));
+    for (const { response, folder } of folders.values()) {
+      act(() => post('/downloads/folder/request', { username: response.username, dir: folder }), {
+        failed: `Folder "${folder}" not requested`,
+        done: `Asked ${response.username} for the contents of "${folder}"`,
+        action: { label: 'Show Downloads', run: () => go('downloads') },
+      });
+    }
   }
 
-  function rowMenu(event, response, file) {
-    openMenu(event, [
-      { label: 'Download File', action: () => download(response.username, file) },
-      { label: 'Download Folder', action: () => downloadFolder(response.username, file) },
-      { sep: true },
-      { label: 'Copy File Path', action: () => navigator.clipboard.writeText(file.name) },
-      { sep: true },
-      { label: 'View User Profile', action: () => openUserInfo(response.username) },
+  function rowMenu(picked, point) {
+    const many = picked.length > 1;
+    const first = picked[0];
+    const sameUser = picked.every((r) => r.response.username === first.response.username);
+    openMenuAt(point, [
       {
-        label: 'Browse Folder',
-        action: () => openBrowse(response.username, folderName(file.name)),
+        label: many ? `Download ${picked.length} Files` : 'Download File',
+        primary: true, hint: keyLabel('enter'), action: () => download(picked),
+      },
+      { label: many ? 'Download Folders' : 'Download Folder', action: () => downloadFolders(picked) },
+      { sep: true },
+      {
+        label: 'Browse Folder', disabled: many,
+        action: () => openBrowse(first.response.username, first.folder),
+      },
+      {
+        label: many ? `Copy ${picked.length} File Paths` : 'Copy File Path', hint: keyLabel('mod+c'),
+        action: () => copy(picked.map((r) => r.file.name).join('\n'), many ? 'file paths' : 'file path'),
       },
       { sep: true },
-      { label: 'User Actions', submenu: userMenu(response.username) },
+      { label: 'User Actions', disabled: !sameUser, submenu: userMenu(first.response.username) },
     ]);
   }
 
-  function tabMenu(event, search) {
+  function tabMenu(event, id) {
+    const search = $searches.find((s) => String(s.token) === id);
     openMenu(event, [
-      {
-        label: 'Search Again',
-        action: async () => {
-          const { token } = await post('/searches', { query: search.query });
-          activeToken = token;
-        },
-      },
-      { label: 'Copy Search Term', action: () => navigator.clipboard.writeText(search.query) },
+      { title: search.query },
+      { label: 'Search Again', action: () => searchAgain(search) },
+      { label: 'Copy Search Term', action: () => copy(search.query, 'search term') },
       { sep: true },
-      { label: 'Close Tab', action: () => closeSearch(search.token) },
+      { label: 'Close Search', action: () => closeSearch(id) },
     ]);
   }
 
-  function addWish() {
-    if (!wishTerm.trim()) return;
-    post('/wishlist', { term: wishTerm.trim() });
-    wishTerm = '';
+  async function addWish() {
+    const term = wishTerm.trim();
+    if (!term) return;
+    if (await act(() => post('/wishlist', { term }), { failed: `"${term}" not added to wishlist` })) {
+      wishTerm = '';
+    }
+  }
+
+  function removeWish(term) {
+    act(() => post('/wishlist/remove', { term }), {
+      failed: `"${term}" not removed from wishlist`,
+      done: `Removed "${term}" from wishlist`,
+      action: {
+        label: 'Undo',
+        run: () => act(() => post('/wishlist', { term }), { failed: `"${term}" not restored` }),
+      },
+    });
+  }
+
+  async function queryKey(event) {
+    if (event.key !== 'ArrowDown' || !activeSearch) return;
+    event.preventDefault();
+    await tick();
+    table.focusFirst();
+  }
+
+  export function focusQuery() {
+    queryInput.focus();
+    queryInput.select();
   }
 </script>
 
 <div class="toolbar">
   <input {...noAutofill}
+    type="search"
+    class="query"
+    data-primary={activeSearch ? null : ''}
+    data-search-query
     placeholder="Search files…"
+    aria-label="Search files"
+    title="Search files ({keyLabel('/')} or {keyLabel('mod+k')})"
     bind:value={query}
-    on:keydown={(e) => e.key === 'Enter' && startSearch()}
+    bind:this={queryInput}
+    on:keydown={onEnter(submit)}
+    on:keydown={queryKey}
   />
-  <select bind:value={mode}>
-    <option value="global">Global</option>
-    <option value="rooms">Rooms</option>
+  <select bind:value={mode} aria-label="Search scope">
+    <option value="global">Everyone</option>
+    <option value="rooms">A room</option>
     <option value="buddies">Buddies</option>
-    <option value="user">User</option>
+    <option value="user">One user</option>
   </select>
   {#if mode === 'rooms'}
-    <select bind:value={modeRoom}>
+    <select bind:value={modeRoom} aria-label="Room to search">
       {#each joinedRooms as room}
         <option value={room}>{room}</option>
+      {:else}
+        <option value="" disabled>No rooms joined</option>
       {/each}
     </select>
   {:else if mode === 'user'}
-    <input {...noAutofill} style="min-width: 120px;" placeholder="Username…" bind:value={modeUser} />
+    <input {...noAutofill}
+      class="narrow"
+      list="known-users"
+      placeholder="Username…"
+      aria-label="User to search"
+      bind:value={modeUser}
+      on:keydown={onEnter(submit)}
+    />
   {/if}
-  <button on:click={startSearch}>Search</button>
-  <button class:active={showFilters} on:click={() => (showFilters = !showFilters)}>
-    Result Filters
+  <button on:click={submit}>Search</button>
+  <button
+    class:active={showFilters || filterCount > 0}
+    aria-pressed={showFilters}
+    on:click={() => (showFilters = !showFilters)}
+  >
+    Result Filters{filterCount ? ` (${filterCount})` : ''}
   </button>
-  <button on:click={() => (showWishlist = !showWishlist)}>Wishlist ({$wishlist.length})</button>
+  <button
+    class:active={showWishlist}
+    aria-pressed={showWishlist}
+    on:click={() => (showWishlist = !showWishlist)}
+  >
+    Wishlist ({$wishlist.length})
+  </button>
 </div>
 
 {#if showFilters}
-  <div class="toolbar">
-    <input {...noAutofill} style="min-width: 120px;" placeholder="Include text…" bind:value={filters.include} />
-    <input {...noAutofill} style="min-width: 120px;" placeholder="Exclude text…" bind:value={filters.exclude} />
-    <input {...noAutofill}
-      style="min-width: 100px;"
-      placeholder="File type, e.g. flac !mp3"
-      bind:value={filters.type}
-    />
-    <input {...noAutofill}
-      style="min-width: 100px;"
-      placeholder="Size, e.g. >10.5m <1g"
-      bind:value={filters.size}
-    />
-    <input {...noAutofill}
-      style="min-width: 90px;"
-      placeholder="Bitrate, e.g. 320 <1412"
-      bind:value={filters.bitrate}
-    />
-    <input {...noAutofill}
-      style="min-width: 90px;"
-      placeholder="Duration, e.g. >6:00"
-      bind:value={filters.duration}
-    />
-    <label><input type="checkbox" bind:checked={filters.freeSlot} /> Free slot</label>
+  <div class="toolbar filters">
+    <label>Include <input {...noAutofill} class="narrow" placeholder="live | remaster" bind:value={filters.include} /></label>
+    <label>Exclude <input {...noAutofill} class="narrow" placeholder="karaoke | cover" bind:value={filters.exclude} /></label>
+    <label>Type <input {...noAutofill} class="tiny" placeholder="flac !mp3" bind:value={filters.type} /></label>
+    <label>
+      Size
+      <input {...noAutofill} class="tiny" class:invalid={compiled.invalid.size}
+        placeholder="10m <1g" title="Minimum size, or <maximum. Units: k, m, g." bind:value={filters.size} />
+    </label>
+    <label>
+      Bitrate
+      <input {...noAutofill} class="tiny" class:invalid={compiled.invalid.bitrate}
+        placeholder="320 <1412" title="Minimum kbps, or <maximum, or =exact." bind:value={filters.bitrate} />
+    </label>
+    <label>
+      Length
+      <input {...noAutofill} class="tiny" class:invalid={compiled.invalid.duration}
+        placeholder="2:00 <10:00" title="Minimum length as m:ss, or <maximum." bind:value={filters.duration} />
+    </label>
+    <label><input type="checkbox" bind:checked={filters.freeSlot} /> Free slot only</label>
     <button on:click={() => (filters = emptyFilters())}>Clear Filters</button>
+    {#if Object.values(compiled.invalid).some(Boolean)}
+      <span class="notice">The outlined field has a part that is not a number and is being ignored.</span>
+    {/if}
   </div>
 {/if}
 
@@ -197,71 +331,66 @@
   <div class="toolbar">
     <input {...noAutofill}
       placeholder="Add wish…"
+      aria-label="Add wish"
       bind:value={wishTerm}
-      on:keydown={(e) => e.key === 'Enter' && addWish()}
+      on:keydown={onEnter(addWish)}
     />
     <button on:click={addWish}>Add</button>
     {#each $wishlist as term}
-      <span>
+      <span class="chip">
         {term}
-        <button on:click={() => post('/wishlist/remove', { term })}>Remove</button>
+        <button title="Remove from wishlist" aria-label="Remove {term}" on:click={() => removeWish(term)}>×</button>
       </span>
+    {:else}
+      <span class="hint">Wishes are searched for automatically, again and again, until you remove them.</span>
     {/each}
   </div>
 {/if}
 
-{#if $searches.length}
-  <div class="toolbar">
-    {#each $searches as search}
-      <button
-        class:active={activeSearch?.token === search.token}
-        on:click={() => ((activeToken = search.token), focusResults())}
-        on:contextmenu={(e) => tabMenu(e, search)}
-      >
-        {search.query}
-        ({search.results.reduce((n, r) => n + r.files.length, 0)})
-      </button>
-    {/each}
-    {#if activeSearch}
-      <button on:click={() => closeSearch(activeSearch.token)}>Close</button>
-    {/if}
-  </div>
-{/if}
+<Subtabs
+  tab="search"
+  {items}
+  active={wanted}
+  bind:this={strip}
+  onselect={(id) => go('search', id)}
+  onclose={closeSearch}
+  onmenu={tabMenu}
+/>
 
 {#if activeSearch}
-  {#if filteredRows.length !== rows.length || rows.length > MAX_ROWS}
-    <span>showing {shownRows.length} of {rows.length} results</span>
-  {/if}
-  <div class="scroll" tabindex="0" bind:this={resultsEl}>
-    <table>
-      <thead>
-        <tr>
-          <Th bind:sort key="username">User</Th>
-          <Th bind:sort key="speed">Speed</Th>
-          <Th bind:sort key="queue">Queue</Th>
-          <Th bind:sort key="folder" grow>Folder</Th>
-          <Th bind:sort key="filename" grow>Filename</Th>
-          <Th bind:sort key="size">Size</Th>
-          <Th bind:sort key="quality">Quality</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each shownRows as { response, file }}
-          <tr
-            class="clickable"
-            on:contextmenu={(e) => rowMenu(e, response, file)}
-            on:dblclick={() => download(response.username, file)}
-          >
-            <td>{response.username}{response.free_upload_slots ? '' : ' (queued)'}</td>
-            <td>{formatSize(response.upload_speed)}/s</td>
-            <td>{response.queue_size}</td>
-            <td class="grow">{folderName(file.name)}</td>
-            <td class="grow">{baseName(file.name)}</td>
-            <td>{formatSize(file.size)}</td>
-            <td>{formatAttributes(file.attributes)}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+  <div class="count">
+    {#if selected.length > 1}
+      {formatCount(selected.length)} of {plural(filteredRows.length, 'result')} selected ·
+      {formatSize(selected.reduce((sum, r) => sum + r.file.size, 0))}
+    {:else if filteredRows.length !== rows.length}
+      {formatCount(filteredRows.length)} of {plural(rows.length, 'result')} ·
+      {formatCount(rows.length - filteredRows.length)} hidden by filters
+      <button class="link" on:click={() => (filters = emptyFilters())}>Clear Filters</button>
+    {:else}
+      {plural(rows.length, 'result')}
+    {/if}
   </div>
+  <DataTable
+    id="search"
+    label="Search results"
+    rows={filteredRows}
+    key={(r) => r.key}
+    {columns}
+    viewKey={wanted}
+    primary
+    bind:selection
+    bind:this={table}
+    empty={rows.length
+      ? 'No results match the filters.'
+      : 'No results yet. Results appear here as other users answer.'}
+    copyText={(r) => r.file.name}
+    onactivate={download}
+    onmenu={rowMenu}
+    onedge={focusQuery}
+  />
+{:else}
+  <p class="hint">
+    Type what you are looking for and press {keyLabel('enter')}. Double-click a result to download it;
+    right-click for more.
+  </p>
 {/if}

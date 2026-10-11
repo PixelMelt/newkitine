@@ -1,51 +1,98 @@
 <script>
-  import { browses, notice } from '../lib/stores.js';
-  import { browseTarget, noAutofill } from '../lib/ui.js';
+  import { tick } from 'svelte';
+  import { browses, downloadIndex, transferKey, report, link } from '../lib/stores.js';
+  import { route, go, openBrowse, noAutofill } from '../lib/ui.js';
+  import { shortState, isActive } from '../lib/transferStatus.js';
   import { get, post } from '../lib/api.js';
-  import { formatSize, formatAttributes } from '../lib/format.js';
-  import { openMenu } from '../lib/menu.js';
+  import { act, copy } from '../lib/act.js';
+  import {
+    formatSize, formatQuality, formatDuration, formatTime, formatDateTime, effectiveBitrate, plural,
+  } from '../lib/format.js';
+  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
-  import { sortRows } from '../lib/sort.js';
-  import Th from '../lib/Th.svelte';
+  import Subtabs from '../lib/Subtabs.svelte';
+  import DataTable from '../lib/DataTable.svelte';
+  import Tree from '../lib/Tree.svelte';
 
-  let sort = { key: null, dir: 1 };
+  const FOLDER_FILTER_LIMIT = 5000;
+
   let username = '';
-  let viewing = '';
+  let viewing = null;
   let filter = '';
   let tree = Object.create(null);
   let expanded = Object.create(null);
   let treeLoaded = false;
   let flatFolders = null;
-  let currentDir = null;
-  let files = null;
+  let flatSelection = new Set();
+  let selectedDir = null;
+  let listing = null;
   let loadedAt = 0;
-  let pendingFolder = null;
   let summary = null;
+  let request = null;
+  let fileSelection = new Set();
+  let pendingFolder = null;
 
-  $: if ($browseTarget) {
-    const { username: target, folder } = $browseTarget;
-    browseTarget.set(null);
-    username = target;
-    openUser(target, folder);
-  }
+  const encode = encodeURIComponent;
+  const stateOf = (index, file) =>
+    index.get(transferKey(listing.username, `${listing.dir}\\${file.name}`));
 
+  const makeColumns = (index) => [
+    {
+      key: 'state', label: '', width: 64,
+      text: (f) => (stateOf(index, f) ? shortState(stateOf(index, f)) : ''), class: () => 'dim',
+    },
+    { key: 'name', label: 'Filename', grow: 1, min: 200, tail: 12, text: (f) => f.name },
+    {
+      key: 'size', label: 'Size', width: 84, align: 'end', desc: true,
+      text: (f) => formatSize(f.size), sortValue: (f) => f.size,
+    },
+    {
+      key: 'quality', label: 'Quality', width: 124, desc: true,
+      text: (f) => formatQuality(f.attributes), sortValue: (f) => effectiveBitrate(f.attributes),
+    },
+    {
+      key: 'length', label: 'Length', width: 64, align: 'end', desc: true,
+      text: (f) => (f.attributes.length ? formatDuration(f.attributes.length) : ''),
+      sortValue: (f) => f.attributes.length ?? 0,
+    },
+  ];
+  const folderColumns = [
+    { key: 'directory', label: 'Folder', grow: 1, min: 160, tail: 24, text: (f) => f.directory },
+    {
+      key: 'file_count', label: 'Files', width: 60, align: 'end', desc: true,
+      text: (f) => f.file_count.toLocaleString(), sortValue: (f) => f.file_count,
+    },
+  ];
+
+  $: columns = makeColumns($downloadIndex);
+  $: wanted = $route.items.browse ?? null;
+  $: onBrowse = $route.tab === 'browse';
+  $: if ($link.state === 'live' && onBrowse && wanted !== viewing) openUser(wanted, $route.folder);
   $: if (viewing && $browses.has(viewing) && $browses.get(viewing) !== loadedAt) {
     loadedAt = $browses.get(viewing);
-    loadTree();
+    loadTree(viewing, selectedDir ?? pendingFolder);
   }
-
-  $: if (viewing && loadedAt && !$browses.has(viewing)) {
+  $: if (onBrowse && treeLoaded && wanted === viewing && $route.folder && $route.folder !== selectedDir) {
+    const folder = $route.folder;
+    tick().then(() => folder !== selectedDir && revealFolder(viewing, folder));
+  }
+  $: if (viewing && loadedAt && !$browses.has(viewing)) reset();
+  $: visible = flatten(tree, expanded, '', 0);
+  $: items = [...new Set([...$browses.keys(), ...(viewing ? [viewing] : [])])].map((user) => ({
+    id: user,
+    label: user,
+  }));
+  function reset() {
     loadedAt = 0;
     tree = Object.create(null);
     expanded = Object.create(null);
     treeLoaded = false;
     flatFolders = null;
-    currentDir = null;
-    files = null;
+    selectedDir = null;
+    listing = null;
     summary = null;
   }
-
-  $: visible = flatten(tree, expanded, '', 0);
 
   function flatten(tree, expanded, path, depth) {
     const out = [];
@@ -56,233 +103,300 @@
     return out;
   }
 
-  async function loadChildren(dir) {
-    const data = await get(
-      `/users/${encodeURIComponent(viewing)}/tree?dir=${encodeURIComponent(dir)}`);
+  async function loadChildren(user, dir) {
+    const data = await get(`/users/${encode(user)}/tree?dir=${encode(dir)}`);
+    if (user !== viewing) return false;
     tree[dir] = data.children;
     tree = tree;
     if (data.summary) summary = data.summary;
+    return true;
   }
 
-  async function loadTree() {
+  async function loadTree(user, folder) {
+    const reopen = Object.keys(expanded).filter((path) => expanded[path]);
     tree = Object.create(null);
-    expanded = Object.create(null);
-    treeLoaded = false;
-    await loadChildren('');
+    if (!(await loadChildren(user, ''))) return;
     treeLoaded = true;
-    if (pendingFolder) {
-      const folder = pendingFolder;
-      pendingFolder = null;
-      await revealFolder(folder);
+    request = null;
+    for (const path of reopen) {
+      if (user === viewing) await loadChildren(user, path);
     }
+    if (folder && user === viewing) await revealFolder(user, folder);
   }
 
-  async function revealFolder(folder) {
+  async function revealFolder(user, folder) {
     const parts = folder.split('\\');
     let path = '';
     for (const part of parts.slice(0, -1)) {
       path = path ? `${path}\\${part}` : part;
-      if (!tree[path]) await loadChildren(path);
+      if (!tree[path] && !(await loadChildren(user, path))) return;
       expanded[path] = true;
     }
     expanded = expanded;
-    selectFolder(folder, true);
+    const parent = parts.slice(0, -1).join('\\');
+    const node = (tree[parent] ?? []).find((child) => child.path === folder);
+    selectFolder(folder, node ? node.file_count > 0 : false);
   }
 
   async function toggle(node) {
     expanded[node.path] = !expanded[node.path];
     expanded = expanded;
-    if (expanded[node.path] && !tree[node.path]) await loadChildren(node.path);
+    if (expanded[node.path] && !tree[node.path]) await loadChildren(viewing, node.path);
   }
 
   async function selectFolder(dir, hasFiles) {
-    currentDir = dir;
+    const user = viewing;
+    selectedDir = dir;
+    fileSelection = new Set();
+    pendingFolder = null;
+    if ($route.tab === 'browse') go('browse', user, dir);
     if (!hasFiles) {
-      files = [];
+      listing = { username: user, dir, files: [] };
       return;
     }
-    files = null;
-    const data = await get(
-      `/users/${encodeURIComponent(viewing)}/files?dir=${encodeURIComponent(dir)}`);
-    files = data.files;
+    const data = await get(`/users/${encode(user)}/files?dir=${encode(dir)}`);
+    if (user === viewing && dir === selectedDir) listing = { username: user, dir, files: data.files };
   }
 
-  async function openUser(target, folder = null) {
+  async function requestList(user) {
+    request = { at: Date.now() / 1000, failed: null };
+    await act(() => post(`/users/${encode(user)}/browse`), {
+      failed: `Share list of ${user} not requested`,
+      where: (text) => user === viewing && (request = { ...request, failed: text }),
+    });
+  }
+
+  function openUser(target, folder) {
     viewing = target;
-    filter = '';
-    flatFolders = null;
-    currentDir = null;
-    files = null;
-    loadedAt = 0;
     pendingFolder = folder;
-    tree = Object.create(null);
-    expanded = Object.create(null);
-    treeLoaded = false;
-    summary = null;
-    try {
-      await loadTree();
-    } catch (error) {
-      if (error.status !== 404) throw error;
-      post(`/users/${encodeURIComponent(target)}/browse`);
-    }
+    filter = '';
+    request = null;
+    reset();
+    if (!target) return;
+    username = target;
+    if ($browses.has(target)) {
+      loadedAt = $browses.get(target);
+      loadTree(target, folder);
+    } else requestList(target);
   }
 
-  function requestBrowse() {
-    if (!username.trim()) return;
-    openUser(username.trim());
+  function submit() {
+    const target = username.trim();
+    if (!target) return;
+    if (target === viewing && !treeLoaded) requestList(target);
+    else openBrowse(target);
   }
 
   async function applyFilter() {
+    flatSelection = new Set();
     if (!filter.trim()) {
       flatFolders = null;
       return;
     }
-    flatFolders = await get(
-      `/users/${encodeURIComponent(viewing)}/folders?filter=${encodeURIComponent(filter)}`);
+    const user = viewing;
+    const data = await get(
+      `/users/${encode(user)}/folders?filter=${encode(filter)}&limit=${FOLDER_FILTER_LIMIT}`,
+    );
+    if (user === viewing) flatFolders = data;
   }
 
-  function downloadFile(file) {
-    post('/downloads', {
-      username: viewing,
-      virtual_path: currentDir + '\\' + file.name,
-      size: file.size,
-      attributes: file.attributes,
-    }).catch((error) =>
-      notice(error.status === 409 ? 'download already active' : error.message),
+  function clearFilter() {
+    filter = '';
+    flatFolders = null;
+  }
+
+  function revealFromFilter(rows) {
+    clearFilter();
+    revealFolder(viewing, rows[0].directory);
+  }
+
+  async function downloadFiles(files) {
+    const { username: user, dir } = listing;
+    const fresh = files.filter((f) => {
+      const transfer = stateOf($downloadIndex, f);
+      return !transfer || !isActive(transfer);
+    });
+    const outcomes = await Promise.allSettled(
+      fresh.map((file) =>
+        post('/downloads', {
+          username: user,
+          virtual_path: `${dir}\\${file.name}`,
+          size: file.size,
+          attributes: file.attributes,
+        }),
+      ),
     );
+    const failures = outcomes.filter((o) => o.status === 'rejected' && o.reason.status !== 409);
+    const queued = outcomes.filter((o) => o.status === 'fulfilled').length;
+    if (failures.length) {
+      const cause =
+        failures[0].reason.status === undefined
+          ? "can't reach the Newkitine server"
+          : failures[0].reason.message;
+      report.error(`${plural(failures.length, 'download')} not queued: ${cause}.`);
+    } else if (!queued) {
+      report.info(files.length > 1 ? 'Those files are already downloading.' : 'That file is already downloading.');
+    } else if (files.length > 1) {
+      const skipped = files.length - queued;
+      report.done(
+        `Queued ${plural(queued, 'file')}` + (skipped ? ` (${skipped} already in Downloads)` : ''),
+        { label: 'Show Downloads', run: () => go('downloads') },
+      );
+    }
   }
 
   function downloadFolder(dir, recursive) {
-    post('/downloads/folder', { username: viewing, dir, recursive }).catch((error) =>
-      notice(error.message),
-    );
+    act(() => post('/downloads/folder', { username: viewing, dir, recursive }), {
+      failed: `Folder "${dir}" not queued`,
+      done: ({ enqueued, already_active }) =>
+        `Queued ${plural(enqueued, 'file')} from "${dir}"` +
+        (already_active ? ` (${already_active} already in Downloads)` : ''),
+      action: { label: 'Show Downloads', run: () => go('downloads') },
+    });
   }
 
-  function folderMenu(event, dir) {
-    openMenu(event, [
+  function folderItems(dir) {
+    return [
       { label: 'Download Folder', action: () => downloadFolder(dir, false) },
-      { label: 'Download Folder & Subfolders', action: () => downloadFolder(dir, true) },
+      { label: 'Download Folder and Subfolders', action: () => downloadFolder(dir, true) },
       { sep: true },
-      { label: 'Copy Folder Path', action: () => navigator.clipboard.writeText(dir) },
+      { label: 'Copy Folder Path', action: () => copy(dir, 'folder path') },
       { sep: true },
-      { label: 'User Actions', submenu: userMenu(viewing, { skip: ['userbrowse'] }) },
-    ]);
+      { label: 'User Actions', submenu: userMenu(viewing, { current: 'browse' }) },
+    ];
   }
 
-  function fileMenu(event, file) {
-    openMenu(event, [
-      { label: 'Download File', action: () => downloadFile(file) },
+  function fileMenu(files, point) {
+    const many = files.length > 1;
+    openMenuAt(point, [
+      {
+        label: many ? `Download ${files.length} Files` : 'Download File',
+        primary: true, hint: keyLabel('enter'), action: () => downloadFiles(files),
+      },
+      { label: 'Download Folder', action: () => downloadFolder(listing.dir, false) },
       { sep: true },
       {
-        label: 'Copy File Path',
-        action: () => navigator.clipboard.writeText(currentDir + '\\' + file.name),
+        label: many ? `Copy ${files.length} File Paths` : 'Copy File Path', hint: keyLabel('mod+c'),
+        action: () =>
+          copy(
+            files.map((f) => `${listing.dir}\\${f.name}`).join('\n'),
+            many ? 'file paths' : 'file path',
+          ),
       },
       { sep: true },
-      { label: 'User Actions', submenu: userMenu(viewing, { skip: ['userbrowse'] }) },
+      { label: 'User Actions', submenu: userMenu(viewing, { current: 'browse' }) },
     ]);
   }
 </script>
 
 <div class="toolbar">
   <input {...noAutofill}
+    list="known-users"
+    data-primary={treeLoaded ? null : ''}
     placeholder="Username…"
+    aria-label="User whose shares to browse"
     bind:value={username}
-    on:keydown={(e) => e.key === 'Enter' && requestBrowse()}
+    on:focus={(e) => e.target.select()}
+    on:keydown={onEnter(submit)}
   />
-  <button on:click={requestBrowse}>Browse</button>
+  <button on:click={submit}>Browse</button>
   {#if treeLoaded}
-    <button on:click={() => post(`/users/${encodeURIComponent(viewing)}/browse`)}>
-      Refresh
-    </button>
+    <button on:click={() => requestList(viewing)}>Refresh</button>
     <button on:click={() => (expanded = Object.create(null))}>Collapse All</button>
   {/if}
-  {#if summary}
-    <span>
-      {summary.folders.toLocaleString()} folders ·
-      {summary.files.toLocaleString()} files ·
-      {formatSize(summary.size)}
-    </span>
-  {/if}
-  {#if viewing && !treeLoaded}
-    <span>Waiting for {viewing}'s share list…</span>
-  {/if}
+  <span class="count">
+    {#if summary}
+      {plural(summary.folders, 'folder')} · {plural(summary.files, 'file')} ·
+      {formatSize(summary.size)} ·
+      <span title={formatDateTime(loadedAt)}>received {formatTime(loadedAt)}</span>
+    {/if}
+    {#if request && !request.failed}
+      {treeLoaded ? 'Refreshing…' : `Asked ${viewing} for their share list at ${formatTime(request.at)}. Large lists take a while.`}
+    {/if}
+  </span>
+  {#if request?.failed}<span class="notice">{request.failed}</span>{/if}
 </div>
+
+<Subtabs tab="browse" {items} active={viewing} onselect={(user) => openBrowse(user)} />
 
 {#if treeLoaded}
   <div class="split">
-    <div class="side" style="width: 40%;">
-      <input {...noAutofill}
-        placeholder="Filter folders…"
-        bind:value={filter}
-        on:keydown={(e) => e.key === 'Enter' && applyFilter()}
-      />
+    <div class="side wide">
+      <div class="toolbar">
+        <input {...noAutofill}
+          type="search"
+          class="fill"
+          placeholder="Filter folders…"
+          aria-label="Filter folders"
+          bind:value={filter}
+          on:keydown={onEnter(applyFilter)}
+          on:keydown={(e) => e.key === 'Escape' && clearFilter()}
+        />
+        {#if flatFolders}<button on:click={clearFilter}>Show Tree</button>{/if}
+      </div>
       {#if flatFolders}
-        <span>showing {flatFolders.folders.length} of {flatFolders.total} matches</span>
-        <div class="list" tabindex="0">
-          {#each flatFolders.folders as folder}
-            <div
-              class:selected={currentDir === folder.directory}
-              on:click={() => selectFolder(folder.directory, folder.file_count > 0)}
-              on:contextmenu={(e) => folderMenu(e, folder.directory)}
-            >
-              {folder.directory} ({folder.file_count})
-            </div>
-          {/each}
-        </div>
+        <span class="count">
+          {#if flatFolders.folders.length < flatFolders.total}
+            First {flatFolders.folders.length.toLocaleString()} of
+          {/if}
+          {plural(flatFolders.total, 'matching folder')}
+        </span>
+        <DataTable
+          id="browse-folders"
+          label="Matching folders"
+          rows={flatFolders.folders}
+          key={(f) => f.directory}
+          columns={folderColumns}
+          viewKey={viewing}
+          bind:selection={flatSelection}
+          copyText={(f) => f.directory}
+          empty="No folder matches “{filter.trim()}”."
+          onpick={(folder) => selectFolder(folder.directory, folder.file_count > 0)}
+          onactivate={revealFromFilter}
+          onmenu={(rows, point) => openMenuAt(point, [
+            { label: 'Show in Tree', primary: true, hint: keyLabel('enter'), action: () => revealFromFilter(rows) },
+            { sep: true },
+            ...folderItems(rows[0].directory),
+          ])}
+        />
       {:else}
-        <div class="tree" tabindex="0">
-          {#each visible as { node, depth }}
-            <div
-              class="node"
-              class:selected={currentDir === node.path}
-              style:padding-left="{6 + depth * 14}px"
-              on:click={() => selectFolder(node.path, node.file_count > 0)}
-              on:dblclick={() => node.has_children && toggle(node)}
-              on:contextmenu={(e) => folderMenu(e, node.path)}
-            >
-              <span
-                class="twisty"
-                on:click|stopPropagation={() => node.has_children && toggle(node)}
-              >
-                {node.has_children ? (expanded[node.path] ? '[-]' : '[+]') : ''}
-              </span>
-              <span>
-                {node.private ? '[PRIVATE] ' : ''}{node.name}
-                {#if node.file_count}<span class="count">({node.file_count})</span>{/if}
-              </span>
-            </div>
-          {/each}
-        </div>
+        <Tree
+          label="Folders shared by {viewing}"
+          nodes={visible}
+          selected={selectedDir}
+          {expanded}
+          primary
+          onselect={(node) => selectFolder(node.path, node.file_count > 0)}
+          ontoggle={toggle}
+          onmenu={(node, point) => openMenuAt(point, folderItems(node.path))}
+        />
       {/if}
     </div>
     <div class="main">
-      {#if currentDir}
-        <span>{currentDir}</span>
-        <div class="scroll" tabindex="0">
-          <table>
-            <thead>
-              <tr>
-                <Th bind:sort key="name" grow>Filename</Th>
-                <Th bind:sort key="size">Size</Th>
-                <Th bind:sort key="quality">Quality</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each sortRows(files ?? [], sort, { quality: (f) => formatAttributes(f.attributes) }) as file}
-                <tr
-                  class="clickable"
-                  on:contextmenu={(e) => fileMenu(e, file)}
-                  on:dblclick={() => downloadFile(file)}
-                >
-                  <td class="grow">{file.name}</td>
-                  <td>{formatSize(file.size)}</td>
-                  <td>{formatAttributes(file.attributes)}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+      {#if selectedDir}
+        <span class="path" title={selectedDir}>{selectedDir}</span>
+        <DataTable
+          id="browse-files"
+          label="Files in {selectedDir}"
+          rows={listing && listing.dir === selectedDir ? listing.files : []}
+          key={(f) => f.name}
+          {columns}
+          viewKey={`${viewing}\u0000${selectedDir}`}
+          bind:selection={fileSelection}
+          typeahead={(f) => f.name}
+          copyText={(f) => `${listing.dir}\\${f.name}`}
+          loading={!listing || listing.dir !== selectedDir}
+          empty="No files in this folder."
+          onactivate={downloadFiles}
+          onmenu={fileMenu}
+        />
+      {:else}
+        <p class="hint">Select a folder to see its files. Double-click a file to download it.</p>
       {/if}
     </div>
   </div>
+{:else if !viewing}
+  <p class="hint">
+    Enter a username to see everything they share, or choose Browse Files from any user's menu.
+  </p>
 {/if}

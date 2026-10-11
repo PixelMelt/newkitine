@@ -1,42 +1,43 @@
+import { effectiveBitrate, fold } from './format.js';
+
 const SIZE_UNITS = { b: 1, k: 1 << 10, m: 1 << 20, g: 1 << 30, t: 1024 ** 4 };
 
 function parseSize(text) {
-	const match = /^([\d.]+)\s*([bkmgt]?)/.exec(text);
-	if (!match) return null;
-	return Number(match[1]) * SIZE_UNITS[match[2] || 'b'];
+	const match = /^(\d+(?:\.\d+)?)([bkmgt]?)$/.exec(text);
+	return match ? Number(match[1]) * SIZE_UNITS[match[2] || 'b'] : null;
 }
 
 function parseDuration(text) {
-	const parts = text.split(':').map(Number);
-	if (parts.some(Number.isNaN)) return null;
-	return parts.reduce((total, part) => total * 60 + part, 0);
+	if (!/^\d+(:\d{1,2}){0,2}$/.test(text)) return null;
+	return text.split(':').map(Number).reduce((total, part) => total * 60 + part, 0);
+}
+
+function parseNumber(text) {
+	return /^\d+$/.test(text) ? Number(text) : null;
 }
 
 function numericClauses(text, getValue, parseValue, bareIsMinimum) {
 	const clauses = [];
+	let invalid = false;
 	for (const token of text.toLowerCase().split(/\s+/).filter(Boolean)) {
 		const operator = /^[<>!=]/.exec(token)?.[0] ?? (bareIsMinimum ? '>' : '=');
 		const wanted = parseValue(token.replace(/^[<>!=]/, ''));
-		if (wanted === null) continue;
+		if (wanted === null) {
+			invalid = true;
+			continue;
+		}
 		if (operator === '>') clauses.push((row) => getValue(row) >= wanted);
 		if (operator === '<') clauses.push((row) => getValue(row) <= wanted);
 		if (operator === '=') clauses.push((row) => getValue(row) === wanted);
 		if (operator === '!') clauses.push((row) => getValue(row) !== wanted);
 	}
-	return clauses;
-}
-
-function bitrate({ bitrate, sample_rate, bit_depth }) {
-	if (bitrate !== null) return bitrate;
-	if (sample_rate && bit_depth) return Math.floor((sample_rate * bit_depth * 2) / 1000);
-	return 0;
+	return { clauses, invalid };
 }
 
 function phrases(text) {
 	return text
-		.toLowerCase()
 		.split('|')
-		.map((phrase) => phrase.trim())
+		.map((phrase) => fold(phrase.trim()))
 		.filter(Boolean);
 }
 
@@ -50,15 +51,18 @@ export const emptyFilters = () => ({
 	freeSlot: false,
 });
 
+export const activeFilterCount = (f) =>
+	Object.values(f).filter((value) => (typeof value === 'string' ? value.trim() : value)).length;
+
 export function compileFilters(f) {
 	const clauses = [];
 	if (f.include.trim()) {
 		const wanted = phrases(f.include);
-		clauses.push(({ file }) => wanted.some((p) => file.name.toLowerCase().includes(p)));
+		clauses.push(({ folded }) => wanted.some((p) => folded.includes(p)));
 	}
 	if (f.exclude.trim()) {
 		const banned = phrases(f.exclude);
-		clauses.push(({ file }) => !banned.some((p) => file.name.toLowerCase().includes(p)));
+		clauses.push(({ folded }) => !banned.some((p) => folded.includes(p)));
 	}
 	if (f.type.trim()) {
 		const tokens = f.type.toLowerCase().split(/\s+/).filter(Boolean);
@@ -70,18 +74,19 @@ export function compileFilters(f) {
 			return allow.length === 0 || allow.includes(ext);
 		});
 	}
-	clauses.push(...numericClauses(f.size, ({ file }) => file.size, parseSize, true));
-	clauses.push(...numericClauses(f.bitrate, ({ file }) => bitrate(file.attributes), Number, false));
-	clauses.push(
-		...numericClauses(
-			f.duration,
-			({ file }) => file.attributes?.length ?? 0,
-			parseDuration,
-			false,
-		),
+	const size = numericClauses(f.size, ({ file }) => file.size, parseSize, true);
+	const bitrate = numericClauses(
+		f.bitrate, ({ file }) => effectiveBitrate(file.attributes), parseNumber, true,
 	);
+	const duration = numericClauses(
+		f.duration, ({ file }) => file.attributes.length ?? 0, parseDuration, true,
+	);
+	clauses.push(...size.clauses, ...bitrate.clauses, ...duration.clauses);
 	if (f.freeSlot) {
 		clauses.push(({ response }) => response.free_upload_slots);
 	}
-	return (row) => clauses.every((clause) => clause(row));
+	return {
+		matches: (row) => clauses.every((clause) => clause(row)),
+		invalid: { size: size.invalid, bitrate: bitrate.invalid, duration: duration.invalid },
+	};
 }

@@ -1,160 +1,179 @@
 <script>
-  import { rooms, status } from '../lib/stores.js';
-  import { activeTab, noAutofill } from '../lib/ui.js';
-  import { post } from '../lib/api.js';
-  import { formatTime } from '../lib/format.js';
-  import { autoscroll } from '../lib/autoscroll.js';
-  import { openMenu } from '../lib/menu.js';
+  import {
+    rooms, conversations, drafts, unread, roomKey, joinRoom, leaveRoom, status,
+  } from '../lib/stores.js';
+  import { route, go, forget, openUserInfo, noAutofill } from '../lib/ui.js';
+  import { copy } from '../lib/act.js';
+  import { plural, fold, formatCount } from '../lib/format.js';
+  import { onEnter, keyLabel } from '../lib/keys.js';
+  import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
-  import { sortRows } from '../lib/sort.js';
-  import Th from '../lib/Th.svelte';
+  import Subtabs from '../lib/Subtabs.svelte';
+  import DataTable from '../lib/DataTable.svelte';
+  import MessageLog from '../lib/MessageLog.svelte';
+  import Composer from '../lib/Composer.svelte';
 
-  let roomSort = { key: null, dir: 1 };
-  let selected = null;
-  let newRoom = '';
-  let draft = '';
-  let showAvailable = false;
-  let unread = Object.create(null);
-  let counts = Object.create(null);
+  let roomName = '';
+  let listRequested = false;
+  let strip;
+  let log;
 
-  $: joinedNames = [...$rooms.joined.keys()].sort();
-  $: if (!$rooms.joined.has(selected) && joinedNames.length) selected = joinedNames[0];
-  $: current = $rooms.joined.get(selected) ?? null;
+  const roomColumns = [
+    { key: 'name', label: 'Room', grow: 1, min: 200, text: (r) => r.name },
+    {
+      key: 'users', label: 'Users', width: 80, align: 'end', desc: true,
+      text: (r) => formatCount(r.users), sortValue: (r) => r.users,
+    },
+    { key: 'joined', label: '', width: 70, text: (r) => (r.joined ? 'Joined' : ''), class: () => 'dim' },
+  ];
+  const userColumns = [{ key: 'username', label: 'User', grow: 1, min: 100, text: (u) => u }];
 
-  $: {
-    for (const [room, view] of $rooms.joined) {
-      const chatMessages = view.messages.length;
-      if (counts[room] !== undefined && chatMessages > counts[room]
-          && !(room === selected && $activeTab === 'rooms' && !showAvailable)) {
-        unread[room] = true;
-      }
-      counts[room] = chatMessages;
+  $: joinedNames = [...$rooms.joined.keys()].sort((a, b) => a.localeCompare(b));
+  $: wanted = $route.items.rooms;
+  $: selected = $rooms.joined.has(wanted) ? wanted : (joinedNames[0] ?? null);
+  $: showList = listRequested || !selected;
+  $: current = selected ? $rooms.joined.get(selected) : null;
+  $: users = current
+    ? [...current.users].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    : [];
+  $: needle = fold(roomName.trim());
+  $: available = $rooms.available
+    .filter((room) => fold(room.name).includes(needle))
+    .map((room) => ({ ...room, joined: $rooms.joined.has(room.name) }));
+  $: items = joinedNames.map((room) => ({
+    id: room,
+    label: room,
+    unread: $unread.has(roomKey(room)),
+    draft: Boolean($drafts[roomKey(room)]),
+  }));
+
+  function show(room) {
+    listRequested = false;
+    go('rooms', room);
+  }
+
+  async function join(room) {
+    if (!room) return;
+    if ($rooms.joined.has(room) || (await joinRoom(room))) {
+      roomName = '';
+      show(room);
     }
-  }
-  $: if ($activeTab === 'rooms' && selected && !showAvailable && unread[selected]) {
-    delete unread[selected];
-    unread = unread;
-  }
-
-  function join(room) {
-    if (!room.trim()) return;
-    post('/rooms/join', { room: room.trim() });
-    selected = room.trim();
-    newRoom = '';
-    showAvailable = false;
-  }
-
-  function select(room) {
-    selected = room;
-    showAvailable = false;
-    delete unread[room];
-    unread = unread;
   }
 
   function leave(room) {
-    post('/rooms/leave', { room });
+    const next = strip.neighbour(room);
+    if (selected === room) {
+      if (next) go('rooms', next);
+      else forget('rooms', room);
+    }
+    leaveRoom(room);
   }
 
-  function send() {
-    if (!draft.trim() || !selected) return;
-    post(`/rooms/${encodeURIComponent(selected)}/messages`, { message: draft });
-    draft = '';
+  function tabMenu(event, room) {
+    openMenu(event, [
+      { title: room },
+      { label: 'Copy Room Name', action: () => copy(room, 'room name') },
+      { sep: true },
+      { label: 'Leave Room', action: () => leave(room) },
+    ]);
+  }
+
+  function roomMenu(rows, point) {
+    const room = rows[0];
+    openMenuAt(point, [
+      {
+        label: room.joined ? 'Go to Room' : 'Join Room', primary: true, hint: keyLabel('enter'),
+        action: () => join(room.name),
+      },
+      { label: 'Copy Room Name', action: () => copy(room.name, 'room name') },
+    ]);
   }
 </script>
 
 <div class="toolbar">
   <input {...noAutofill}
-    placeholder="Join room…"
-    bind:value={newRoom}
-    on:keydown={(e) => e.key === 'Enter' && join(newRoom)}
+    placeholder="Find or join room…"
+    aria-label="Find or join room"
+    bind:value={roomName}
+    on:focus={() => (listRequested = true)}
+    on:keydown={onEnter(() => join(roomName.trim()))}
   />
-  <button on:click={() => join(newRoom)}>Join</button>
-  <button class:active={showAvailable} on:click={() => (showAvailable = !showAvailable)}>
-    Room List ({$rooms.available.length})
+  <button on:click={() => join(roomName.trim())}>Join</button>
+  <button
+    class:active={showList}
+    aria-pressed={showList}
+    on:click={() => (listRequested = !showList)}
+  >
+    Room List
   </button>
+  {#if showList}
+    <span class="count">
+      {needle ? `${formatCount(available.length)} of ` : ''}{plural($rooms.available.length, 'room')}
+    </span>
+  {/if}
 </div>
 
-{#if joinedNames.length}
-  <div class="subtabs">
-    {#each joinedNames as room}
-      <span class="subtab">
-        <button
-          class:active={selected === room && !showAvailable}
-          class:unread={unread[room]}
-          on:click={() => select(room)}
-          on:contextmenu={(e) =>
-            openMenu(e, [{ label: 'Leave Room', action: () => leave(room) }])}
-        >
-          {room}
-        </button>
-        <button on:click={() => leave(room)}>Leave</button>
-      </span>
-    {/each}
-  </div>
-{/if}
+<Subtabs
+  tab="rooms"
+  {items}
+  active={showList ? null : selected}
+  closeLabel="Leave"
+  bind:this={strip}
+  onselect={show}
+  onclose={leave}
+  onmenu={tabMenu}
+/>
 
-{#if showAvailable}
-  <div class="scroll" tabindex="0">
-    <table>
-      <thead>
-        <tr>
-          <Th bind:sort={roomSort} key="name" grow>Room</Th>
-          <Th bind:sort={roomSort} key="users">Users</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each sortRows($rooms.available, roomSort) as room}
-          <tr
-            class="clickable"
-            on:dblclick={() => join(room.name)}
-            on:contextmenu={(e) =>
-              openMenu(e, [{ label: 'Join Room', action: () => join(room.name) }])}
-          >
-            <td class="grow">{room.name}</td>
-            <td>{room.users}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  </div>
-  <span>Double-click a room to join it.</span>
-{:else if current}
+{#if showList}
+  <DataTable
+    id="rooms"
+    label="Available rooms"
+    rows={available}
+    key={(r) => r.name}
+    columns={roomColumns}
+    typeahead={(r) => r.name}
+    copyText={(r) => r.name}
+    empty={$status.logged_in
+      ? needle
+        ? `No room matches “${roomName.trim()}”. Press Enter to create and join it.`
+        : 'The server has not sent the room list yet.'
+      : 'Not connected to Soulseek. The room list loads after login.'}
+    onactivate={(rows) => join(rows[0].name)}
+    onmenu={roomMenu}
+  />
+  <p class="hint">Double-click a room or press {keyLabel('enter')} to join it.</p>
+{:else}
   <div class="split">
     <div class="main">
-      <div class="messages" tabindex="0" use:autoscroll={current.messages}>
-        {#each current.messages as message}
-          <div class="message">
-            <span class="time">{formatTime(message.timestamp)}</span>
-            <span
-              class="sender"
-              class:self={message.sender === $status.username}
-              on:contextmenu={(e) => openMenu(e, userMenu(message.sender))}
-            >
-              {message.sender}:
-            </span>
-            <span>{message.message}</span>
-          </div>
-        {/each}
-      </div>
-      <div class="toolbar">
-        <input {...noAutofill}
-          style="flex: 1;"
-          placeholder="Message {selected}…"
-          bind:value={draft}
-          on:keydown={(e) => e.key === 'Enter' && send()}
-        />
-        <button on:click={send}>Send</button>
-      </div>
+      <MessageLog
+        key={roomKey(selected)}
+        messages={$conversations.get(roomKey(selected)) ?? []}
+        self={$status.username}
+        active={$route.tab === 'rooms'}
+        senderMenu={(e, sender) => openMenu(e, userMenu(sender))}
+        bind:this={log}
+      />
+      <Composer
+        key={roomKey(selected)}
+        placeholder="Message {selected}…"
+        onsent={() => log.toBottom()}
+      />
     </div>
     <div class="side">
-      <span>{current.users.length} users</span>
-      <div class="list" tabindex="0">
-        {#each current.users as user}
-          <div on:contextmenu={(e) => openMenu(e, userMenu(user))}>{user}</div>
-        {/each}
-      </div>
+      <span class="count">{plural(users.length, 'user')}</span>
+      <DataTable
+        id="room-users"
+        label="Users in {selected}"
+        rows={users}
+        key={(u) => u}
+        columns={userColumns}
+        viewKey={selected}
+        typeahead={(u) => u}
+        copyText={(u) => u}
+        empty="Nobody here."
+        onactivate={(rows) => openUserInfo(rows[0])}
+        onmenu={(rows, point) => openMenuAt(point, userMenu(rows[0], { primary: true }))}
+      />
     </div>
   </div>
-{:else}
-  <span>Join a room to start chatting.</span>
 {/if}

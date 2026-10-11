@@ -1,359 +1,229 @@
 <script>
   import { get, post } from '../lib/api.js';
-  import { formatSize, formatTime, baseName } from '../lib/format.js';
-  import { activeTab } from '../lib/ui.js';
-  import { openMenu } from '../lib/menu.js';
+  import { act } from '../lib/act.js';
+  import { persisted } from '../lib/persisted.js';
+  import {
+    formatSize, formatSpeed, formatCount, formatDateTime, baseName, plural,
+  } from '../lib/format.js';
+  import { route, openUserInfo } from '../lib/ui.js';
+  import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
-  import { sortRows } from '../lib/sort.js';
-  import Th from '../lib/Th.svelte';
+  import DataTable from '../lib/DataTable.svelte';
 
   const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const VIEWS = [
+    ['overview', 'Overview'],
+    ['files', 'Top Uploaded Files'],
+    ['recipients', 'Top Recipients'],
+    ['verdicts', 'Peer Verdicts'],
+    ['peers', 'Peers Seen'],
+  ];
+  const COUNTRY_ROWS = 10;
+
+  const view = persisted('statistics.view', 'overview', (v) => VIEWS.some(([id]) => id === v));
+  const count = (key, label, width = 84) => ({
+    key, label, width, align: 'end', desc: true,
+    text: (r) => (r[key] === null ? '' : formatCount(r[key])), sortValue: (r) => r[key] ?? -1,
+  });
+  const when = (key, label) => ({
+    key, label, width: 150, desc: true,
+    text: (r) => (r[key] ? formatDateTime(r[key]) : ''), sortValue: (r) => r[key] ?? 0,
+  });
+  const user = { key: 'username', label: 'User', grow: 1, min: 140, text: (r) => r.username };
+  const text = (key, label, width) => ({ key, label, width, text: (r) => r[key] ?? '' });
+
+  const fileColumns = [
+    { key: 'file', label: 'File', grow: 1, min: 240, tail: 12, text: (f) => baseName(f.virtual_path) },
+    count('count', 'Times'),
+    { key: 'bytes', label: 'Sent', width: 96, align: 'end', desc: true, text: (f) => formatSize(f.bytes), sortValue: (f) => f.bytes },
+  ];
+  const recipientColumns = [
+    user,
+    count('count', 'Files'),
+    { key: 'bytes', label: 'Sent', width: 96, align: 'end', desc: true, text: (u) => formatSize(u.bytes), sortValue: (u) => u.bytes },
+  ];
+  const verdictColumns = [
+    user,
+    text('verdict', 'Verdict', 90),
+    { key: 'evidence', label: 'Evidence', grow: 1, min: 160, text: (r) => String(r.evidence) },
+    text('restriction', 'Restriction', 110),
+    text('country', 'Country', 70),
+    text('last_ip', 'IP Address', 120),
+    count('shared_files', 'Shared Files', 100),
+    when('convicted_at', 'Convicted'),
+    when('last_seen', 'Last Seen'),
+  ];
+  const peerColumns = [
+    user,
+    text('country', 'Country', 70),
+    count('searches', 'Searches'),
+    count('searches_matched', 'Matched'),
+    count('queue_requests', 'Queued'),
+    count('queue_rejected', 'Rejected'),
+    count('browses', 'Browses'),
+    count('shared_files', 'Shared Files', 100),
+    when('first_seen', 'First Seen'),
+    when('last_seen', 'Last Seen'),
+  ];
 
   let transfers = null;
   let peers = null;
-  let verdicts = [];
-  let fileSort = { key: null, dir: 1 };
-  let userSort = { key: null, dir: 1 };
-  let verdictSort = { key: null, dir: 1 };
-  let peerSort = { key: null, dir: 1 };
+  let verdicts = null;
+  let failure = '';
+  let loading = 0;
 
-  async function refresh() {
-    let verdictsResponse;
-    [transfers, peers, verdictsResponse] = await Promise.all([
-      get('/stats/transfers'),
-      get('/stats/peers'),
-      get('/stats/verdicts'),
-    ]);
-    verdicts = verdictsResponse.users;
+  function load(path, what, store) {
+    loading += 1;
+    return act(() => get(path), {
+      failed: `${what} not loaded`,
+      where: (message) => (failure = message),
+      then: store,
+    }).then(() => (loading -= 1));
   }
 
-  $: if ($activeTab === 'statistics') refresh();
-
-  function formatDate(timestamp) {
-    return new Date(timestamp * 1000).toLocaleDateString();
+  function refresh() {
+    if (loading) return;
+    failure = '';
+    load('/stats/transfers', 'Transfer statistics', (data) => (transfers = data));
+    load('/stats/peers', 'Peer statistics', (data) => (peers = data));
+    load('/stats/verdicts', 'Peer verdicts', (data) => (verdicts = data.users));
   }
 
-  function rowMenu(event, username) {
-    openMenu(event, [{ label: 'User Actions', submenu: userMenu(username) }]);
+  $: if ($route.tab === 'statistics') refresh();
+  $: waiting = failure ? '' : 'Adding up the transfer history… This can take a quarter of a minute.';
+  $: maxWeekday = transfers ? Math.max(1, ...transfers.weekday_uploads) : 1;
+  $: countries = peers ? countryRows(peers.countries) : [];
+
+  function countryRows(all) {
+    const total = all.reduce((sum, entry) => sum + entry.count, 0);
+    const top = all.slice(0, COUNTRY_ROWS).map((entry) => ({ label: entry.country, count: entry.count }));
+    const other = all.slice(COUNTRY_ROWS).reduce((sum, entry) => sum + entry.count, 0);
+    if (other) top.push({ label: 'Other', count: other });
+    const largest = Math.max(1, ...top.map((entry) => entry.count));
+    return top.map((entry) => ({
+      ...entry,
+      width: (entry.count / largest) * 100,
+      percent: Math.round((entry.count / total) * 100),
+    }));
   }
 
-  function verdictMenu(event, user) {
-    const items = [
+  function verdictMenu(rows, point) {
+    const row = rows[0];
+    openMenuAt(point, [
+      { label: 'View User Profile', primary: true, action: () => openUserInfo(row.username) },
       {
-        label: 'Clear verdict',
-        action: async () => {
-          await post(`/users/${encodeURIComponent(user.username)}/clear_verdict`, {});
-          refresh();
-        },
+        label: 'Clear Verdict',
+        action: () =>
+          act(() => post(`/users/${encodeURIComponent(row.username)}/clear_verdict`, {}), {
+            failed: `Verdict on ${row.username} not cleared`,
+            done: `Cleared the verdict on ${row.username}`,
+            then: refresh,
+          }),
+      },
+      {
+        label: 'Ban Last IP Address', disabled: !row.last_ip,
+        action: () =>
+          act(() => post('/ip_bans', { pattern: row.last_ip }), {
+            failed: `${row.last_ip} not banned`,
+            done: `Banned IP address ${row.last_ip}`,
+          }),
       },
       { sep: true },
-    ];
-    if (user.last_ip) {
-      items.push({
-        label: `Ban IP ${user.last_ip}`,
-        action: () => post('/ip_bans', { pattern: user.last_ip }),
-      });
-      items.push({ sep: true });
-    }
-    items.push({ label: 'User Actions', submenu: userMenu(user.username) });
-    openMenu(event, items);
+      { label: 'User Actions', submenu: userMenu(row.username) },
+    ]);
   }
 
-  $: uploads = transfers ? transfers.totals.upload : { count: 0, bytes: 0, avg_speed_bps: 0 };
-  $: uploadUsers = transfers ? transfers.unique_upload_users : 0;
-  $: downloads = transfers ? transfers.totals.download : { count: 0, bytes: 0 };
-  $: maxWeekday = Math.max(1, ...(transfers ? transfers.weekday_uploads : [0]));
-  $: pie = buildPie(peers ? peers.countries : []);
-  $: topFiles = sortRows(transfers ? transfers.top_files : [], fileSort, {
-    file: (f) => baseName(f.virtual_path),
-  });
-  $: topUsers = sortRows(transfers ? transfers.top_users : [], userSort);
-  $: verdictRows = sortRows(verdicts, verdictSort);
-  $: peerRows = sortRows(peers ? peers.users : [], peerSort);
-
-  function buildPie(countries) {
-    const total = countries.reduce((sum, entry) => sum + entry.count, 0);
-    if (!total) return null;
-    const slices = countries.slice(0, 8).map((entry) => ({
-      label: entry.country,
-      count: entry.count,
-    }));
-    const other = countries.slice(8).reduce((sum, entry) => sum + entry.count, 0);
-    if (other) slices.push({ label: 'Other', count: other });
-    let angle = 0;
-    const stops = [];
-    for (const [index, slice] of slices.entries()) {
-      slice.color = `hsl(${(index * 137) % 360} 40% 50%)`;
-      slice.percent = Math.round((slice.count / total) * 100);
-      const start = angle;
-      angle += (slice.count / total) * 360;
-      stops.push(`${slice.color} ${start}deg ${angle}deg`);
-    }
-    return { slices, gradient: `conic-gradient(${stops.join(', ')})` };
-  }
+  const userRowMenu = (rows, point) => openMenuAt(point, userMenu(rows[0].username, { primary: true }));
+  const openProfile = (rows) => openUserInfo(rows[0].username);
 </script>
 
 <div class="toolbar">
-  <button on:click={refresh}>Refresh</button>
-  <span>{peers ? peers.total : 0} peers seen</span>
-  <span>uploaded to {uploadUsers} distinct {uploadUsers === 1 ? 'user' : 'users'}</span>
+  {#each VIEWS as [id, label]}
+    <button class:active={$view === id} aria-pressed={$view === id} on:click={() => view.set(id)}>
+      {label}
+    </button>
+  {/each}
+  <span class="count">{loading ? (transfers ? 'Refreshing…' : '') : ''}</span>
+  <button class="spaced" on:click={refresh}>Refresh</button>
+  {#if failure}<span class="notice">{failure}</span>{/if}
 </div>
 
-<div class="scroll stats" tabindex="0">
-  <h3>Totals</h3>
-  <table>
-    <thead>
-      <tr>
-        <th class="grow">Direction</th>
-        <th>Finished</th>
-        <th>Total Size</th>
-        <th>Average Speed</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td class="grow">Uploads</td>
-        <td>{uploads.count}</td>
-        <td>{formatSize(uploads.bytes)}</td>
-        <td>{formatSize(uploads.avg_speed_bps)}/s</td>
-      </tr>
-      <tr>
-        <td class="grow">Downloads</td>
-        <td>{downloads.count}</td>
-        <td>{formatSize(downloads.bytes)}</td>
-        <td></td>
-      </tr>
-    </tbody>
-  </table>
+{#if $view === 'overview'}
+  {#if transfers && peers}
+  <div class="scroll page">
+    <h3>Totals</h3>
+    <dl class="facts wide">
+      <dt>Uploads finished</dt>
+      <dd>{formatCount(transfers.totals.upload.count)}</dd>
+      <dt>Uploaded</dt>
+      <dd>{formatSize(transfers.totals.upload.bytes)}</dd>
+      <dt>Average upload speed</dt>
+      <dd>{formatSpeed(transfers.totals.upload.avg_speed_bps)}</dd>
+      <dt>Uploaded to</dt>
+      <dd>{plural(transfers.unique_upload_users, 'distinct user')}</dd>
+      <dt>Downloads finished</dt>
+      <dd>{formatCount(transfers.totals.download.count)}</dd>
+      <dt>Downloaded</dt>
+      <dd>{formatSize(transfers.totals.download.bytes)}</dd>
+      <dt>Peers seen</dt>
+      <dd>{formatCount(peers.total)}</dd>
+    </dl>
 
-  <h3>Top Uploaded Files</h3>
-  <table>
-    <thead>
-      <tr>
-        <Th bind:sort={fileSort} key="file" grow>File</Th>
-        <Th bind:sort={fileSort} key="count">Times</Th>
-        <Th bind:sort={fileSort} key="bytes">Sent</Th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each topFiles as file}
-        <tr>
-          <td class="grow" title={file.virtual_path}>{baseName(file.virtual_path)}</td>
-          <td>{file.count}</td>
-          <td>{formatSize(file.bytes)}</td>
-        </tr>
+    <h3>Uploads by Weekday</h3>
+    <div class="bars">
+      {#each transfers.weekday_uploads as uploads, day}
+        <span>{WEEKDAYS[day]}</span>
+        <div class="meter"><div class="fill" style:width="{(uploads / maxWeekday) * 100}%"></div></div>
+        <span class="num">{formatCount(uploads)}</span>
+        <span></span>
       {/each}
-    </tbody>
-  </table>
-
-  <h3>Top Upload Recipients</h3>
-  <table>
-    <thead>
-      <tr>
-        <Th bind:sort={userSort} key="username" grow>User</Th>
-        <Th bind:sort={userSort} key="count">Files</Th>
-        <Th bind:sort={userSort} key="bytes">Sent</Th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each topUsers as user}
-        <tr on:contextmenu={(e) => rowMenu(e, user.username)}>
-          <td class="grow">{user.username}</td>
-          <td>{user.count}</td>
-          <td>{formatSize(user.bytes)}</td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-
-  <h3>Uploads by Weekday</h3>
-  <div class="bars">
-    {#each transfers ? transfers.weekday_uploads : [] as count, day}
-      <div class="bar-row">
-        <span class="bar-label">{WEEKDAYS[day]}</span>
-        <div class="bar-track">
-          <div class="bar" style:width="{(count / maxWeekday) * 100}%"></div>
-        </div>
-        <span class="bar-count">{count}</span>
-      </div>
-    {/each}
-  </div>
-
-  {#if pie}
-    <h3>Peer Countries</h3>
-    <div class="pie-section">
-      <div class="pie" style:background={pie.gradient}></div>
-      <div class="pie-legend">
-        {#each pie.slices as slice}
-          <div class="pie-entry">
-            <span class="swatch" style:background={slice.color}></span>
-            <span>{slice.label}: {slice.count} ({slice.percent}%)</span>
-          </div>
-        {/each}
-      </div>
     </div>
-  {/if}
 
-  {#if verdicts.length}
-    <h3>Peer Verdicts</h3>
-    <p class="hint">
-      Peers judged abusive or leech by client filtering. Clearing a verdict lifts the
-      restriction and resets the peer's counters, so they are judged again from scratch after a
-      fresh observation window. Adding one as a buddy exempts them permanently.
-    </p>
-    <div class="table-scroll">
-    <table>
-      <thead>
-        <tr>
-          <Th bind:sort={verdictSort} key="username" grow>User</Th>
-          <Th bind:sort={verdictSort} key="verdict">Verdict</Th>
-          <Th bind:sort={verdictSort} key="evidence">Evidence</Th>
-          <Th bind:sort={verdictSort} key="restriction">Restriction</Th>
-          <Th bind:sort={verdictSort} key="country">Country</Th>
-          <Th bind:sort={verdictSort} key="last_ip">IP</Th>
-          <Th bind:sort={verdictSort} key="shared_files">Shared Files</Th>
-          <Th bind:sort={verdictSort} key="convicted_at">Convicted</Th>
-          <Th bind:sort={verdictSort} key="last_seen">Last Seen</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each verdictRows as user (user.username)}
-          <tr on:contextmenu={(e) => verdictMenu(e, user)}>
-            <td class="grow">{user.username}</td>
-            <td>{user.verdict}</td>
-            <td>{user.evidence}</td>
-            <td>{user.restriction}</td>
-            <td>{user.country ?? ''}</td>
-            <td>{user.last_ip ?? ''}</td>
-            <td>{user.shared_files ?? ''}</td>
-            <td>{user.convicted_at ? formatDate(user.convicted_at) : ''}</td>
-            <td>{formatDate(user.last_seen)}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-    </div>
-  {/if}
-
-  <h3>Peers Seen</h3>
-  <div class="table-scroll">
-  <table>
-    <thead>
-      <tr>
-        <Th bind:sort={peerSort} key="username" grow>User</Th>
-        <Th bind:sort={peerSort} key="country">Country</Th>
-        <Th bind:sort={peerSort} key="searches">Searches</Th>
-        <Th bind:sort={peerSort} key="searches_matched">Matched</Th>
-        <Th bind:sort={peerSort} key="queue_requests">Queued</Th>
-        <Th bind:sort={peerSort} key="queue_rejected">Rejected</Th>
-        <Th bind:sort={peerSort} key="browses">Browses</Th>
-        <Th bind:sort={peerSort} key="shared_files">Shared Files</Th>
-        <Th bind:sort={peerSort} key="first_seen">First Seen</Th>
-        <Th bind:sort={peerSort} key="last_seen">Last Seen</Th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each peerRows as user (user.username)}
-        <tr on:contextmenu={(e) => rowMenu(e, user.username)}>
-          <td class="grow">{user.username}</td>
-          <td>{user.country ?? ''}</td>
-          <td>{user.searches}</td>
-          <td>{user.searches_matched}</td>
-          <td>{user.queue_requests}</td>
-          <td>{user.queue_rejected}</td>
-          <td>{user.browses}</td>
-          <td>{user.shared_files ?? ''}</td>
-          <td>{formatDate(user.first_seen)}</td>
-          <td>{formatDate(user.last_seen)} {formatTime(user.last_seen)}</td>
-        </tr>
+    <h3>Peers by Country</h3>
+    <div class="bars">
+      {#each countries as entry}
+        <span>{entry.label}</span>
+        <div class="meter"><div class="fill" style:width="{entry.width}%"></div></div>
+        <span class="num">{formatCount(entry.count)}</span>
+        <span class="num dim">{entry.percent}%</span>
+      {:else}
+        <span class="hint">No peers seen yet.</span>
       {/each}
-    </tbody>
-  </table>
+    </div>
   </div>
-</div>
-
-<style>
-  .stats h3 {
-    margin: 12px 8px 4px;
-    font-size: 13px;
-  }
-  .stats p.hint {
-    margin: 0 8px 4px;
-  }
-  .stats table {
-    width: calc(100% - 16px);
-    margin: 0 8px 8px;
-  }
-  .stats :global(th) {
-    position: static;
-  }
-  .table-scroll {
-    max-height: 320px;
-    overflow: auto;
-    margin: 0 8px 8px;
-    border: 1px solid var(--border-soft);
-  }
-  .table-scroll table {
-    width: 100%;
-    margin: 0;
-  }
-  .table-scroll :global(th) {
-    position: sticky;
-    top: 0;
-  }
-  .bars {
-    margin: 0 8px 8px;
-    max-width: 480px;
-  }
-  .bar-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .bar-label {
-    width: 80px;
-  }
-  .bar-track {
-    flex: 1;
-    height: 12px;
-    background: var(--chrome);
-    border: 1px solid var(--border-faint);
-  }
-  .bar {
-    height: 100%;
-    background: var(--selected);
-  }
-  .bar-count {
-    width: 48px;
-    text-align: right;
-  }
-  .pie-section {
-    display: flex;
-    align-items: center;
-    gap: 24px;
-    margin: 4px 8px 8px;
-  }
-  .pie {
-    width: 140px;
-    height: 140px;
-    border-radius: 50%;
-    border: 1px solid var(--border-faint);
-    flex-shrink: 0;
-  }
-  .pie-legend {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .pie-entry {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .swatch {
-    width: 10px;
-    height: 10px;
-    border: 1px solid var(--border-faint);
-    flex-shrink: 0;
-  }
-</style>
+  {:else}
+    <p class="hint">{waiting}</p>
+  {/if}
+{:else if $view === 'files'}
+  <DataTable
+    id="stats-files" label="Top uploaded files" rows={transfers ? transfers.top_files : []} loading={!transfers}
+    key={(f) => f.virtual_path} columns={fileColumns} primary
+    copyText={(f) => f.virtual_path} empty="Nothing has been uploaded yet."
+  />
+{:else if $view === 'recipients'}
+  <DataTable
+    id="stats-recipients" label="Top upload recipients" rows={transfers ? transfers.top_users : []} loading={!transfers}
+    key={(u) => u.username} columns={recipientColumns} primary typeahead={(u) => u.username}
+    copyText={(u) => u.username} empty="Nothing has been uploaded yet."
+    onactivate={openProfile} onmenu={userRowMenu}
+  />
+{:else if $view === 'verdicts'}
+  <p class="hint">
+    Peers judged abusive or leech by client filtering. Clearing a verdict lifts the restriction and
+    resets the peer's counters, so they are judged again from scratch. Adding one as a buddy
+    exempts them permanently.
+  </p>
+  <DataTable
+    id="stats-verdicts" label="Peer verdicts" rows={verdicts ?? []} loading={!verdicts}
+    key={(u) => u.username} columns={verdictColumns} primary typeahead={(u) => u.username}
+    copyText={(u) => u.username} empty="No peer has a verdict."
+    onactivate={openProfile} onmenu={verdictMenu}
+  />
+{:else}
+  <DataTable
+    id="stats-peers" label="Peers seen" rows={peers ? peers.users : []} loading={!peers}
+    key={(u) => u.username} columns={peerColumns} primary typeahead={(u) => u.username}
+    copyText={(u) => u.username} empty="No peers seen yet."
+    onactivate={openProfile} onmenu={userRowMenu}
+  />
+{/if}

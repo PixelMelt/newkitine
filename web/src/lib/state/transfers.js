@@ -5,10 +5,20 @@ export const uploads = writable({});
 
 export const isCleared = (s) => s === 'finished' || s === 'aborted' || s === 'failed';
 
+export const transferKey = (username, virtualPath) => `${username}\u0000${virtualPath}`;
+
 export const speedTotals = derived([downloads, uploads], ([$downloads, $uploads]) => ({
 	down: Object.values($downloads).reduce((n, t) => n + t.speed_bps, 0),
 	up: Object.values($uploads).reduce((n, t) => n + t.speed_bps, 0),
 }));
+
+export const downloadIndex = derived(downloads, ($downloads) => {
+	const index = new Map();
+	for (const transfer of Object.values($downloads)) {
+		index.set(transferKey(transfer.username, transfer.virtual_path), transfer);
+	}
+	return index;
+});
 
 export function applySnapshot(msg) {
 	downloads.set(Object.fromEntries(msg.downloads.map((t) => [t.id, t])));

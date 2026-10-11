@@ -1,5 +1,14 @@
 import { writable } from 'svelte/store';
 
+const RETAINED = 20;
+const EXPIRY_MS = { info: 6000, done: 6000, error: 20000 };
+const ACTION_EXPIRY_MS = 10000;
+
+const LOGIN_REASONS = {
+	INVALIDPASS: 'wrong password',
+	INVALIDUSERNAME: 'the server rejected the username',
+};
+
 export const status = writable({
 	connected: false,
 	logged_in: false,
@@ -15,32 +24,67 @@ export const status = writable({
 	privileges_secs: 0,
 	peer_connections: 0,
 });
-export const notices = writable([]);
 export const settings = writable({ settings: null, locked: [], gluetun: false });
+export const loginFailure = writable(null);
+export const reports = writable([]);
+export const shownReport = writable(null);
 
-export function applyTheme(theme) {
+let nextReportId = 1;
+let expiry = null;
+
+function push(kind, text, action) {
+	const entry = { id: nextReportId++, kind, text, at: Date.now(), action };
+	reports.update((list) => [...list.slice(1 - RETAINED), entry]);
+	shownReport.set(entry);
+	clearTimeout(expiry);
+	expiry = setTimeout(dismissReport, action ? ACTION_EXPIRY_MS : EXPIRY_MS[kind]);
+}
+
+export function dismissReport() {
+	clearTimeout(expiry);
+	shownReport.set(null);
+}
+
+export const report = {
+	error: (text, action) => push('error', text, action),
+	done: (text, action) => push('done', text, action),
+	info: (text) => push('info', text),
+};
+
+export function previewTheme(theme) {
 	document.documentElement.dataset.theme = theme;
+}
+
+function applyTheme(theme) {
+	previewTheme(theme);
 	localStorage.setItem('theme', theme);
 }
 
-export function notice(text) {
-	notices.update((list) => [...list.slice(-19), { text, at: Date.now() }]);
+function applyStatus(next) {
+	status.set(next);
+	if (next.connected) loginFailure.set(null);
 }
 
 export function applySnapshot(msg) {
-	status.set(msg.status);
+	applyStatus(msg.status);
 	settings.set(msg.settings);
-	applyTheme(msg.settings.settings.theme);
+	if (localStorage.getItem('theme') !== msg.settings.settings.theme) {
+		applyTheme(msg.settings.settings.theme);
+	}
 }
 
 export const handlers = {
-	status: (msg) => status.set(msg.status),
+	status: (msg) => applyStatus(msg.status),
 	conn_count: (msg) => status.update((s) => ({ ...s, peer_connections: msg.count })),
-	login_failed: (msg) => notice(`login failed: ${msg.reason} ${msg.detail ?? ''}`),
-	server_message: (msg) => notice(`server: ${msg.message}`),
-	relogged: () => notice('Someone logged in to your Soulseek account elsewhere'),
+	login_failed: (msg) => {
+		const reason = LOGIN_REASONS[msg.reason] ?? msg.reason;
+		loginFailure.set(msg.detail ? `${reason} (${msg.detail})` : reason);
+	},
+	server_message: (msg) => report.info(`Soulseek server: ${msg.message}`),
+	relogged: () =>
+		report.error('Signed out: this Soulseek account logged in from somewhere else'),
 	settings: (msg) => {
 		settings.set({ settings: msg.settings, locked: msg.locked, gluetun: msg.gluetun });
-		applyTheme(msg.settings.theme);
+		if (localStorage.getItem('theme') !== msg.settings.theme) applyTheme(msg.settings.theme);
 	},
 };
