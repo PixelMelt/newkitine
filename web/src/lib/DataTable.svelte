@@ -292,7 +292,6 @@
           <div
             class="row"
             class:selected={selection.has(key(row))}
-            class:cursor={cursor === key(row) && !selection.has(cursor)}
             role="row"
             aria-selected={selection.has(key(row))}
             style:grid-template-columns={template}
@@ -397,11 +396,6 @@
   }
   .datatable:focus {
     outline: none;
-    border-color: var(--accent);
-  }
-  .datatable:focus .row.cursor {
-    outline: 1px dotted var(--text-dim);
-    outline-offset: -1px;
   }
   .cell.dim {
     color: var(--text-dim);

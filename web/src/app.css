@@ -92,11 +92,6 @@ a {
 	color: var(--unread);
 }
 
-:focus-visible {
-	outline: 1px solid var(--accent);
-	outline-offset: -1px;
-}
-
 button {
 	font: inherit;
 	padding: 2px 8px;
@@ -628,7 +623,7 @@ p {
 	cursor: default;
 }
 
-.menu:focus-visible {
+.menu:focus {
 	outline: none;
 }
 
@@ -746,9 +741,10 @@ p {
 
 .tree:focus,
 .list:focus,
-.messages:focus {
+.messages:focus,
+.tabs a:focus,
+.subtab button:focus {
 	outline: none;
-	border-color: var(--accent);
 }
 
 .tree:focus .node.selected {

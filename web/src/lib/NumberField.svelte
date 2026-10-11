@@ -1,5 +1,6 @@
 <script>
   import { onDestroy } from 'svelte';
+  import { noAutofill } from './ui.js';
 
   export let id;
   export let value;
@@ -49,13 +50,12 @@
   }
 </script>
 
-<input
+<input {...noAutofill}
   {id}
   class="number"
   class:invalid
   type="text"
   inputmode="numeric"
-  autocomplete="off"
   readonly={locked}
   aria-invalid={invalid}
   bind:value={text}

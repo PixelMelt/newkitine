@@ -240,7 +240,7 @@
       </div>
     </div>
 
-    <form class="main" on:submit|preventDefault={save}>
+    <div class="main">
       <div class="scroll settings-page">
         {#key version}
         {#if page === 'network'}
@@ -248,7 +248,7 @@
           <div class="form-row">
             <label for="set-username">Username</label>
             <div class="control">
-              <input id="set-username" type="text" autocomplete="off" bind:value={draft.username}
+              <input {...noAutofill} id="set-username" type="text" bind:value={draft.username}
                 readonly={locked.has('username')} />
               {#if locked.has('username')}<span class="hint">Set by {lockedBy.username}.</span>{/if}
             </div>
@@ -256,7 +256,7 @@
           <div class="form-row">
             <label for="set-password">Password</label>
             <div class="control">
-              <input id="set-password" type="password" autocomplete="new-password"
+              <input {...noAutofill} autocomplete="new-password" id="set-password" type="password"
                 bind:value={draft.password} readonly={locked.has('password')} />
               <span class="hint">
                 {#if locked.has('password')}Set by {lockedBy.password}.
@@ -268,7 +268,7 @@
           <div class="form-row">
             <label for="set-server">Server address</label>
             <div class="control">
-              <input id="set-server" type="text" autocomplete="off" bind:value={draft.server}
+              <input {...noAutofill} id="set-server" type="text" bind:value={draft.server}
                 readonly={locked.has('server')} />
               {#if locked.has('server')}<span class="hint">Set by {lockedBy.server}.</span>{/if}
             </div>
@@ -600,7 +600,7 @@
       </div>
 
       <div class="toolbar savebar">
-        <button type="submit">Save</button>
+        <button type="button" on:click={save}>Save</button>
         {#if saveError}<span class="notice">{saveError}</span>
         {:else if dirty}<span>Unsaved changes.</span>
         {:else if discarded}
@@ -609,7 +609,7 @@
         {:else if savedAt}<span class="hint">Saved at {formatTime(savedAt)}.</span>{/if}
         <button type="button" class="spaced" on:click={discard}>Discard Changes</button>
       </div>
-    </form>
+    </div>
   </div>
 {:else}
   <p class="hint">Waiting for the Newkitine server to send the preferences…</p>
