@@ -290,11 +290,12 @@ impl ClientActor {
                 if self.session.connected {
                     warn!("already connected, ignoring connect request");
                 } else {
-                    self.connect();
+                    self.connect_when_shares_load();
                 }
             }
             ClientCommand::Reconnect => self.reconnect(),
             ClientCommand::Disconnect => {
+                self.session.connect_deferred = false;
                 self.session.reconnect_at = None;
                 self.session.reconnect_now = false;
                 self.net.send(NetworkCommand::ServerDisconnect);

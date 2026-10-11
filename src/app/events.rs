@@ -40,9 +40,9 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
     if stored_names(&event)
         .into_iter()
         .flatten()
-        .any(|name| name.len() > USERNAME_LIMIT)
+        .any(|name| name.len() > USERNAME_LIMIT || name == "." || name == "..")
     {
-        tracing::warn!("dropping an event whose user or room name exceeds the stored length");
+        tracing::warn!("dropping an event whose user or room name cannot be stored or addressed");
         return;
     }
     match event {

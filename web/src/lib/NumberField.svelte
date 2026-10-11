@@ -12,6 +12,7 @@
 
   let text = String(value);
   let committed = value;
+  let entered = value;
 
   $: if (value !== committed) {
     committed = value;
@@ -29,7 +30,11 @@
 
   function typing() {
     const number = parsed();
-    if (number === null) return;
+    if (number === null) {
+      committed = entered;
+      value = entered;
+      return;
+    }
     invalid = false;
     committed = number;
     value = number;
@@ -44,6 +49,8 @@
   function keydown(event) {
     if (event.key === 'Enter') commit();
     else if (event.key === 'Escape') {
+      committed = entered;
+      value = entered;
       text = String(value);
       invalid = false;
     }
@@ -59,7 +66,10 @@
   readonly={locked}
   aria-invalid={invalid}
   bind:value={text}
-  on:focus={(e) => e.target.select()}
+  on:focus={(e) => {
+    entered = value;
+    e.target.select();
+  }}
   on:input={typing}
   on:blur={commit}
   on:keydown={keydown}

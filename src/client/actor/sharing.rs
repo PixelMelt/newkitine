@@ -18,6 +18,7 @@ const BROWSE_COALESCE_WINDOW: Duration = Duration::from_millis(400);
 pub(super) enum ScanUpdate {
     Progress(u64),
     Index(Box<SharesIndex>),
+    CachedReady,
     Done(Result<(), ScanError>),
 }
 
@@ -48,6 +49,7 @@ impl ScanJob {
 pub(super) struct Sharing {
     pub(super) index: Option<SharesIndex>,
     running: Option<ScanJob>,
+    cached_loading: bool,
     pending: Option<ScanJob>,
     cancel: Arc<AtomicBool>,
     scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
@@ -67,6 +69,7 @@ impl Sharing {
         Self {
             index: None,
             running: None,
+            cached_loading: false,
             pending: None,
             cancel: Arc::new(AtomicBool::new(false)),
             scan_results,
@@ -77,6 +80,10 @@ impl Sharing {
             empty_browse_frame: shares::empty_browse_frame(),
             browse_times: HashMap::new(),
         }
+    }
+
+    pub(super) fn is_loading_cached(&self) -> bool {
+        self.cached_loading
     }
 
     pub(super) fn counts(&self) -> (u32, u32) {
@@ -113,6 +120,7 @@ impl ClientActor {
     fn spawn_scan(&mut self, job: ScanJob) {
         self.sharing.last_progress = 0;
         self.sharing.running = Some(job);
+        self.sharing.cached_loading = job.install_cached;
         self.sharing.cancel = Arc::new(AtomicBool::new(false));
         let generation = self.sharing.generation;
         let shared_folders = self.config.shared_folders.clone();
@@ -138,6 +146,7 @@ impl ClientActor {
                         restricted,
                     ))));
                 }
+                send(ScanUpdate::CachedReady);
                 if !job.walk {
                     send(ScanUpdate::Done(Ok(())));
                     return;
@@ -186,8 +195,15 @@ impl ClientActor {
                     tokio::task::spawn_blocking(move || drop(index));
                 }
             }
+            ScanUpdate::CachedReady => {
+                if current {
+                    self.sharing.cached_loading = false;
+                    self.connect_if_deferred();
+                }
+            }
             ScanUpdate::Done(result) => {
                 self.sharing.running = None;
+                self.sharing.cached_loading = false;
                 if current {
                     match result {
                         Ok(()) => self.emit(ClientEvent::ShareScanFinished),
@@ -209,6 +225,7 @@ impl ClientActor {
                 if let Some(job) = self.sharing.pending.take() {
                     self.spawn_scan(job);
                 }
+                self.connect_if_deferred();
             }
         }
     }

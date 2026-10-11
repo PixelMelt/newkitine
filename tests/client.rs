@@ -1114,6 +1114,20 @@ async fn connect_while_connected_is_ignored() {
 }
 
 #[tokio::test]
+async fn a_requested_connect_waits_for_the_share_cache_and_then_logs_in() {
+    let (server_addr, _registry) = start_fake_server().await;
+    let mut config = client_config(server_addr, "ivan", free_port(), temp_dir("ivan-dl"));
+    config.connect_on_startup = false;
+    let (ivan, mut ivan_events, _ivan_transfers) = Client::spawn(config);
+    ivan.connect().await;
+    wait_client(&mut ivan_events, |event| match event {
+        ClientEvent::LoggedIn { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn removing_every_share_installs_an_empty_index_without_a_cache() {
     let (server_addr, _registry) = start_fake_server().await;
 

@@ -25,6 +25,7 @@ pub(super) struct Session {
     pub(super) connected: bool,
     pub(super) logged_in: bool,
     pub(super) reconnect_now: bool,
+    pub(super) connect_deferred: bool,
     pub(super) reconnect_at: Option<Instant>,
     reconnect_delay: Duration,
 }
@@ -35,6 +36,7 @@ impl Session {
             connected: false,
             logged_in: false,
             reconnect_now: false,
+            connect_deferred: false,
             reconnect_at: None,
             reconnect_delay: RECONNECT_INITIAL_DELAY,
         }
@@ -42,7 +44,23 @@ impl Session {
 }
 
 impl ClientActor {
+    pub(super) fn connect_when_shares_load(&mut self) {
+        if self.sharing.is_loading_cached() {
+            info!("waiting for the cached share index before connecting");
+            self.session.connect_deferred = true;
+        } else {
+            self.connect();
+        }
+    }
+
+    pub(super) fn connect_if_deferred(&mut self) {
+        if self.session.connect_deferred && !self.sharing.is_loading_cached() {
+            self.connect();
+        }
+    }
+
     pub(super) fn connect(&mut self) {
+        self.session.connect_deferred = false;
         self.session.connected = true;
         self.session.reconnect_at = None;
         self.emit(ClientEvent::Connecting);
