@@ -258,6 +258,11 @@ impl Actor {
             NetworkCommand::CloseConnection(conn_id) => {
                 self.close_conn(conn_id);
             }
+            NetworkCommand::CloseAddresses(patterns) => {
+                for conn_id in self.peers.from_addresses(&patterns) {
+                    self.close_conn(conn_id);
+                }
+            }
             NetworkCommand::Quit => unreachable!(),
         }
     }

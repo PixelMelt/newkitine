@@ -257,6 +257,8 @@ impl ClientActor {
                 self.users.ignored.remove(&username);
             }
             ClientCommand::SetIpBans { patterns } => {
+                self.net
+                    .send(NetworkCommand::CloseAddresses(patterns.clone()));
                 self.users.set_ip_bans(patterns);
             }
             ClientCommand::SetUserRestriction {

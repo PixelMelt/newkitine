@@ -118,12 +118,14 @@ impl UsersState {
     }
 
     fn insert_browse(&mut self, browse: BrowseView) -> Vec<String> {
-        self.browses.insert(browse.username.clone(), browse);
+        let newest = browse.username.clone();
+        self.browses.insert(newest.clone(), browse);
         let mut evicted = Vec::new();
         while self.browses.len() > MAX_RETAINED_BROWSES {
             let oldest = self
                 .browses
                 .values()
+                .filter(|browse| browse.username != newest)
                 .min_by_key(|browse| browse.received_at)
                 .unwrap()
                 .username

@@ -422,7 +422,10 @@ async fn add_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) ->
 
 async fn remove_ip_ban(State(app): State<Arc<App>>, Json(body): Json<IpBanBody>) -> StatusCode {
     let _mutation = app.list_mutation.lock().await;
-    if let Err(error) = db::remove_from_list(&app.db, "ip_ban", &body.pattern).await {
+    let Some(pattern) = canonical_ip_pattern(&body.pattern) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    if let Err(error) = db::remove_from_list(&app.db, "ip_ban", &pattern).await {
         return api::db_failed(error);
     }
     push_ip_bans(&app).await;

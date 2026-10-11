@@ -66,14 +66,17 @@ impl Chat {
     }
 }
 
+const CHAT_MESSAGE_LIMIT: usize = 16 * 1024;
+
 pub async fn insert_chat(
     executor: impl sqlx::MySqlExecutor<'_>,
     kind: &str,
     target: &str,
     sender: String,
-    message: String,
+    mut message: String,
     timestamp: i64,
 ) -> Result<ChatMessage, sqlx::Error> {
+    message.truncate(message.floor_char_boundary(CHAT_MESSAGE_LIMIT));
     let result = sqlx::query(
         "INSERT INTO chat_messages (kind, target, sender, message, timestamp) VALUES (?, ?, ?, ?, ?)",
     )

@@ -26,12 +26,13 @@ export function decodeSegment(segment) {
 	}
 }
 
-function parse(pathname, previous) {
+function parse(pathname, previous, exact = false) {
 	const [tab, item, ...rest] = pathname.split('/').filter(Boolean).map(decodeSegment);
 	if (!tab) return previous ?? { tab: 'search', items: {}, folder: null };
 	if (!TABS.includes(tab)) return { tab: 'search', items: previous?.items ?? {}, folder: null };
 	const items = { ...previous?.items };
 	if (item) items[tab] = item;
+	else if (exact) delete items[tab];
 	const folder = tab === 'browse' ? (rest.length ? rest.join('\\') : null) : (previous?.folder ?? null);
 	return { tab, items, folder };
 }
@@ -49,7 +50,7 @@ route.subscribe((value) =>
 	localStorage.setItem(STORAGE_KEY, JSON.stringify({ tab: value.tab, items: value.items })),
 );
 history.replaceState(null, '', pathOf(get(route)));
-window.addEventListener('popstate', () => route.set(parse(location.pathname, get(route))));
+window.addEventListener('popstate', () => route.set(parse(location.pathname, get(route), true)));
 
 function commit(next, replace) {
 	const path = pathOf(next);

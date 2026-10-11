@@ -127,6 +127,9 @@
       <div class="toolbar">
         <h3 class="fill">{info.username}</h3>
         <button on:click={() => request(info.username)}>Refresh</button>
+        {#if info.received && requests[info.username]?.failed}
+          <span class="notice">{requests[info.username].failed}</span>
+        {/if}
       </div>
       <div class="split scrolling">
         <div class="main">

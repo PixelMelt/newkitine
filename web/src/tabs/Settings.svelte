@@ -167,7 +167,8 @@
     }
     await tick();
     if (!dirty) return true;
-    const payload = payloadOf(draft, shareFiltersText, removed);
+    const payload = structuredClone(payloadOf(draft, shareFiltersText, removed));
+    const dropped = new Set(removed);
     const saved = await act(() => put('/settings', payload), {
       failed: 'Preferences not saved',
       where: (text, error) => {
@@ -184,8 +185,8 @@
     const sent = structuredClone(payload);
     draft.password_set = draft.password_set || Boolean(payload.password);
     draft.password = '';
-    draft.shares = payload.shares;
-    removed = new Set();
+    draft.shares = draft.shares.filter((share) => !dropped.has(share));
+    removed = new Set([...removed].filter((share) => !dropped.has(share)));
     delete sent.password;
     sent.password_set = draft.password_set;
     baseline = sent;

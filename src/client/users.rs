@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::network::NetworkHandle;
 use crate::protocol::ServerRequest;
-use crate::types::{Restriction, UserStatus};
+use crate::types::{Restriction, UserStatus, ip_matches};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Presence {
@@ -67,16 +67,7 @@ impl Users {
     }
 
     pub fn is_ip_banned(&self, ip: Ipv4Addr) -> bool {
-        let octets = ip.octets();
-        self.ip_bans.iter().any(|pattern| {
-            let mut parts = pattern.split('.');
-            let matched = octets.iter().all(|octet| {
-                parts
-                    .next()
-                    .is_some_and(|part| part == "*" || part == octet.to_string())
-            });
-            matched && parts.next().is_none()
-        })
+        self.ip_bans.iter().any(|pattern| ip_matches(pattern, ip))
     }
 
     pub fn set_restriction(&mut self, username: String, restriction: Restriction) {

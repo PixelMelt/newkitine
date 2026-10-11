@@ -12,7 +12,7 @@ use crate::network::conn::{
     ConnControl, PeerTask, SharedTraffic, run_incoming_peer, run_outgoing_peer,
 };
 use crate::protocol::{PeerInitMessage, PeerMessage, ServerRequest};
-use crate::types::{ConnectionType, TransferDirection};
+use crate::types::{ConnectionType, TransferDirection, ip_matches};
 
 #[derive(Clone)]
 pub(super) struct PeerIdentity {
@@ -88,6 +88,17 @@ impl Peers {
 
     pub(super) fn contains(&self, conn_id: ConnId) -> bool {
         self.conns.contains_key(&conn_id)
+    }
+
+    pub(super) fn from_addresses(&self, patterns: &[String]) -> Vec<ConnId> {
+        self.conns
+            .iter()
+            .filter(|(_, conn)| {
+                conn.ip
+                    .is_some_and(|ip| patterns.iter().any(|pattern| ip_matches(pattern, ip)))
+            })
+            .map(|(conn_id, _)| *conn_id)
+            .collect()
     }
 
     pub(super) fn count(&self) -> usize {

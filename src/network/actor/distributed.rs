@@ -103,8 +103,8 @@ impl Actor {
         if let Some(parent) = self.distributed.parent.take() {
             self.close_conn(parent);
         }
-        let children: Vec<ConnId> = self.distributed.child_peers.values().copied().collect();
-        for conn_id in children {
+        let children = std::mem::take(&mut self.distributed.child_peers);
+        for conn_id in children.into_values() {
             self.close_conn(conn_id);
         }
         self.send_have_no_parent();

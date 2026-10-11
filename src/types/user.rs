@@ -1,4 +1,16 @@
+use std::net::Ipv4Addr;
+
 pub const USERNAME_LIMIT: usize = 190;
+
+pub fn ip_matches(pattern: &str, ip: Ipv4Addr) -> bool {
+    let mut parts = pattern.split('.');
+    let matched = ip.octets().iter().all(|octet| {
+        parts
+            .next()
+            .is_some_and(|part| part == "*" || part == octet.to_string())
+    });
+    matched && parts.next().is_none()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UserStatus {

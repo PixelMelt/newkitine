@@ -62,6 +62,7 @@ pub enum NetworkCommand {
         directory: String,
     },
     CloseConnection(ConnId),
+    CloseAddresses(Vec<String>),
     Quit,
 }
 

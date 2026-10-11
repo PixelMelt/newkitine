@@ -747,7 +747,7 @@ impl Downloads {
                 if let Some(size) = filesize
                     && size > 0
                 {
-                    if transfer.size != size && transfer.size != 0 {
+                    if transfer.size != size {
                         transfer.size_changed = true;
                     }
                     transfer.size = size;

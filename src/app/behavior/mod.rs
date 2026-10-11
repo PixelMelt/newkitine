@@ -46,12 +46,21 @@ async fn exempt(app: &Arc<App>, username: &str) -> bool {
 
 async fn sync(app: &Arc<App>, username: &str) {
     let (level, messages) = policy(app);
-    let (verdict, evidence) = {
+    let (verdict, evidence, checking) = {
         let peers = app.behavior.peers.lock().unwrap();
         let peer = &peers[username];
-        (peer.verdict, peer.evidence.clone())
+        (
+            peer.verdict,
+            peer.evidence.clone(),
+            peer.check != Check::Idle,
+        )
     };
     let restriction = restriction_for(level, verdict, &messages);
+    let applied = if checking && level == FilterLevel::Strict && restriction == Restriction::None {
+        Restriction::Hold
+    } else {
+        restriction.clone()
+    };
     let timestamp = now();
     set_user_verdict(
         &app.db,
@@ -64,7 +73,7 @@ async fn sync(app: &Arc<App>, username: &str) {
     )
     .await
     .unwrap_or_else(|error| fatal(error));
-    app.client.set_user_restriction(username, restriction).await;
+    app.client.set_user_restriction(username, applied).await;
 }
 
 fn mark_verified(app: &App, username: &str) {
@@ -200,7 +209,7 @@ pub async fn stats_received(app: &Arc<App>, username: &str, files: u32, dirs: u3
         let awaiting_stats = matches!(peer.check, Check::AwaitingStats(_));
         let preset = PRESET_STATS.contains(&(files, dirs))
             && peer.verdict == Verdict::Clean
-            && peer.check == Check::Idle;
+            && (peer.check == Check::Idle || awaiting_stats);
         if preset || (awaiting_stats && files == 0) {
             let deadline = check_deadline();
             peer.check = Check::AwaitingBrowse(deadline);
@@ -356,6 +365,7 @@ fn release(app: &App, username: &str) -> bool {
 }
 
 pub async fn upload_delivered(app: &Arc<App>, username: &str, virtual_path: &str) {
+    let _transition = app.behavior.transition.lock().await;
     let timestamp = now();
     if let Some(last_at) = repeat_delivery(&app.db, username, virtual_path, timestamp).await {
         deny_file(app, username, virtual_path, last_at, timestamp).await;

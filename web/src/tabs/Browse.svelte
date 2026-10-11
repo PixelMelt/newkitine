@@ -22,6 +22,7 @@
   let username = '';
   let viewing = null;
   let filter = '';
+  let filterRun = 0;
   let tree = Object.create(null);
   let expanded = Object.create(null);
   let treeLoaded = false;
@@ -211,13 +212,15 @@
       return;
     }
     const user = viewing;
+    const run = ++filterRun;
     const data = await get(
       `/users/${encode(user)}/folders?filter=${encode(filter.trim())}&limit=${FOLDER_FILTER_LIMIT}`,
     );
-    if (user === viewing) flatFolders = data;
+    if (user === viewing && run === filterRun) flatFolders = data;
   }
 
   function clearFilter() {
+    filterRun += 1;
     filter = '';
     flatFolders = null;
   }

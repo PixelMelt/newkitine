@@ -184,6 +184,20 @@ async fn run_download(
     let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
 }
 
+const UPLOAD_WRITE_PIECE: usize = 4096;
+
+async fn write_progressing(
+    writer: &mut BufWriter<OwnedWriteHalf>,
+    bytes: &[u8],
+) -> Result<std::io::Result<()>, tokio::time::error::Elapsed> {
+    for piece in bytes.chunks(UPLOAD_WRITE_PIECE) {
+        if let Err(error) = timeout(PEER_IDLE_TIMEOUT, write_all(writer, piece)).await? {
+            return Ok(Err(error));
+        }
+    }
+    Ok(Ok(()))
+}
+
 async fn run_upload(
     task: TransferTask<'_>,
     writer: &mut BufWriter<OwnedWriteHalf>,
@@ -298,7 +312,7 @@ async fn run_upload(
             }
         };
         let written = tokio::select! {
-            written = timeout(PEER_IDLE_TIMEOUT, write_all(writer, &buffer[..count])) => written,
+            written = write_progressing(writer, &buffer[..count]) => written,
             ctrl = control.recv() => match ctrl {
                 Some(ConnControl::Close) | None => break None,
                 Some(other) => unreachable!("invalid upload control {other:?}"),

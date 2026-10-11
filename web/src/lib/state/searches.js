@@ -4,6 +4,7 @@ import { act } from '../act.js';
 import { post } from '../api.js';
 import { baseName, folderName, fold } from '../format.js';
 import { go } from '../ui.js';
+import { persisted, isRecord } from '../persisted.js';
 
 export const searches = writable([]);
 export const wishlist = writable([]);
@@ -18,7 +19,7 @@ export const interests = writable({
 	similar_users_for: null,
 });
 
-const scopes = new Map();
+const scopes = persisted('searchScopes', {}, isRecord);
 export const pendingTokens = new Set();
 let nextRowKey = 1;
 
@@ -43,7 +44,7 @@ export function startSearch(scope) {
 	return act(() => post('/searches', scope), {
 		failed: `Search for "${scope.query}" not started`,
 		then: ({ token }) => {
-			scopes.set(token, scope);
+			scopes.update((known) => ({ ...known, [token]: scope }));
 			if (!get(searches).some((s) => s.token === token)) pendingTokens.add(String(token));
 			go('search', String(token));
 		},
@@ -53,10 +54,13 @@ export function startSearch(scope) {
 export const openSearch = (query) => startSearch({ query, mode: 'global' });
 
 export const scopeOf = (search) =>
-	scopes.get(search.token) ?? { query: search.query, mode: 'global' };
+	get(scopes)[search.token] ?? { query: search.query, mode: 'global' };
 
 export function applySnapshot(msg) {
 	searches.set(msg.searches.map(viewOf));
+	scopes.update((known) =>
+		Object.fromEntries(msg.searches.filter((s) => s.token in known).map((s) => [s.token, known[s.token]])),
+	);
 	wishlist.set(msg.wishlist);
 	interests.set(msg.interests);
 }
@@ -76,7 +80,7 @@ export const handlers = {
 		});
 	},
 	search_removed: (msg) => {
-		scopes.delete(msg.token);
+		scopes.update(({ [msg.token]: _closed, ...rest }) => rest);
 		searches.update((list) => list.filter((s) => s.token !== msg.token));
 	},
 	wishlist: (msg) => wishlist.set(msg.wishlist),

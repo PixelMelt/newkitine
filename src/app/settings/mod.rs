@@ -289,6 +289,14 @@ impl Settings {
                 self.rescan_hour_utc
             ));
         }
+        let paths = [Some(&self.download_dir), self.incomplete_dir.as_ref()];
+        if paths
+            .into_iter()
+            .flatten()
+            .any(|path| path.as_os_str().as_encoded_bytes().contains(&0))
+        {
+            return Err("download_dir and incomplete_dir must not contain a NUL byte".into());
+        }
         if self.upload_slots == 0 {
             return Err("upload_slots must be at least 1".into());
         }
