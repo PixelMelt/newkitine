@@ -197,7 +197,22 @@ async fn run_upload(
         control,
         limits,
     } = task;
-    let offset = match timeout(PEER_IDLE_TIMEOUT, reader.read_u64_le()).await {
+    let offset = tokio::select! {
+        ctrl = control.recv() => match ctrl {
+            Some(ConnControl::Close) | None => {
+                let _ = events
+                    .send(ConnEvent::Closed {
+                        conn_id,
+                        error: None,
+                    })
+                    .await;
+                return;
+            }
+            Some(other) => unreachable!("invalid upload control {other:?}"),
+        },
+        offset = timeout(PEER_IDLE_TIMEOUT, reader.read_u64_le()) => offset,
+    };
+    let offset = match offset {
         Ok(Ok(offset)) => offset,
         Err(_) => {
             let _ = events

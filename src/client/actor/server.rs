@@ -45,6 +45,11 @@ impl ClientActor {
                 if !user_exists {
                     self.users.forget_watch(&user);
                 }
+                if let Some(stats) = &stats
+                    && user == self.config.login.username
+                {
+                    self.uploads.upload_speed = stats.avgspeed;
+                }
                 self.emit(ClientEvent::WatchedUser {
                     username: user,
                     exists: user_exists,
@@ -53,6 +58,9 @@ impl ClientActor {
                 });
             }
             ServerResponse::GetUserStats { user, stats } => {
+                if user == self.config.login.username {
+                    self.uploads.upload_speed = stats.avgspeed;
+                }
                 self.emit(ClientEvent::UserStats {
                     username: user,
                     stats,

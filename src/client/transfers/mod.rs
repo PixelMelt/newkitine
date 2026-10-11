@@ -17,6 +17,14 @@ use crate::types::{TransferDirection, TransferId, TransferSnapshot, TransferStat
 pub enum EnqueueResult {
     Enqueued,
     AlreadyActive,
+    PathTooLong,
+}
+
+pub const VIRTUAL_PATH_LIMIT: usize = 4096;
+const PEER_REASON_LIMIT: usize = 255;
+
+pub(super) fn peer_reason(reason: &str) -> String {
+    reason.chars().take(PEER_REASON_LIMIT).collect()
 }
 
 #[must_use]

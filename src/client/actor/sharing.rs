@@ -47,7 +47,7 @@ impl ScanJob {
 
 pub(super) struct Sharing {
     pub(super) index: Option<SharesIndex>,
-    running: bool,
+    running: Option<ScanJob>,
     pending: Option<ScanJob>,
     cancel: Arc<AtomicBool>,
     scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
@@ -66,7 +66,7 @@ impl Sharing {
     ) -> Self {
         Self {
             index: None,
-            running: false,
+            running: None,
             pending: None,
             cancel: Arc::new(AtomicBool::new(false)),
             scan_results,
@@ -94,8 +94,12 @@ impl ClientActor {
     pub(super) fn start_scan(&mut self, job: ScanJob) {
         self.sharing.generation += 1;
         self.emit(ClientEvent::ShareScanStarted);
-        if self.sharing.running {
+        if let Some(running) = self.sharing.running {
             self.sharing.cancel.store(true, Ordering::Relaxed);
+            let job = job.merge(ScanJob {
+                install_cached: running.install_cached,
+                walk: false,
+            });
             self.sharing.pending = Some(
                 self.sharing
                     .pending
@@ -108,7 +112,7 @@ impl ClientActor {
 
     fn spawn_scan(&mut self, job: ScanJob) {
         self.sharing.last_progress = 0;
-        self.sharing.running = true;
+        self.sharing.running = Some(job);
         self.sharing.cancel = Arc::new(AtomicBool::new(false));
         let generation = self.sharing.generation;
         let shared_folders = self.config.shared_folders.clone();
@@ -183,7 +187,7 @@ impl ClientActor {
                 }
             }
             ScanUpdate::Done(result) => {
-                self.sharing.running = false;
+                self.sharing.running = None;
                 if current {
                     match result {
                         Ok(()) => self.emit(ClientEvent::ShareScanFinished),

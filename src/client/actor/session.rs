@@ -180,7 +180,7 @@ impl ClientActor {
         self.net.server(ServerRequest::CheckPrivileges);
         self.downloads.start_session(&mut self.users);
         self.users.send_watches(&self.net);
-        let uploads = self.uploads.check_queue(&self.users);
+        let uploads = self.uploads.resume(&self.users);
         self.emit_transfers(uploads);
         self.emit(ClientEvent::LoggedIn { username, banner });
     }

@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::files;
 use super::registry::{Registry, TransferKey};
 use super::speed::SpeedMeter;
-use super::{TransferIds, TransferPhase, TransferRejectReason};
+use super::{TransferIds, TransferPhase, TransferRejectReason, VIRTUAL_PATH_LIMIT, peer_reason};
 use crate::client::users::Users;
 use crate::client::{AbortResult, EnqueueResult, RetryResult, TransferWork};
 use crate::network::ConnId;
@@ -58,6 +58,19 @@ fn recovery(phase: &TransferPhase) -> Option<Recovery> {
         }
         _ => None,
     }
+}
+
+fn is_local_error(phase: &TransferPhase) -> bool {
+    matches!(phase, TransferPhase::Failed(reason)
+        if reason.starts_with(LOCAL_FILE_ERROR) || reason.starts_with(PLACEMENT_ERROR))
+}
+
+fn is_internal_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        USER_OFFLINE | CONNECTION_TIMEOUT | CONNECTION_CLOSED | REQUEST_TIMED_OUT | UPLOAD_FAILED
+    ) || reason.starts_with(LOCAL_FILE_ERROR)
+        || reason.starts_with(PLACEMENT_ERROR)
 }
 
 fn parks_offline(phase: &TransferPhase) -> bool {
@@ -268,6 +281,9 @@ impl Downloads {
         file: FileInfo,
         root: Option<&str>,
     ) -> (EnqueueResult, Vec<TransferWork>) {
+        if file.name.len() > VIRTUAL_PATH_LIMIT {
+            return (EnqueueResult::PathTooLong, Vec::new());
+        }
         let Some(id) = self.admissible_id(ids, &username, &file.name) else {
             return (EnqueueResult::AlreadyActive, Vec::new());
         };
@@ -289,6 +305,10 @@ impl Downloads {
         let mut work = Vec::with_capacity(files.len());
         let mut requests = Vec::new();
         for file in files {
+            if file.name.len() > VIRTUAL_PATH_LIMIT {
+                warn!(username, "skipping a folder file whose path is too long");
+                continue;
+            }
             let Some(id) = self.admissible_id(ids, &username, &file.name) else {
                 continue;
             };
@@ -685,6 +705,9 @@ impl Downloads {
         let transfer = self
             .transfers
             .get_mut(&(username.to_owned(), virtual_path.to_owned()))?;
+        if transfer.phase != TransferPhase::Queued {
+            return None;
+        }
         transfer.queue_place = place;
         Some(TransferWork::Progress(transfer.snapshot()))
     }
@@ -908,7 +931,11 @@ impl Downloads {
             transfer.queue_place = 0;
             return vec![TransferWork::Update(transfer.snapshot())];
         }
-        self.fail(&key, reason.to_owned())
+        let reason = peer_reason(reason);
+        if is_internal_reason(&reason) {
+            return self.fail(&key, TransferRejectReason::CANCELLED.into());
+        }
+        self.fail(&key, reason)
     }
 
     pub fn handle_upload_failed(&mut self, username: &str, file: &str) -> Vec<TransferWork> {
@@ -919,7 +946,8 @@ impl Downloads {
         if matches!(
             transfer.phase,
             TransferPhase::Placing | TransferPhase::Finished | TransferPhase::Aborted
-        ) {
+        ) || is_local_error(&transfer.phase)
+        {
             return Vec::new();
         }
         if !transfer.retry_attempt {
@@ -952,7 +980,9 @@ impl Downloads {
         };
         let mut updates = Vec::new();
         for message in unsent {
-            if let PeerMessage::QueueUpload { file, .. } = message {
+            if let PeerMessage::QueueUpload { file, .. }
+            | PeerMessage::PlaceInQueueRequest { file, .. } = message
+            {
                 let key = (username.to_owned(), file.clone());
                 if self.transfers.get(&key).is_some_and(|transfer| {
                     matches!(
@@ -1518,6 +1548,46 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(harness.phase(&key), TransferPhase::Placing);
+    }
+
+    #[tokio::test]
+    async fn a_denial_reason_from_a_peer_is_bounded_and_cannot_name_an_internal_status() {
+        let mut harness = Harness::new("denial-reason");
+        let long = harness.queue("Music\\a.mp3");
+        let _ = harness
+            .downloads
+            .handle_upload_denied("uploader", &long.1, &"x".repeat(100_000));
+        let TransferPhase::Failed(reason) = harness.phase(&long) else {
+            panic!("expected a failed download");
+        };
+        assert_eq!(reason.len(), 255);
+
+        let spoofed = harness.queue("Music\\b.mp3");
+        let _ = harness
+            .downloads
+            .handle_upload_denied("uploader", &spoofed.1, CONNECTION_TIMEOUT);
+        assert_eq!(
+            harness.phase(&spoofed),
+            TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overlong_virtual_path_is_refused() {
+        let mut harness = Harness::new("long-path");
+        let (result, work) = harness.downloads.enqueue(
+            &mut harness.ids,
+            &mut harness.users,
+            "uploader".into(),
+            FileInfo {
+                name: "a".repeat(VIRTUAL_PATH_LIMIT + 1),
+                size: 1,
+                attributes: FileAttributes::default(),
+            },
+            None,
+        );
+        assert_eq!(result, EnqueueResult::PathTooLong);
+        assert!(work.is_empty());
     }
 
     #[tokio::test]

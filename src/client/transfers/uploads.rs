@@ -8,7 +8,7 @@ use tracing::{debug, info};
 use super::queue::UploadQueue;
 use super::registry::{Registry, TransferKey};
 use super::speed::SpeedMeter;
-use super::{TransferIds, TransferPhase, TransferRejectReason};
+use super::{TransferIds, TransferPhase, TransferRejectReason, peer_reason};
 use crate::client::shares::SharesIndex;
 use crate::client::users::Users;
 use crate::client::{AbortResult, TransferWork};
@@ -95,6 +95,7 @@ pub(in crate::client) struct Uploads {
     token: u32,
     retried_at: Instant,
     pub upload_speed: u32,
+    suspended: bool,
 }
 
 impl Uploads {
@@ -116,7 +117,13 @@ impl Uploads {
             token: initial_token(),
             retried_at: Instant::now(),
             upload_speed: 0,
+            suspended: false,
         }
+    }
+
+    pub fn resume(&mut self, users: &Users) -> Vec<TransferWork> {
+        self.suspended = false;
+        self.check_queue(users)
     }
 
     pub fn total_slots(&self) -> u32 {
@@ -338,6 +345,9 @@ impl Uploads {
 
     pub fn check_queue(&mut self, users: &Users) -> Vec<TransferWork> {
         let mut updates = Vec::new();
+        if self.suspended {
+            return updates;
+        }
         while self.is_new_upload_accepted() {
             let Some(key) = self.queue.select_next(users) else {
                 break;
@@ -499,7 +509,7 @@ impl Uploads {
             let mut updates = match reason {
                 TransferRejectReason::COMPLETE => self.finish(&key, 0),
                 CONNECTION_TIMEOUT => self.fail(&key, TransferRejectReason::CANCELLED.into()),
-                reason => self.fail(&key, reason.to_owned()),
+                reason => self.fail(&key, peer_reason(reason)),
             };
             updates.extend(self.check_queue(users));
             return updates;
@@ -644,10 +654,7 @@ impl Uploads {
                 );
                 self.fail(&key, "connection closed".into())
             }
-            _ => {
-                self.deactivate(&key);
-                Vec::new()
-            }
+            _ => self.fail(&key, CONNECTION_TIMEOUT.into()),
         };
         updates.extend(self.check_queue(users));
         updates
@@ -855,6 +862,8 @@ impl Uploads {
     }
 
     pub fn reset(&mut self) -> Vec<TransferWork> {
+        self.suspended = true;
+        self.upload_speed = 0;
         let active: Vec<TransferKey> = self
             .transfers
             .values()
@@ -885,8 +894,7 @@ impl Uploads {
         {
             let elapsed = started_at.elapsed().as_secs_f64();
             if elapsed >= 1.0 {
-                self.upload_speed = (delivered_bytes as f64 / elapsed) as u32;
-                avg_speed_bps = Some(self.upload_speed);
+                avg_speed_bps = Some((delivered_bytes as f64 / elapsed) as u32);
             }
         }
         let snapshot = self.transfers.get(key).unwrap().snapshot();

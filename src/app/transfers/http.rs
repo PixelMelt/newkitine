@@ -67,6 +67,7 @@ async fn enqueue_download(
     {
         EnqueueResult::Enqueued => StatusCode::ACCEPTED,
         EnqueueResult::AlreadyActive => StatusCode::CONFLICT,
+        EnqueueResult::PathTooLong => StatusCode::BAD_REQUEST,
     }
 }
 
@@ -136,6 +137,7 @@ async fn enqueue_folder_download(
         {
             EnqueueResult::Enqueued => enqueued += 1,
             EnqueueResult::AlreadyActive => already_active += 1,
+            EnqueueResult::PathTooLong => {}
         }
     }
     Json(json!({ "enqueued": enqueued, "already_active": already_active })).into_response()

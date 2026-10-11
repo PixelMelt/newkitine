@@ -13,8 +13,8 @@ use crate::types::{FileAttributes, UINT32_LIMIT};
 
 const AUDIO_EXTENSIONS: &[&str] = &[
     "aac", "ac3", "afc", "aif", "aifc", "aiff", "ape", "au", "bwav", "bwf", "dff", "dsd", "dsf",
-    "dts", "flac", "m4a", "m4b", "mka", "mp1", "mp2", "mp3", "mp+", "mpc", "oga", "ogg", "opus",
-    "spx", "tak", "tta", "wav", "wma", "wv",
+    "dts", "flac", "m4a", "m4b", "m4r", "m4v", "mka", "mp1", "mp2", "mp3", "mp4", "mp+", "mpc",
+    "oga", "ogg", "opus", "spx", "tak", "tta", "wav", "wma", "wv",
 ];
 
 const MPEG_READ_CHUNK: u64 = 16 * 1024;

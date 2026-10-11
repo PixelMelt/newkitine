@@ -92,6 +92,8 @@ pub struct Settings {
     pub pushover_private_messages: bool,
 }
 
+const MAX_QUEUE_SIZE_LIMIT_MB: u64 = 1 << 30;
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -285,6 +287,19 @@ impl Settings {
             return Err(format!(
                 "rescan_hour_utc {} is invalid: hours run 0-23",
                 self.rescan_hour_utc
+            ));
+        }
+        if self.upload_slots == 0 {
+            return Err("upload_slots must be at least 1".into());
+        }
+        if self.queue_file_limit == 0 {
+            return Err("queue_file_limit must be at least 1".into());
+        }
+        if self.queue_size_limit_mb > MAX_QUEUE_SIZE_LIMIT_MB {
+            return Err(format!(
+                "queue_size_limit_mb {} is invalid: the limit is bounded to \
+                 0-{MAX_QUEUE_SIZE_LIMIT_MB}",
+                self.queue_size_limit_mb
             ));
         }
         if self.banned_message.is_empty() {

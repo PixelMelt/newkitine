@@ -27,13 +27,30 @@ use crate::types::ConnectionType;
 const GHOST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn run_outgoing_peer(
-    task: PeerTask,
+    mut task: PeerTask,
     addr: SocketAddr,
     username: String,
     init: PeerInitMessage,
     conn_type: ConnectionType,
 ) {
-    let stream = match connect(addr).await {
+    let connected = tokio::select! {
+        biased;
+        ctrl = task.control.recv() => match ctrl {
+            Some(ConnControl::Close) | None => {
+                let _ = task
+                    .events
+                    .send(ConnEvent::Closed {
+                        conn_id: task.conn_id,
+                        error: None,
+                    })
+                    .await;
+                return;
+            }
+            Some(other) => unreachable!("invalid pre-connect control {other:?}"),
+        },
+        connected = connect(addr) => connected,
+    };
+    let stream = match connected {
         Ok(stream) => stream,
         Err(error) => {
             let _ = task
