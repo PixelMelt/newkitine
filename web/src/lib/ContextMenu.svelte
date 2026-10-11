@@ -8,6 +8,7 @@
   const SUBMENU_SWITCH_MS = 250;
   const TYPEAHEAD_RESET_MS = 500;
   const DRAG_THRESHOLD = 4;
+  const DRAG_RELEASE_MS = 300;
 
   let root;
   let active = -1;
@@ -18,6 +19,7 @@
   let typedAt = 0;
   let opened = null;
   let pressedSinceOpen = false;
+  let openedAt = 0;
 
   $: if ($menu !== opened) reset($menu);
   $: items = $menu ? $menu.items : [];
@@ -25,6 +27,7 @@
 
   function reset(next) {
     opened = next;
+    openedAt = Date.now();
     pressedSinceOpen = false;
     active = -1;
     sub = -1;
@@ -207,6 +210,7 @@
 
   function release(event) {
     if (!$menu || event.button !== 2 || pressedSinceOpen) return;
+    if (Date.now() - openedAt < DRAG_RELEASE_MS) return;
     if (Math.hypot(event.clientX - $menu.x, event.clientY - $menu.y) <= DRAG_THRESHOLD) return;
     const target = event.target.closest('.menu .item');
     if (!target) return;
@@ -227,6 +231,7 @@
       bind:this={root}
       use:placeRoot={$menu}
       on:keydown={keydown}
+      on:mousedown|preventDefault
       on:contextmenu|preventDefault|stopPropagation
     >
       {#each items as item, index}
@@ -256,7 +261,13 @@
     </div>
     {#if sub !== -1}
       {#key sub}
-        <div class="menu submenu" role="menu" use:placeSub={sub} on:contextmenu|preventDefault|stopPropagation>
+        <div
+          class="menu submenu"
+          role="menu"
+          use:placeSub={sub}
+          on:mousedown|preventDefault
+          on:contextmenu|preventDefault|stopPropagation
+        >
           {#each subItems as item, index}
             {#if item.sep}
               <div class="sep"></div>

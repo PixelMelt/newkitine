@@ -18,11 +18,17 @@ export const readMarks = persisted('readMarks', {}, isRecord);
 export const roomKey = (name) => `room:${name}`;
 export const chatKey = (username) => `chat:${username}`;
 
+const wholeWord = (word) =>
+	new RegExp(
+		`(?<![\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
+		'iu',
+	);
+
 export const unread = derived(
 	[conversations, readMarks, status],
 	([$conversations, $readMarks, $status]) => {
 		const result = new Map();
-		const self = $status.username.toLowerCase();
+		const mention = $status.username && wholeWord($status.username);
 		for (const [key, messages] of $conversations) {
 			if (!(key in $readMarks)) continue;
 			const fresh = messages.filter(
@@ -31,7 +37,7 @@ export const unread = derived(
 			if (!fresh.length) continue;
 			result.set(key, {
 				count: fresh.length,
-				mention: self !== '' && fresh.some((m) => m.message.toLowerCase().includes(self)),
+				mention: Boolean(mention) && fresh.some((m) => mention.test(m.message)),
 			});
 		}
 		return result;
@@ -152,6 +158,11 @@ export function applySnapshot(msg) {
 	);
 	rooms.set({ available: msg.rooms.available, joined });
 	chatPartners.set(msg.chat_partners);
+	const open = new Set([...joined.keys()].map(roomKey).concat(msg.chat_partners.map(chatKey)));
+	conversations.update((map) => {
+		for (const key of map.keys()) if (!open.has(key)) map.delete(key);
+		return map;
+	});
 	for (const name of joined.keys()) loadRoomHistory(name);
 	for (const username of msg.chat_partners) loadChatHistory(username, firstVisit);
 }

@@ -38,7 +38,7 @@
     const now = Date.now();
     typed = now - typedAt > TYPEAHEAD_RESET_MS ? character : typed + character;
     typedAt = now;
-    const from = Math.max(0, at) + (typed.length === 1 ? 1 : 0);
+    const from = at === -1 ? 0 : at + (typed.length === 1 ? 1 : 0);
     for (let offset = 0; offset < nodes.length; offset++) {
       const index = (from + offset) % nodes.length;
       if (fold(nodes[index].node.name).startsWith(fold(typed))) return choose(index);

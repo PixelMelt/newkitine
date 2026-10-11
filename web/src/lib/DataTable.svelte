@@ -35,6 +35,7 @@
   let scrollTop = 0;
   let height = 0;
   let cursor = null;
+  let cursorAt = 0;
   let anchor = null;
   let sort = loadSort();
   let currentView = viewKey;
@@ -52,7 +53,7 @@
     .map((c) => (c.width ? `${c.width}px` : `minmax(${c.min}px, ${c.grow}fr)`))
     .join(' ');
   $: minWidth = columns.reduce((sum, c) => sum + (c.width ?? c.min), 0);
-  $: sorted = resort(rows, sort);
+  $: sorted = resort(rows, sort, columns);
   $: if (height) scrollTop = container.scrollTop;
   $: indexOf = new Map(sorted.map((row, index) => [key(row), index]));
   $: if ([...selection].some((k) => !indexOf.has(k))) {
@@ -63,8 +64,16 @@
   $: visible = sorted.slice(start, end);
   $: if (viewKey !== currentView) switchView(viewKey);
 
-  function resort(list, order) {
-    return sortRows(list, order, columns);
+  function resort(list, order, shown) {
+    return sortRows(list, order, shown);
+  }
+
+  $: followCursor(indexOf);
+
+  function followCursor(index) {
+    if (cursor === null) return;
+    if (index.has(cursor)) cursorAt = index.get(cursor);
+    else cursor = sorted.length ? key(sorted[Math.min(cursorAt, sorted.length - 1)]) : null;
   }
 
   async function switchView(next) {
@@ -84,6 +93,10 @@
 
   function selectedRows() {
     return sorted.filter((row) => selection.has(key(row)));
+  }
+
+  function menuRows(target) {
+    return [target, ...selectedRows().filter((row) => row !== target)];
   }
 
   function cycleSort(column) {
@@ -140,7 +153,10 @@
 
   function rowDown(event, row) {
     if (event.button !== 0) return;
-    if (event.detail > 1) event.preventDefault();
+    if (event.detail > 1) {
+      event.preventDefault();
+      return;
+    }
     pick(event, key(row));
   }
 
@@ -154,7 +170,7 @@
       cursor = k;
     }
     container.focus();
-    onmenu(selectedRows(), { x: event.clientX, y: event.clientY });
+    onmenu(menuRows(row), { x: event.clientX, y: event.clientY });
   }
 
   function backgroundDown(event) {
@@ -171,7 +187,7 @@
       : sorted.findIndex((row) => selection.has(key(row)));
     reveal(index);
     const box = container.getBoundingClientRect();
-    onmenu(selectedRows(), {
+    onmenu(menuRows(sorted[index]), {
       x: box.left + 24,
       y: box.top + header + (index + 1) * ROW - container.scrollTop,
     });
@@ -298,7 +314,7 @@
             aria-selected={selection.has(key(row))}
             style:grid-template-columns={template}
             on:mousedown={(e) => rowDown(e, row)}
-            on:dblclick={() => onactivate && onactivate(selectedRows())}
+            on:dblclick={() => onactivate && selection.size && onactivate(selectedRows())}
             on:contextmenu={(e) => onmenu && rowMenu(e, row)}
           >
             {#each columns as column}
