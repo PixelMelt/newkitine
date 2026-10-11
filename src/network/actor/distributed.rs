@@ -8,7 +8,7 @@ use crate::network::ConnId;
 use crate::network::NetworkEvent;
 use crate::network::conn::ConnControl;
 use crate::protocol::{DistributedMessage, DistributedSearch, ParentCandidate, ServerRequest};
-use crate::types::ConnectionType;
+use crate::types::{ConnectionType, USERNAME_LIMIT};
 
 const MAX_DISTRIB_CHILDREN_LIMIT: u32 = 10;
 const SEARCH_IDENTIFIER: u32 = 49;
@@ -223,6 +223,9 @@ impl Actor {
     }
 
     fn forward_search(&mut self, search: DistributedSearch) {
+        if search.search_username.len() > USERNAME_LIMIT {
+            return;
+        }
         self.send_to_child_peers(search.to_bytes());
         self.emit(NetworkEvent::DistributedSearch {
             username: search.search_username,

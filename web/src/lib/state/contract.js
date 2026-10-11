@@ -231,6 +231,7 @@ const events = {
 	user_info_removed: shape({ rev: num, username: str }),
 	browse_loaded: shape({ rev: num, username: str, received_at: num }),
 	browse_removed: shape({ rev: num, username: str }),
+	browse_failed: shape({ rev: num, username: str }),
 	folder_request_failed: shape({ rev: num, username: str, directory: str }),
 	private_message: shape({ rev: num, username: str, message: chatMessage }),
 	chat_opened: shape({ rev: num, username: str }),

@@ -48,9 +48,11 @@ function merge(key, incoming, limit) {
 	});
 }
 
-function seedReadMark(key, messages) {
+const firstVisit = Object.keys(get(readMarks)).length === 0;
+
+function seedReadMark(key, messages, read) {
 	readMarks.update((marks) =>
-		key in marks ? marks : { ...marks, [key]: messages.length ? messages.at(-1).id : 0 },
+		key in marks ? marks : { ...marks, [key]: read && messages.length ? messages.at(-1).id : 0 },
 	);
 }
 
@@ -63,13 +65,13 @@ export function markRead(key) {
 
 async function loadRoomHistory(name) {
 	const data = await apiGet(`/rooms/${encodeURIComponent(name)}/messages?limit=${ROOM_HISTORY}`);
-	seedReadMark(roomKey(name), data.messages);
+	seedReadMark(roomKey(name), data.messages, true);
 	merge(roomKey(name), data.messages, ROOM_MESSAGE_LIMIT);
 }
 
-async function loadChatHistory(username) {
+async function loadChatHistory(username, read = true) {
 	const data = await apiGet(`/chats/${encodeURIComponent(username)}?limit=${CHAT_HISTORY}`);
-	seedReadMark(chatKey(username), data.messages);
+	seedReadMark(chatKey(username), data.messages, read);
 	merge(chatKey(username), data.messages);
 }
 
@@ -151,7 +153,7 @@ export function applySnapshot(msg) {
 	rooms.set({ available: msg.rooms.available, joined });
 	chatPartners.set(msg.chat_partners);
 	for (const name of joined.keys()) loadRoomHistory(name);
-	for (const username of msg.chat_partners) loadChatHistory(username);
+	for (const username of msg.chat_partners) loadChatHistory(username, firstVisit);
 }
 
 export const handlers = {

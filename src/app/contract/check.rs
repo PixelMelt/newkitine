@@ -46,6 +46,7 @@ event_tags![
     (UserInfoRemoved, "user_info_removed"),
     (BrowseLoaded, "browse_loaded"),
     (BrowseRemoved, "browse_removed"),
+    (BrowseFailed, "browse_failed"),
     (FolderRequestFailed, "folder_request_failed"),
     (PrivateMessage, "private_message"),
     (ChatOpened, "chat_opened"),
@@ -268,6 +269,9 @@ fn fixture_events() -> Vec<AppEvent> {
             received_at: 1,
         },
         AppEvent::BrowseRemoved {
+            username: "peer".into(),
+        },
+        AppEvent::BrowseFailed {
             username: "peer".into(),
         },
         AppEvent::FolderRequestFailed {

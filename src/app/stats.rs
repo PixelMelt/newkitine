@@ -111,7 +111,7 @@ async fn transfer_stats(pool: &MySqlPool) -> serde_json::Value {
         );
     }
     for row in sqlx::query(
-        "SELECT direction, COUNT(*), CAST(SUM(size) AS UNSIGNED),
+        "SELECT direction, COUNT(*), CAST(SUM(COALESCE(bytes, size)) AS UNSIGNED),
                 CAST(COALESCE(AVG(speed_bps), 0) AS UNSIGNED)
          FROM transfer_history GROUP BY direction",
     )
@@ -139,7 +139,7 @@ async fn transfer_stats(pool: &MySqlPool) -> serde_json::Value {
     .get(0);
 
     let top_files: Vec<serde_json::Value> = sqlx::query(
-        "SELECT virtual_path, COUNT(*) AS c, CAST(SUM(size) AS UNSIGNED)
+        "SELECT virtual_path, COUNT(*) AS c, CAST(SUM(COALESCE(bytes, size)) AS UNSIGNED)
          FROM transfer_history WHERE direction = 'upload'
          GROUP BY virtual_path ORDER BY c DESC LIMIT 10",
     )
@@ -157,7 +157,7 @@ async fn transfer_stats(pool: &MySqlPool) -> serde_json::Value {
     .collect();
 
     let top_users: Vec<serde_json::Value> = sqlx::query(
-        "SELECT username, COUNT(*) AS c, CAST(SUM(size) AS UNSIGNED)
+        "SELECT username, COUNT(*) AS c, CAST(SUM(COALESCE(bytes, size)) AS UNSIGNED)
          FROM transfer_history WHERE direction = 'upload'
          GROUP BY username ORDER BY c DESC LIMIT 10",
     )

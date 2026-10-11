@@ -13,7 +13,7 @@ use crate::network::conn::ConnControl;
 use crate::protocol::{
     PeerInitMessage, PeerMessage, ServerRequest, increment_token, initial_token,
 };
-use crate::types::{ConnectionType, TransferDirection};
+use crate::types::{ConnectionType, TransferDirection, USERNAME_LIMIT};
 
 const INDIRECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const USER_ADDRESS_TTL: Duration = Duration::from_secs(1800);
@@ -569,6 +569,11 @@ impl Actor {
                 username,
                 conn_type,
             } => {
+                if username.len() > USERNAME_LIMIT {
+                    debug!(%addr, "closing connection from an overlong username");
+                    self.discard_conn(conn_id);
+                    return;
+                }
                 let Some(conn) = self.peers.get_mut(conn_id) else {
                     return;
                 };

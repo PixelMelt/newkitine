@@ -82,6 +82,9 @@ pub enum AppEvent {
     BrowseRemoved {
         username: String,
     },
+    BrowseFailed {
+        username: String,
+    },
     FolderRequestFailed {
         username: String,
         directory: String,

@@ -12,6 +12,6 @@ export {
 	openChat, closeChat, forgetChat, joinRoom, leaveRoom, sendMessage,
 } from './state/chat.js';
 export {
-	buddies, banned, ignored, userInfos, browses, ipBans, loadIpBans,
+	buddies, banned, ignored, userInfos, browses, browseFailure, ipBans, loadIpBans,
 } from './state/users.js';
 export { connectWebSocket, link } from './state/socket.js';

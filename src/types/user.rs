@@ -1,3 +1,5 @@
+pub const USERNAME_LIMIT: usize = 190;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UserStatus {
     Offline,

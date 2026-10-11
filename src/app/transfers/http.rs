@@ -9,8 +9,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::client::{AbortResult, EnqueueResult, FOLDER_DOWNLOAD_FILE_LIMIT, RetryResult};
-use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus};
+use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus, USERNAME_LIMIT};
 
+use crate::app::api;
 use crate::app::state::App;
 
 pub(in crate::app) fn router() -> Router<Arc<App>> {
@@ -54,6 +55,9 @@ async fn enqueue_download(
     State(app): State<Arc<App>>,
     Json(body): Json<DownloadBody>,
 ) -> StatusCode {
+    if body.username.len() > USERNAME_LIMIT {
+        return StatusCode::BAD_REQUEST;
+    }
     match app
         .client
         .download(
@@ -153,6 +157,9 @@ async fn request_folder_download(
     State(app): State<Arc<App>>,
     Json(body): Json<FolderRequestBody>,
 ) -> StatusCode {
+    if let Err(status) = api::require_login(&app) {
+        return status;
+    }
     app.client.request_folder(&body.username, &body.dir).await;
     StatusCode::ACCEPTED
 }

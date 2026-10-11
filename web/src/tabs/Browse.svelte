@@ -1,6 +1,8 @@
 <script>
   import { tick } from 'svelte';
-  import { browses, downloadIndex, transferKey, queueDownloads, link } from '../lib/stores.js';
+  import {
+    browses, browseFailure, downloadIndex, transferKey, queueDownloads, link,
+  } from '../lib/stores.js';
   import { route, go, openBrowse, noAutofill } from '../lib/ui.js';
   import { shortState } from '../lib/transferStatus.js';
   import { get, post } from '../lib/api.js';
@@ -77,6 +79,7 @@
     tick().then(() => folder !== selectedDir && revealFolder(viewing, folder));
   }
   $: if (viewing && loadedAt && !$browses.has(viewing)) reset();
+  $: failRequest($browseFailure);
   $: visible = flatten(tree, expanded, '', 0);
   function reset() {
     loadedAt = 0;
@@ -153,7 +156,14 @@
     if (user === viewing && dir === selectedDir) listing = { username: user, dir, files: data.files };
   }
 
+  function failRequest(failure) {
+    if (failure?.username === viewing && request) {
+      request = { failed: `${viewing} did not send a share list` };
+    }
+  }
+
   async function requestList(user) {
+    browseFailure.set(null);
     request = { failed: null };
     await act(() => post(`/users/${encode(user)}/browse`), {
       failed: `Share list of ${user} not requested`,

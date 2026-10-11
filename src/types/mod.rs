@@ -18,4 +18,4 @@ pub use settings::{
 };
 pub use share::SharedFolder;
 pub use transfer::{TransferDirection, TransferId, TransferSnapshot, TransferStatus};
-pub use user::{Restriction, SimilarUser, UserStats, UserStatus};
+pub use user::{Restriction, SimilarUser, USERNAME_LIMIT, UserStats, UserStatus};

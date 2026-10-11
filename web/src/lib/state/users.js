@@ -10,6 +10,7 @@ export const ignored = writable([]);
 export const userInfos = writable(new Map());
 export const browses = writable(new Map());
 export const ipBans = writable([]);
+export const browseFailure = writable(null);
 
 export const loadIpBans = () =>
 	act(() => apiGet('/ip_bans'), {
@@ -47,6 +48,7 @@ export const handlers = {
 		browses.update((map) => map.set(msg.username, msg.received_at));
 	},
 	browse_removed: (msg) => browses.update(removeKey(msg.username)),
+	browse_failed: (msg) => browseFailure.set({ username: msg.username }),
 	folder_request_failed: (msg) => {
 		report.error(`${msg.username} did not send the contents of "${msg.directory}"`);
 	},
