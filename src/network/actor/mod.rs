@@ -259,7 +259,7 @@ impl Actor {
                 self.close_conn(conn_id);
             }
             NetworkCommand::CloseAddresses(patterns) => {
-                for conn_id in self.peers.from_addresses(&patterns) {
+                for conn_id in self.peers.matching_addresses(&patterns) {
                     self.close_conn(conn_id);
                 }
             }

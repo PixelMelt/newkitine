@@ -90,7 +90,7 @@ impl Peers {
         self.conns.contains_key(&conn_id)
     }
 
-    pub(super) fn from_addresses(&self, patterns: &[String]) -> Vec<ConnId> {
+    pub(super) fn matching_addresses(&self, patterns: &[String]) -> Vec<ConnId> {
         self.conns
             .iter()
             .filter(|(_, conn)| {
