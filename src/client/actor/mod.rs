@@ -84,7 +84,7 @@ pub(super) async fn run(
             config.buddies.into_iter().collect(),
             config.banned.into_iter().collect(),
             config.ignored.into_iter().collect(),
-            config.ip_bans,
+            config.ip_bans.clone(),
         ),
         sharing: Sharing::new(scan_tx, config.scan_cache),
         session: Session::new(),
@@ -98,6 +98,9 @@ pub(super) async fn run(
     actor
         .users
         .set_login_username(actor.config.login.username.clone());
+    actor
+        .net
+        .send(NetworkCommand::BanAddresses(config.ip_bans.clone()));
     for seed in config.transfers {
         match seed.direction {
             TransferDirection::Download => actor.downloads.seed(seed),
@@ -258,7 +261,7 @@ impl ClientActor {
             }
             ClientCommand::SetIpBans { patterns } => {
                 self.net
-                    .send(NetworkCommand::CloseAddresses(patterns.clone()));
+                    .send(NetworkCommand::BanAddresses(patterns.clone()));
                 self.users.set_ip_bans(patterns);
             }
             ClientCommand::SetUserRestriction {

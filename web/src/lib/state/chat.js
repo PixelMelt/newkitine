@@ -71,12 +71,14 @@ export function markRead(key) {
 
 async function loadRoomHistory(name) {
 	const data = await apiGet(`/rooms/${encodeURIComponent(name)}/messages?limit=${ROOM_HISTORY}`);
+	if (!get(rooms).joined.has(name)) return;
 	seedReadMark(roomKey(name), data.messages, true);
 	merge(roomKey(name), data.messages, ROOM_MESSAGE_LIMIT);
 }
 
 async function loadChatHistory(username, read = true) {
 	const data = await apiGet(`/chats/${encodeURIComponent(username)}?limit=${CHAT_HISTORY}`);
+	if (!get(chatPartners).includes(username)) return;
 	seedReadMark(chatKey(username), data.messages, read);
 	merge(chatKey(username), data.messages);
 }

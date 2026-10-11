@@ -1,9 +1,8 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -29,7 +28,8 @@ pub(super) struct ServerState {
 pub(super) struct Server {
     state: Option<ServerState>,
     listen_port: u16,
-    listener: Option<JoinHandle<()>>,
+    pub(super) listener: Option<TcpListener>,
+    pub(super) accept_resumes_at: Option<Instant>,
 }
 
 impl Server {
@@ -38,6 +38,7 @@ impl Server {
             state: None,
             listen_port: 0,
             listener: None,
+            accept_resumes_at: None,
         }
     }
 
@@ -62,13 +63,24 @@ impl Server {
     }
 
     pub(super) fn teardown(&mut self) {
-        if let Some(listener) = self.listener.take() {
-            listener.abort();
-        }
+        self.listener = None;
         if let Some(state) = self.state.take() {
             let _ = state.control.try_send(ConnControl::Close);
         }
     }
+}
+
+pub(super) async fn accept(
+    listener: &Option<TcpListener>,
+    resumes_at: Option<Instant>,
+) -> std::io::Result<(TcpStream, SocketAddr)> {
+    let Some(listener) = listener else {
+        return std::future::pending().await;
+    };
+    if let Some(resumes_at) = resumes_at {
+        tokio::time::sleep_until(resumes_at).await;
+    }
+    listener.accept().await
 }
 
 impl Actor {
@@ -137,23 +149,22 @@ impl Actor {
             manual_disconnect: false,
         });
 
-        let listener_events = self.accepted_tx.clone();
-        self.server.listener = Some(tokio::spawn(async move {
-            info!(listen_port, "listening for peer connections");
-            loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
-                        if listener_events.send((stream, addr)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "accepting peer connection failed, backing off");
-                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
-                    }
-                }
+        info!(listen_port, "listening for peer connections");
+        self.server.listener = Some(listener);
+        self.server.accept_resumes_at = None;
+    }
+
+    pub(super) fn handle_accept(&mut self, accepted: std::io::Result<(TcpStream, SocketAddr)>) {
+        match accepted {
+            Ok((stream, addr)) => {
+                self.server.accept_resumes_at = None;
+                self.handle_accepted(stream, addr);
             }
-        }));
+            Err(error) => {
+                warn!(%error, "accepting peer connection failed, backing off");
+                self.server.accept_resumes_at = Some(Instant::now() + ACCEPT_ERROR_BACKOFF);
+            }
+        }
     }
 
     pub(super) fn check_login_timeout(&mut self) {
@@ -305,9 +316,7 @@ impl Actor {
         if let Some(error) = error {
             warn!(%error, "server connection closed");
         }
-        if let Some(listener) = self.server.listener.take() {
-            listener.abort();
-        }
+        self.server.listener = None;
         self.peers.close_all();
         self.indirect.reset();
         self.distributed.reset();

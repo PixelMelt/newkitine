@@ -96,7 +96,7 @@ const MAX_QUEUE_SIZE_LIMIT_MB: u64 = 1 << 30;
 const MAX_UPLOAD_SLOTS: usize = 1_000_000;
 const PATH_LIMIT: usize = 4096;
 const NAME_LIMIT: usize = 255;
-const MESSAGE_LIMIT: usize = 255;
+const MESSAGE_LIMIT: usize = 1024;
 
 impl Default for Settings {
     fn default() -> Self {

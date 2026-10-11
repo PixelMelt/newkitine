@@ -124,16 +124,17 @@
     for (const path of reopen) {
       if (user === viewing) await loadChildren(user, path);
     }
-    if (folder && user === viewing && picked === selectRun) await revealFolder(user, folder);
+    if (folder && user === viewing && picked === selectRun) await revealFolder(user, folder, picked);
     if (flatFolders && user === viewing) await applyFilter();
   }
 
-  async function revealFolder(user, folder) {
+  async function revealFolder(user, folder, picked = selectRun) {
     const parts = folder.split('\\');
     let path = '';
     for (const part of parts.slice(0, -1)) {
       path = path ? `${path}\\${part}` : part;
       if (!tree[path] && !(await loadChildren(user, path))) return;
+      if (picked !== selectRun) return;
       expanded[path] = true;
     }
     expanded = expanded;

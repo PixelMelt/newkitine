@@ -132,7 +132,7 @@ impl ClientActor {
                     return;
                 }
                 let cached = shares::load_catalog(&cache_path);
-                if job.install_cached {
+                if job.install_cached && !cached.folders.is_empty() {
                     let restricted = shares::restrict(&cached, &shared_folders);
                     send(ScanUpdate::Index(Box::new(SharesIndex::from_catalog(
                         restricted,

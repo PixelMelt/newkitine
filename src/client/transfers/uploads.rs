@@ -22,6 +22,7 @@ use crate::types::{
 const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const TIMED_OUT_RETRY_INTERVAL: Duration = Duration::from_secs(180);
 const CONNECTION_TIMEOUT: &str = "connection timeout";
+const USER_OFFLINE: &str = "user is offline";
 const FILE_READ_ERROR: &str = "File read error.";
 
 enum Admission {
@@ -677,7 +678,7 @@ impl Uploads {
             {
                 let key = (username.to_owned(), file.clone());
                 let reason = if is_offline {
-                    "user is offline"
+                    USER_OFFLINE
                 } else {
                     CONNECTION_TIMEOUT
                 };
@@ -787,6 +788,25 @@ impl Uploads {
                 place,
             },
         );
+    }
+
+    pub fn user_offline(&mut self, username: &str, users: &Users) -> Vec<TransferWork> {
+        let pending: Vec<TransferKey> = self
+            .transfers
+            .values()
+            .filter(|transfer| {
+                transfer.username == username && transfer.phase == TransferPhase::GettingStatus
+            })
+            .map(UploadTransfer::key)
+            .collect();
+        let mut updates = Vec::new();
+        for key in &pending {
+            updates.extend(self.fail(key, USER_OFFLINE.into()));
+        }
+        if !pending.is_empty() {
+            updates.extend(self.check_queue(users));
+        }
+        updates
     }
 
     pub fn sweep_request_timeouts(&mut self, users: &Users) -> Vec<TransferWork> {

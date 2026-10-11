@@ -34,7 +34,6 @@ pub(super) fn spawn_conn_task(name: &'static str, task: impl Future<Output = ()>
 const SERVER_PING_INTERVAL: Duration = Duration::from_secs(60);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 const CONN_EVENT_QUEUE_CAPACITY: usize = 1024;
-const ACCEPT_QUEUE_CAPACITY: usize = 64;
 const CONN_CONTROL_QUEUE_CAPACITY: usize = 1024;
 
 pub struct Actor {
@@ -42,9 +41,8 @@ pub struct Actor {
     events: mpsc::Sender<NetworkEvent>,
     conn_events_tx: mpsc::Sender<ConnEvent>,
     conn_events: mpsc::Receiver<ConnEvent>,
-    accepted: mpsc::Receiver<(tokio::net::TcpStream, std::net::SocketAddr)>,
-    accepted_tx: mpsc::Sender<(tokio::net::TcpStream, std::net::SocketAddr)>,
     allowed: SharedAllowed,
+    banned_addresses: Vec<String>,
     limits: SharedLimits,
     server: Server,
     peers: Peers,
@@ -58,15 +56,13 @@ impl Actor {
         events: mpsc::Sender<NetworkEvent>,
     ) -> Self {
         let (conn_events_tx, conn_events) = mpsc::channel(CONN_EVENT_QUEUE_CAPACITY);
-        let (accepted_tx, accepted) = mpsc::channel(ACCEPT_QUEUE_CAPACITY);
         Self {
             commands,
             events,
             conn_events_tx,
             conn_events,
-            accepted,
-            accepted_tx,
             allowed: Arc::default(),
+            banned_addresses: Vec::new(),
             limits: Arc::default(),
             server: Server::new(),
             peers: Peers::new(),
@@ -94,10 +90,8 @@ impl Actor {
                         event.expect("conn event channel closed while the actor holds the sender");
                     self.handle_conn_event(event);
                 }
-                stream = self.accepted.recv() => {
-                    let (stream, addr) =
-                        stream.expect("accept channel closed while the actor holds the sender");
-                    self.handle_accepted(stream, addr);
+                accepted = server::accept(&self.server.listener, self.server.accept_resumes_at) => {
+                    self.handle_accept(accepted);
                 }
                 _ = sweep.tick() => {
                     self.sweep_indirect_requests();
@@ -258,10 +252,11 @@ impl Actor {
             NetworkCommand::CloseConnection(conn_id) => {
                 self.close_conn(conn_id);
             }
-            NetworkCommand::CloseAddresses(patterns) => {
+            NetworkCommand::BanAddresses(patterns) => {
                 for conn_id in self.peers.matching_addresses(&patterns) {
                     self.close_conn(conn_id);
                 }
+                self.banned_addresses = patterns;
             }
             NetworkCommand::Quit => unreachable!(),
         }

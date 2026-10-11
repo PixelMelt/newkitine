@@ -180,6 +180,13 @@ impl Actor {
             SocketAddr::V4(addr) => Some(*addr.ip()),
             SocketAddr::V6(_) => None,
         };
+        if ip.is_some_and(|ip| {
+            self.banned_addresses
+                .iter()
+                .any(|pattern| ip_matches(pattern, ip))
+        }) {
+            return;
+        }
         let traffic = SharedTraffic::default();
         let conn_id = self.peers.add(Conn {
             control: control_tx,
