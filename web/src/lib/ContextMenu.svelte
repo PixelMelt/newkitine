@@ -1,6 +1,8 @@
 <script>
   import { menu, closeMenu } from './menu.js';
   import { report } from './stores.js';
+  import Check from '@lucide/svelte/icons/check';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import { fold } from './format.js';
 
   const SUBMENU_SWITCH_MS = 250;
@@ -245,9 +247,9 @@
             on:pointermove={(e) => hoverRoot(e, index)}
             on:click={() => clickRoot(index)}
           >
-            {#if checks(items)}<span class="check">{item.checked ? '✓' : ''}</span>{/if}
+            {#if checks(items)}<span class="check">{#if item.checked}<Check size={12} />{/if}</span>{/if}
             <span class="label">{item.label}</span>
-            {#if item.submenu}<span class="arrow">▸</span>{/if}
+            {#if item.submenu}<span class="arrow"><ChevronRight size={14} /></span>{/if}
           </div>
         {/if}
       {/each}
@@ -273,7 +275,7 @@
                 on:pointermove={() => hoverSub(index)}
                 on:click={() => run(item)}
               >
-                {#if checks(subItems)}<span class="check">{item.checked ? '✓' : ''}</span>{/if}
+                {#if checks(subItems)}<span class="check">{#if item.checked}<Check size={12} />{/if}</span>{/if}
                 <span class="label">{item.label}</span>
               </div>
             {/if}

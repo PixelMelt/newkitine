@@ -15,6 +15,7 @@
   import { onEnter } from '../lib/keys.js';
   import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import X from '@lucide/svelte/icons/x';
   import Subtabs from '../lib/Subtabs.svelte';
   import DataTable from '../lib/DataTable.svelte';
 
@@ -332,7 +333,7 @@
     {#each $wishlist as term}
       <span class="chip">
         {term}
-        <button title="Remove from wishlist" aria-label="Remove {term}" on:click={() => removeWish(term)}>×</button>
+        <button title="Remove from wishlist" aria-label="Remove {term}" on:click={() => removeWish(term)}><X size={12} /></button>
       </span>
     {/each}
   </div>

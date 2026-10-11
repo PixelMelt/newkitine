@@ -1,4 +1,6 @@
 <script>
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { fold } from './format.js';
   import { startsTypeahead } from './keys.js';
 
@@ -113,7 +115,7 @@
         class="twisty"
         on:mousedown|stopPropagation={(e) => e.preventDefault()}
         on:click|stopPropagation={() => node.has_children && ontoggle(node)}
-        >{node.has_children ? (expanded[node.path] ? '▾' : '▸') : ''}</span
+        >{#if node.has_children}{#if expanded[node.path]}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}{/if}</span
       >
       <span class="name">{node.name}</span>
       {#if node.private}<span class="tag">private</span>{/if}

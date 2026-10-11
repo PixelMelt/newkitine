@@ -10,6 +10,8 @@
   import { act } from './lib/act.js';
   import { isTyping, hasCommand } from './lib/keys.js';
   import { menu } from './lib/menu.js';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import ContextMenu from './lib/ContextMenu.svelte';
   import Search from './tabs/Search.svelte';
   import Transfers from './tabs/Transfers.svelte';
@@ -168,8 +170,8 @@
           </span>
         {/if}
         <span class="conns">{plural($status.peer_connections, 'connection')}</span>
-        <span class="speed">↓ {live ? formatSpeed($speedTotals.down) : '–'}</span>
-        <span class="speed">↑ {live ? formatSpeed($speedTotals.up) : '–'}</span>
+        <span class="speed"><ArrowDown size={12} /> {live ? formatSpeed($speedTotals.down) : '–'}</span>
+        <span class="speed"><ArrowUp size={12} /> {live ? formatSpeed($speedTotals.up) : '–'}</span>
       </span>
     {/if}
     <span class="report {$shownReport ? $shownReport.kind : ''}" role="status" title={$shownReport?.text}>

@@ -1,5 +1,6 @@
 <script>
   import { tick } from 'svelte';
+  import X from '@lucide/svelte/icons/x';
   import { focusPane } from './ui.js';
 
   export let tab;
@@ -66,7 +67,7 @@
             tabindex="-1"
             title={closeLabel}
             aria-label="{closeLabel} {item.label}"
-            on:click={() => onclose(item.id)}>×</button
+            on:click={() => onclose(item.id)}><X size={12} /></button
           >
         {/if}
       </span>

@@ -1,5 +1,7 @@
 <script>
   import { tick } from 'svelte';
+  import ChevronUp from '@lucide/svelte/icons/chevron-up';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { sortRows } from './sort.js';
   import { fold } from './format.js';
   import { startsTypeahead } from './keys.js';
@@ -279,7 +281,7 @@
         on:click={() => cycleSort(column)}
       >
         <span class="text">{column.label}</span>{#if sort?.key === column.key}<span class="dir"
-            >{sort.dir === 1 ? '▲' : '▼'}</span
+            >{#if sort.dir === 1}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}</span
           >{/if}
       </div>
     {/each}
@@ -382,10 +384,11 @@
     flex-shrink: 0;
   }
   .dir {
+    display: inline-flex;
+    align-items: center;
     flex-shrink: 0;
     margin-left: 4px;
     color: var(--text-dim);
-    font-size: 10px;
   }
   .row.selected {
     background: var(--selected-idle);

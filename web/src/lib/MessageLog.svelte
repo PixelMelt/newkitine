@@ -2,6 +2,7 @@
   import { afterUpdate, onMount } from 'svelte';
   import { markRead } from './stores.js';
   import { formatTime, formatDay, formatDateTime, segments, plural } from './format.js';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import { openBrowse, decodeSegment } from './ui.js';
 
   export let key;
@@ -126,6 +127,6 @@
     {/each}
   </div>
   {#if newCount}
-    <button class="jump" on:click={toBottom}>{plural(newCount, 'new message')} ↓</button>
+    <button class="jump" on:click={toBottom}>{plural(newCount, 'new message')} <ArrowDown size={12} /></button>
   {/if}
 </div>
