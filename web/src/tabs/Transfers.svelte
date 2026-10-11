@@ -67,11 +67,14 @@
 
   let selection = new Set();
 
+  const live = (t) =>
+    !isCleared(t.status) || (isDownload && t.status === 'failed' && status(t).tone === 'waiting');
+
   const running = (t) => (t.status === 'transferring' ? 0 : 1);
 
   $: all = Object.values($store).sort((a, b) => running(a) - running(b) || b.id - a.id);
   $: selected = all.filter((t) => selection.has(t.id));
-  $: activeCount = all.filter((t) => !isCleared(t.status)).length;
+  $: activeCount = all.filter(live).length;
   $: finishedCount = all.filter((t) => t.status === 'finished').length;
   $: inactiveCount = all.filter((t) => t.status === 'aborted' || t.status === 'failed').length;
 
@@ -79,7 +82,7 @@
   let confirmTimer = null;
   let cancelButton;
 
-  const abortable = (rows) => rows.filter((t) => !isCleared(t.status));
+  const abortable = (rows) => rows.filter(live);
   const retryable = (rows) => rows.filter((t) => t.status === 'aborted' || t.status === 'failed');
   const nameOf = (rows) =>
     rows.length === 1 ? `"${baseName(rows[0].virtual_path)}"` : plural(rows.length, noun);

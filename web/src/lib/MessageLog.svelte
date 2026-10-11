@@ -19,9 +19,10 @@
   let seenId = 0;
   let shownKey = key;
   let restoreTop = null;
+  let top = 0;
 
   $: if (key !== shownKey) {
-    views.set(shownKey, { pinned, seenId, scrollTop: node.scrollTop });
+    views.set(shownKey, { pinned, seenId, scrollTop: restoreTop ?? top });
     const view = views.get(key) ?? { pinned: true, seenId: 0, scrollTop: 0 };
     shownKey = key;
     pinned = view.pinned;
@@ -51,6 +52,7 @@
 
   function scrolled() {
     if (!node.clientHeight) return;
+    top = node.scrollTop;
     pinned = node.scrollHeight - node.scrollTop - node.clientHeight <= PIN_SLACK;
     read();
   }
@@ -60,16 +62,21 @@
     node.scrollTop = node.scrollHeight;
   }
 
-  afterUpdate(() => {
+  function settle() {
+    if (!node.clientHeight) return;
     if (pinned) node.scrollTop = node.scrollHeight;
     else if (restoreTop !== null) node.scrollTop = restoreTop;
     restoreTop = null;
+  }
+
+  afterUpdate(() => {
+    settle();
     read();
   });
 
   onMount(() => {
     const observer = new ResizeObserver(() => {
-      if (pinned) node.scrollTop = node.scrollHeight;
+      settle();
       read();
     });
     observer.observe(node);

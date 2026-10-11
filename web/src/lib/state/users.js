@@ -11,6 +11,7 @@ export const userInfos = writable(new Map());
 export const browses = writable(new Map());
 export const ipBans = writable([]);
 export const browseFailure = writable(null);
+export const browseLoad = writable(null);
 
 export const loadIpBans = () =>
 	act(() => apiGet('/ip_bans'), {
@@ -46,6 +47,7 @@ export const handlers = {
 	user_info_removed: (msg) => userInfos.update(removeKey(msg.username)),
 	browse_loaded: (msg) => {
 		browses.update((map) => map.set(msg.username, msg.received_at));
+		browseLoad.set({ username: msg.username });
 	},
 	browse_removed: (msg) => browses.update(removeKey(msg.username)),
 	browse_failed: (msg) => browseFailure.set({ username: msg.username }),

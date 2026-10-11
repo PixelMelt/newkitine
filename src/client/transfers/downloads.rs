@@ -468,7 +468,7 @@ impl Downloads {
             return (AbortResult::NotFound, Vec::new());
         };
         let transfer = self.transfers.get_mut(&key).unwrap();
-        if !transfer.phase.is_active() {
+        if !transfer.phase.is_active() && recovery(&transfer.phase).is_none() {
             return (AbortResult::Aborted, Vec::new());
         }
         transfer.phase = TransferPhase::Aborted;
@@ -1570,6 +1570,24 @@ mod tests {
             harness.phase(&spoofed),
             TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
         );
+    }
+
+    #[tokio::test]
+    async fn aborting_a_download_that_waits_to_retry_stops_the_retry() {
+        let mut harness = Harness::new("abort-waiting");
+        let key = harness.queue("Music\\a.mp3");
+        let _ = harness.fail_connection(&key, false);
+        assert_eq!(
+            harness.phase(&key),
+            TransferPhase::Failed(CONNECTION_TIMEOUT.into())
+        );
+        let id = harness.downloads.transfers.get(&key).unwrap().id;
+        let (result, work) = harness.downloads.abort(id);
+        assert_eq!(result, AbortResult::Aborted);
+        assert_eq!(statuses(&work), vec![TransferStatus::Aborted]);
+        harness.downloads.user_online("uploader");
+        assert!(harness.recover().is_empty());
+        assert_eq!(harness.phase(&key), TransferPhase::Aborted);
     }
 
     #[tokio::test]

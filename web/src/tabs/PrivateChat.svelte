@@ -18,7 +18,7 @@
   let log;
 
   $: wanted = $route.items.chat;
-  $: selected = $chatPartners.includes(wanted) ? wanted : ($chatPartners[0] ?? null);
+  $: selected = wanted ? ($chatPartners.includes(wanted) ? wanted : null) : ($chatPartners[0] ?? null);
   $: items = $chatPartners.map((partner) => ({
     id: partner,
     label: partner,

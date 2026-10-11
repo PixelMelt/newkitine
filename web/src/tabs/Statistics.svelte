@@ -86,7 +86,7 @@
     if (loading) return;
     failure = '';
     load('/stats/transfers', 'Transfer statistics', (data) => (transfers = data));
-    load('/stats/peers', 'Peer statistics', (data) => (peers = data));
+    load('/stats/peers?limit=1000', 'Peer statistics', (data) => (peers = data));
     load('/stats/verdicts', 'Peer verdicts', (data) => (verdicts = data.users));
   }
 

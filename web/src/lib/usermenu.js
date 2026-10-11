@@ -11,7 +11,11 @@ export function addBuddy(username, note = '') {
 	return act(() => post('/buddies', { username }), {
 		failed: `${username} not added to buddies`,
 		done: `Added ${username} to buddies`,
-		then: () => note && post(`/buddies/${encoded(username)}/note`, { note }),
+		then: () =>
+			note &&
+			act(() => post(`/buddies/${encoded(username)}/note`, { note }), {
+				failed: `Note for ${username} not restored`,
+			}),
 		action: { label: 'Undo', run: () => removeBuddy(username) },
 	});
 }

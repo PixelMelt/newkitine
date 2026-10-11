@@ -32,7 +32,8 @@ function parse(pathname, previous) {
 	if (!TABS.includes(tab)) return { tab: 'search', items: previous?.items ?? {}, folder: null };
 	const items = { ...previous?.items };
 	if (item) items[tab] = item;
-	return { tab, items, folder: rest.length ? rest.join('\\') : null };
+	const folder = tab === 'browse' ? (rest.length ? rest.join('\\') : null) : (previous?.folder ?? null);
+	return { tab, items, folder };
 }
 
 function pathOf({ tab, items, folder }) {
@@ -59,11 +60,12 @@ function commit(next, replace) {
 	route.set(next);
 }
 
-export function go(tab, item, folder = null) {
+export function go(tab, item, folder) {
 	const current = get(route);
 	const items = item === undefined ? current.items : { ...current.items, [tab]: item };
-	const replace = tab === current.tab && items[tab] === current.items[tab];
-	commit({ tab, items, folder }, replace);
+	const sameItem = items[tab] === current.items[tab];
+	const kept = tab !== 'browse' || sameItem ? current.folder : null;
+	commit({ tab, items, folder: folder === undefined ? kept : folder }, tab === current.tab && sameItem);
 }
 
 export function remember(tab, item) {
@@ -76,10 +78,10 @@ export function forget(tab, item) {
 	if (current.items[tab] !== item) return;
 	const items = { ...current.items };
 	delete items[tab];
-	commit({ ...current, items }, true);
+	commit({ ...current, items, folder: tab === 'browse' ? null : current.folder }, true);
 }
 
-export const hrefOf = (current, tab) => pathOf({ ...current, tab, folder: null });
+export const hrefOf = (current, tab) => pathOf({ ...current, tab });
 
 export function focusPane(tab) {
 	const primary = [...document.querySelectorAll(`.pane[data-tab="${tab}"] [data-primary]`)]

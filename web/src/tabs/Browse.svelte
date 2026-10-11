@@ -1,7 +1,8 @@
 <script>
   import { tick } from 'svelte';
   import {
-    browses, browseFailure, downloadIndex, transferKey, queueDownloads, link,
+    browses, browseFailure, browseLoad, downloadIndex, transferKey, queueDownloads, link,
+    report,
   } from '../lib/stores.js';
   import { route, go, openBrowse, noAutofill } from '../lib/ui.js';
   import { shortState } from '../lib/transferStatus.js';
@@ -70,6 +71,7 @@
   $: wanted = $route.items.browse ?? null;
   $: onBrowse = $route.tab === 'browse';
   $: if ($link.state === 'live' && onBrowse && wanted !== viewing) openUser(wanted, $route.folder);
+  $: reloadSameSecond($browseLoad);
   $: if (viewing && $browses.has(viewing) && $browses.get(viewing) !== loadedAt) {
     loadedAt = $browses.get(viewing);
     loadTree(viewing, selectedDir ?? pendingFolder);
@@ -120,6 +122,7 @@
       if (user === viewing) await loadChildren(user, path);
     }
     if (folder && user === viewing) await revealFolder(user, folder);
+    if (flatFolders && user === viewing) await applyFilter();
   }
 
   async function revealFolder(user, folder) {
@@ -133,7 +136,10 @@
     expanded = expanded;
     const parent = parts.slice(0, -1).join('\\');
     const node = (tree[parent] ?? []).find((child) => child.path === folder);
-    selectFolder(folder, node ? node.file_count > 0 : false);
+    if (node) return selectFolder(folder, node.file_count > 0);
+    pendingFolder = null;
+    if ($route.tab === 'browse') go('browse', user, selectedDir);
+    report.error(`"${folder}" is not in the share list of ${user}`);
   }
 
   async function toggle(node) {
@@ -154,6 +160,12 @@
     }
     const data = await get(`/users/${encode(user)}/files?dir=${encode(dir)}`);
     if (user === viewing && dir === selectedDir) listing = { username: user, dir, files: data.files };
+  }
+
+  function reloadSameSecond(load) {
+    if (load?.username === viewing && loadedAt && $browses.get(viewing) === loadedAt) {
+      loadTree(viewing, selectedDir ?? pendingFolder);
+    }
   }
 
   function failRequest(failure) {
@@ -200,7 +212,7 @@
     }
     const user = viewing;
     const data = await get(
-      `/users/${encode(user)}/folders?filter=${encode(filter)}&limit=${FOLDER_FILTER_LIMIT}`,
+      `/users/${encode(user)}/folders?filter=${encode(filter.trim())}&limit=${FOLDER_FILTER_LIMIT}`,
     );
     if (user === viewing) flatFolders = data;
   }

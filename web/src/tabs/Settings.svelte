@@ -104,7 +104,8 @@
   $: locked = new Set($settings.locked);
   $: portManaged = $settings.gluetun || locked.has('listen_port');
   $: current = draft ? payloadOf(draft, shareFiltersText, removed) : null;
-  $: dirty = draft ? JSON.stringify(current) !== JSON.stringify(baseline) : false;
+  $: pendingShare = Boolean(newShare.virtual_name.trim() || newShare.path.trim());
+  $: dirty = draft ? pendingShare || JSON.stringify(current) !== JSON.stringify(baseline) : false;
   $: changedPages = new Set(
     draft
       ? pages
@@ -133,14 +134,15 @@
 
   function discard() {
     if (!dirty) return;
-    discarded = { draft, shareFiltersText, removed };
+    discarded = { draft, shareFiltersText, removed, newShare };
+    newShare = { virtual_name: '', path: '', buddy_only: false };
     adopt($settings.settings);
     previewTheme(draft.theme);
     saveError = '';
   }
 
   function restoreDiscarded() {
-    ({ draft, shareFiltersText, removed } = discarded);
+    ({ draft, shareFiltersText, removed, newShare } = discarded);
     version += 1;
     previewTheme(draft.theme);
     discarded = null;
@@ -148,6 +150,8 @@
 
   async function save() {
     saveError = '';
+    document.activeElement.blur();
+    await tick();
     const halfShare = Boolean(newShare.virtual_name.trim()) !== Boolean(newShare.path.trim());
     if (halfShare) {
       go('settings', 'shares');
@@ -173,6 +177,7 @@
           pageFields[id].some((key) => new RegExp(`\\b${key}\\b`).test(error.message)),
         );
         if (owner) go('settings', owner[0]);
+        else if (/\bshare (name|filter)\b/.test(error.message)) go('settings', 'shares');
       },
     });
     if (!saved) return false;

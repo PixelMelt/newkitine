@@ -31,7 +31,7 @@
 
   $: joinedNames = [...$rooms.joined.keys()].sort(compareNames);
   $: wanted = $route.items.rooms;
-  $: selected = $rooms.joined.has(wanted) ? wanted : (joinedNames[0] ?? null);
+  $: selected = wanted ? ($rooms.joined.has(wanted) ? wanted : null) : (joinedNames[0] ?? null);
   $: showList = listRequested || !selected;
   $: current = selected ? $rooms.joined.get(selected) : null;
   $: users = current && !showList ? [...current.users].sort(compareNames) : [];
