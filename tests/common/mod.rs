@@ -213,6 +213,7 @@ pub fn client_config(
     newkitine::client::ClientBootstrap {
         scan_cache: download_dir.join("share-catalog.gz"),
         scan_on_startup: true,
+        connect_on_startup: true,
         runtime: newkitine::types::RuntimeConfig {
             login: newkitine::types::LoginConfig {
                 server,

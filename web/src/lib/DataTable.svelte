@@ -68,12 +68,14 @@
     return sortRows(list, order, shown);
   }
 
+  $: if (indexOf.has(cursor)) cursorAt = indexOf.get(cursor);
   $: followCursor(indexOf);
 
   function followCursor(index) {
     if (cursor === null) return;
-    if (index.has(cursor)) cursorAt = index.get(cursor);
-    else cursor = sorted.length ? key(sorted[Math.min(cursorAt, sorted.length - 1)]) : null;
+    if (index.has(cursor)) return;
+    cursorAt = Math.min(cursorAt, sorted.length - 1);
+    cursor = sorted.length ? key(sorted[cursorAt]) : null;
   }
 
   async function switchView(next) {

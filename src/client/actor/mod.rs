@@ -114,7 +114,7 @@ pub(super) async fn run(
     );
     if actor.config.login.username.is_empty() {
         info!("no login configured, waiting for credentials");
-    } else {
+    } else if config.connect_on_startup {
         actor.connect();
     }
     actor.start_scan(ScanJob {

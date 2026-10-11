@@ -2,7 +2,6 @@
   import { tick } from 'svelte';
   import {
     searches, wishlist, rooms, downloadIndex, transferKey, queueDownloads, startSearch, scopeOf,
-    pendingTokens,
     report,
   } from '../lib/stores.js';
   import { route, go, remember, forget, openBrowse, noAutofill } from '../lib/ui.js';
@@ -76,7 +75,7 @@
   $: if (mode === 'rooms' && !joinedRooms.includes(modeRoom)) modeRoom = joinedRooms[0] ?? '';
   $: wanted = $route.items.search ?? null;
   $: activeSearch = $searches.find((s) => String(s.token) === wanted) ?? null;
-  $: if (!activeSearch && $searches.length && !pendingTokens.has(wanted)) {
+  $: if (wanted === null && $searches.length) {
     const newest = String($searches.at(-1).token);
     tick().then(() => remember('search', newest));
   }

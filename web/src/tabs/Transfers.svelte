@@ -8,7 +8,7 @@
     formatSize, formatSpeed, formatDuration, formatQuality, formatCount,
     effectiveBitrate, baseName, folderName, plural,
   } from '../lib/format.js';
-  import { describe, toneRank } from '../lib/transferStatus.js';
+  import { describe, toneRank, retriesByItself } from '../lib/transferStatus.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import DataTable from '../lib/DataTable.svelte';
@@ -68,7 +68,7 @@
   let selection = new Set();
 
   const live = (t) =>
-    !isCleared(t.status) || (isDownload && t.status === 'failed' && status(t).tone === 'waiting');
+    !isCleared(t.status) || (isDownload && retriesByItself(t));
 
   const running = (t) => (t.status === 'transferring' ? 0 : 1);
 

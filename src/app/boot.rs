@@ -94,6 +94,7 @@ pub async fn run(config_path: PathBuf) {
         runtime,
         scan_cache: config_path.with_file_name("share-catalog.gz"),
         scan_on_startup: settings.scan_on_startup,
+        connect_on_startup: false,
         buddies: db::load_list(&pool, "buddy").await,
         banned: db::load_list(&pool, "banned").await,
         ignored: db::load_list(&pool, "ignored").await,
@@ -147,6 +148,9 @@ pub async fn run(config_path: PathBuf) {
     });
 
     behavior::load(&app).await;
+    if !settings.username.is_empty() {
+        app.client.connect().await;
+    }
 
     let events_task = tokio::spawn(events::run(app.clone(), client_events));
     let worker_task = tokio::spawn(transfers::run_worker(app.clone(), transfer_events));

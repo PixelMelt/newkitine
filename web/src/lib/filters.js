@@ -34,7 +34,7 @@ function parseSize(text) {
 	}
 	const power = { k: 1, m: 2, g: 3 }[rest.at(-1)] ?? 0;
 	if (power) rest = rest.slice(0, -1);
-	if (!/^\d+(\.\d+)?$/.test(rest)) return null;
+	if (!/^(\d+(\.\d*)?|\.\d+)$/.test(rest)) return null;
 	const factor = base ** power;
 	const digit = Math.trunc(Number(rest) * factor);
 	return { digit, adjust: factor > 1024 && digit < APPROXIMATE_BELOW ? factor / 8 : factor };

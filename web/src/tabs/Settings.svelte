@@ -184,7 +184,7 @@
     if (!saved) return false;
     const sent = structuredClone(payload);
     draft.password_set = draft.password_set || Boolean(payload.password);
-    draft.password = '';
+    if (draft.password === (payload.password ?? '')) draft.password = '';
     draft.shares = draft.shares.filter((share) => !dropped.has(share));
     removed = new Set([...removed].filter((share) => !dropped.has(share)));
     delete sent.password;

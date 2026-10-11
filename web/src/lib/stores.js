@@ -5,7 +5,7 @@ export {
 	downloads, uploads, isCleared, speedTotals, downloadIndex, transferKey, queueDownloads,
 } from './state/transfers.js';
 export {
-	searches, wishlist, interests, startSearch, openSearch, scopeOf, pendingTokens,
+	searches, wishlist, interests, startSearch, openSearch, scopeOf,
 } from './state/searches.js';
 export {
 	rooms, chatPartners, conversations, drafts, unread, roomKey, chatKey, markRead,

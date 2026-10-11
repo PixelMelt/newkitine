@@ -54,7 +54,7 @@ function merge(key, incoming, limit) {
 	});
 }
 
-const firstVisit = Object.keys(get(readMarks)).length === 0;
+let firstVisit = Object.keys(get(readMarks)).length === 0;
 
 function seedReadMark(key, messages, read) {
 	readMarks.update((marks) =>
@@ -113,7 +113,6 @@ export function forgetChat(username) {
 export function closeChat(username) {
 	return act(() => del(`/chats/${encodeURIComponent(username)}`), {
 		failed: `Chat with ${username} not closed`,
-		then: () => forgetChat(username),
 		done: `Closed chat with ${username}`,
 		action: { label: 'Undo', run: () => openChat(username) },
 	});
@@ -165,6 +164,7 @@ export function applySnapshot(msg) {
 	});
 	for (const name of joined.keys()) loadRoomHistory(name);
 	for (const username of msg.chat_partners) loadChatHistory(username, firstVisit);
+	firstVisit = false;
 }
 
 export const handlers = {

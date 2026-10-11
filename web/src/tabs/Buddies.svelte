@@ -66,11 +66,12 @@
 
   async function saveNote() {
     const username = editing;
+    const note = noteText;
     const saved = await act(
-      () => post(`/buddies/${encodeURIComponent(username)}/note`, { note: noteText }),
+      () => post(`/buddies/${encodeURIComponent(username)}/note`, { note }),
       { failed: `Note for ${username} not saved` },
     );
-    if (saved) editing = null;
+    if (saved && editing === username && noteText === note) editing = null;
   }
 
   function buddyMenu(rows, point) {

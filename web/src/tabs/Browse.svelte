@@ -23,6 +23,7 @@
   let viewing = null;
   let filter = '';
   let filterRun = 0;
+  let selectRun = 0;
   let tree = Object.create(null);
   let expanded = Object.create(null);
   let treeLoaded = false;
@@ -115,6 +116,7 @@
 
   async function loadTree(user, folder) {
     const reopen = Object.keys(expanded).filter((path) => expanded[path]);
+    const picked = selectRun;
     tree = Object.create(null);
     if (!(await loadChildren(user, ''))) return;
     treeLoaded = true;
@@ -122,7 +124,7 @@
     for (const path of reopen) {
       if (user === viewing) await loadChildren(user, path);
     }
-    if (folder && user === viewing) await revealFolder(user, folder);
+    if (folder && user === viewing && picked === selectRun) await revealFolder(user, folder);
     if (flatFolders && user === viewing) await applyFilter();
   }
 
@@ -139,6 +141,11 @@
     const node = (tree[parent] ?? []).find((child) => child.path === folder);
     if (node) return selectFolder(folder, node.file_count > 0);
     pendingFolder = null;
+    if (folder === selectedDir) {
+      selectedDir = null;
+      listing = null;
+      fileSelection = new Set();
+    }
     if ($route.tab === 'browse') go('browse', user, selectedDir);
     report.error(`"${folder}" is not in the share list of ${user}`);
   }
@@ -151,6 +158,7 @@
 
   async function selectFolder(dir, hasFiles) {
     const user = viewing;
+    selectRun += 1;
     selectedDir = dir;
     fileSelection = new Set();
     pendingFolder = null;
@@ -207,12 +215,12 @@
 
   async function applyFilter() {
     flatSelection = new Set();
+    const run = ++filterRun;
     if (!filter.trim()) {
       flatFolders = null;
       return;
     }
     const user = viewing;
-    const run = ++filterRun;
     const data = await get(
       `/users/${encode(user)}/folders?filter=${encode(filter.trim())}&limit=${FOLDER_FILTER_LIMIT}`,
     );

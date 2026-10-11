@@ -279,6 +279,7 @@ fn walk_root(
                     .filter(|cached| {
                         cached.size == size
                             && cached.mtime == mtime
+                            && cached.attributes != FileAttributes::default()
                             && !is_missing_vbr(&cached.attributes)
                     })
                     .map(|cached| cached.attributes.clone())

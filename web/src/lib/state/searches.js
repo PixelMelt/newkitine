@@ -20,7 +20,6 @@ export const interests = writable({
 });
 
 const scopes = persisted('searchScopes', {}, isRecord);
-export const pendingTokens = new Set();
 let nextRowKey = 1;
 
 function rowsOf(response) {
@@ -45,7 +44,6 @@ export function startSearch(scope) {
 		failed: `Search for "${scope.query}" not started`,
 		then: ({ token }) => {
 			scopes.update((known) => ({ ...known, [token]: scope }));
-			if (!get(searches).some((s) => s.token === token)) pendingTokens.add(String(token));
 			go('search', String(token));
 		},
 	});
@@ -67,7 +65,6 @@ export function applySnapshot(msg) {
 
 export const handlers = {
 	search_added: (msg) => {
-		pendingTokens.delete(String(msg.search.token));
 		searches.update((list) =>
 			list.some((s) => s.token === msg.search.token) ? list : [...list, viewOf(msg.search)],
 		);

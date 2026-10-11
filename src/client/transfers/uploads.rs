@@ -117,7 +117,7 @@ impl Uploads {
             token: initial_token(),
             retried_at: Instant::now(),
             upload_speed: 0,
-            suspended: false,
+            suspended: true,
         }
     }
 
@@ -979,6 +979,7 @@ mod tests {
     async fn a_new_index_denies_uploads_it_no_longer_shares() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
 
@@ -1009,6 +1010,7 @@ mod tests {
     async fn held_users_are_skipped_until_the_hold_lifts() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
 
         let shares = three_track_shares("slots");
@@ -1037,6 +1039,7 @@ mod tests {
     async fn denied_restriction_rejects_queue_requests() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 2, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
 
         let shares = three_track_shares("deny");
@@ -1058,6 +1061,7 @@ mod tests {
     async fn one_upload_per_peer_and_no_peer_waits_behind_another() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("nowait");
         let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
@@ -1083,6 +1087,7 @@ mod tests {
     async fn slot_ceiling_counts_peers_not_transfers() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 2, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("ceiling");
         let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
@@ -1101,6 +1106,7 @@ mod tests {
     fn transferring(tag: &str) -> (Uploads, Users, u32, u64, u64) {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares(tag);
         let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
@@ -1132,6 +1138,7 @@ mod tests {
     async fn a_capped_file_is_refused_while_other_files_still_queue() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("capped");
         let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
@@ -1209,6 +1216,7 @@ mod tests {
     async fn banning_denies_queued_and_active_uploads() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 1, 500, 0, "Go away".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("ban");
         let mut users = users();
@@ -1240,6 +1248,7 @@ mod tests {
     async fn activation_advertises_the_current_file_size() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("restat");
         let users = users();
@@ -1288,6 +1297,7 @@ mod tests {
     async fn a_file_changed_after_the_request_is_not_streamed() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("changed");
         let users = users();
@@ -1335,6 +1345,7 @@ mod tests {
     async fn a_duplicate_request_at_the_queue_limit_is_silently_accepted() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 0, 1, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("dup-request");
         let users = users();
@@ -1356,6 +1367,7 @@ mod tests {
     async fn queueing_more_files_keeps_a_users_turn() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("fairness");
         let users = users();
@@ -1383,6 +1395,7 @@ mod tests {
     async fn queue_place_follows_round_robin_order() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("place");
         let mut users = users();
@@ -1403,6 +1416,7 @@ mod tests {
     async fn timed_out_uploads_are_requeued_periodically() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("retry");
         let users = users();
@@ -1458,6 +1472,7 @@ mod tests {
     async fn only_local_timeouts_are_retried_and_a_ban_retires_them() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let shares = three_track_shares("retry-ban");
         let mut users = users();
@@ -1497,6 +1512,7 @@ mod tests {
     async fn a_new_index_denies_uploads_whose_path_now_resolves_elsewhere() {
         let (net, _events) = spawn_network();
         let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
+        uploads.suspended = false;
         let mut ids = TransferIds::new(&[]);
         let users = users();
         let path = "Music\\foo.mp3";

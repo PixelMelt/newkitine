@@ -409,6 +409,10 @@ async fn leave_room(State(app): State<Arc<App>>, Json(body): Json<RoomBody>) -> 
     if let Err(status) = api::require_login(&app) {
         return status;
     }
+    let _mutation = app.list_mutation.lock().await;
+    if let Err(error) = db::remove_from_list(&app.db, "room", &body.room).await {
+        return api::db_failed(error);
+    }
     app.client.leave_room(&body.room).await;
     StatusCode::ACCEPTED
 }

@@ -8,7 +8,7 @@
   export let onsent;
 
   let input;
-  let sending = false;
+  const sending = new Set();
   let error = '';
   let errorKey = key;
 
@@ -28,12 +28,13 @@
   }
 
   async function send() {
-    if (sending || !$status.logged_in) return;
-    sending = true;
+    const target = key;
+    if (sending.has(target) || !$status.logged_in) return;
+    sending.add(target);
     error = '';
-    const sent = await sendMessage(key, (message) => (error = message));
-    sending = false;
-    if (sent) onsent();
+    const sent = await sendMessage(target, (message) => target === key && (error = message));
+    sending.delete(target);
+    if (sent && target === key) onsent();
   }
 </script>
 

@@ -87,6 +87,17 @@ export function shortState(transfer) {
 	return tone === 'failed' ? 'Failed' : tone === 'waiting' && transfer.status === 'failed' ? 'Waiting' : 'Queued';
 }
 
+const SELF_RETRIED = [
+	'user is offline', 'connection timeout', 'connection closed', 'request timed out',
+	'upload failed', 'Pending shutdown.', 'File read error.',
+];
+
+export const retriesByItself = (transfer) =>
+	transfer.status === 'failed' &&
+	(SELF_RETRIED.includes(transfer.failure_reason) ||
+		(transfer.failure_reason ?? '').startsWith('local file error') ||
+		(transfer.failure_reason ?? '').startsWith('cannot place finished download'));
+
 export const isActive = (transfer) =>
 	transfer.status === 'queued' || transfer.status === 'transferring';
 

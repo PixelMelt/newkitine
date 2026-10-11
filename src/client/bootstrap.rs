@@ -7,6 +7,7 @@ pub struct ClientBootstrap {
     pub runtime: RuntimeConfig,
     pub scan_cache: PathBuf,
     pub scan_on_startup: bool,
+    pub connect_on_startup: bool,
     pub buddies: Vec<String>,
     pub banned: Vec<String>,
     pub ignored: Vec<String>,
