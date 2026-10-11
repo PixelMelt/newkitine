@@ -119,7 +119,6 @@
       <input {...noAutofill}
         class="fill"
         placeholder="Add something you like…"
-        aria-label="Add something you like"
         bind:value={liked}
         on:keydown={onEnter(addLiked)}
       />
@@ -144,7 +143,6 @@
       <input {...noAutofill}
         class="fill"
         placeholder="Add something you dislike…"
-        aria-label="Add something you dislike"
         bind:value={hated}
         on:keydown={onEnter(addHated)}
       />

@@ -91,7 +91,6 @@
 <div class="toolbar">
   <input {...noAutofill}
     placeholder="Find or join room…"
-    aria-label="Find or join room"
     bind:value={roomName}
     on:focus={() => (listRequested = true)}
     on:keydown={onEnter(() => join(roomName.trim()))}

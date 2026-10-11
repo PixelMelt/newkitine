@@ -119,9 +119,7 @@
 
 <div class="toolbar">
   <input {...noAutofill}
-    list="known-users"
     placeholder="Add buddy…"
-    aria-label="Add buddy"
     bind:value={buddyName}
     on:keydown={onEnter(() => submit(addBuddy, buddyName, () => (buddyName = '')))}
   />
@@ -166,9 +164,7 @@
     <div class="toolbar">
       <input {...noAutofill}
         class="fill"
-        list="known-users"
         placeholder="Ban user…"
-        aria-label="Ban user"
         bind:value={banName}
         on:keydown={onEnter(() => submit(ban, banName, () => (banName = '')))}
       />
@@ -194,9 +190,7 @@
     <div class="toolbar">
       <input {...noAutofill}
         class="fill"
-        list="known-users"
         placeholder="Ignore user…"
-        aria-label="Ignore user"
         bind:value={ignoreName}
         on:keydown={onEnter(() => submit(ignore, ignoreName, () => (ignoreName = '')))}
       />
@@ -223,7 +217,6 @@
       <input {...noAutofill}
         class="fill"
         placeholder="192.168.1.1 or 10.0.*.*"
-        aria-label="Ban IP address or pattern"
         bind:value={ipPattern}
         on:input={() => (ipError = '')}
         on:keydown={onEnter(addIpBan)}

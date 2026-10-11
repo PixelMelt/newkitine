@@ -286,10 +286,8 @@
 
 <div class="toolbar">
   <input {...noAutofill}
-    list="known-users"
     data-primary={treeLoaded ? null : ''}
     placeholder="Username…"
-    aria-label="User whose shares to browse"
     bind:value={username}
     on:focus={(e) => e.target.select()}
     on:keydown={onEnter(submit)}
@@ -316,10 +314,8 @@
     <div class="side wide">
       <div class="toolbar">
         <input {...noAutofill}
-          type="search"
           class="fill"
           placeholder="Filter folders…"
-          aria-label="Filter folders"
           bind:value={filter}
           on:keydown={onEnter(applyFilter)}
           on:keydown={(e) => e.key === 'Escape' && clearFilter()}

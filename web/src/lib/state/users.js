@@ -1,6 +1,5 @@
-import { writable, derived } from 'svelte/store';
+import { writable } from 'svelte/store';
 
-import { chatPartners, rooms } from './chat.js';
 import { report } from './session.js';
 
 export const buddies = writable(new Map());
@@ -8,19 +7,6 @@ export const banned = writable([]);
 export const ignored = writable([]);
 export const userInfos = writable(new Map());
 export const browses = writable(new Map());
-
-export const knownUsers = derived(
-	[buddies, chatPartners, rooms, userInfos, browses],
-	([$buddies, $chatPartners, $rooms, $userInfos, $browses]) => {
-		const names = new Set([
-			...$buddies.keys(), ...$chatPartners, ...$userInfos.keys(), ...$browses.keys(),
-		]);
-		for (const room of $rooms.joined.values()) {
-			for (const user of room.users) names.add(user);
-		}
-		return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-	},
-);
 
 function removeKey(key) {
 	return (map) => {

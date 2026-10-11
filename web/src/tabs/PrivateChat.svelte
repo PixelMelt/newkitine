@@ -64,9 +64,7 @@
 
 <div class="toolbar">
   <input {...noAutofill}
-    list="known-users"
     placeholder="Start chat with…"
-    aria-label="Start chat with user"
     bind:value={newUser}
     on:keydown={onEnter(openNew)}
   />

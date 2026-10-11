@@ -245,12 +245,10 @@
 
 <div class="toolbar">
   <input {...noAutofill}
-    type="search"
     class="query"
     data-primary={activeSearch ? null : ''}
     data-search-query
     placeholder="Search files…"
-    aria-label="Search files"
     bind:value={query}
     bind:this={queryInput}
     on:keydown={onEnter(submit)}
@@ -273,9 +271,7 @@
   {:else if mode === 'user'}
     <input {...noAutofill}
       class="narrow"
-      list="known-users"
       placeholder="Username…"
-      aria-label="User to search"
       bind:value={modeUser}
       on:keydown={onEnter(submit)}
     />
@@ -329,7 +325,6 @@
   <div class="toolbar">
     <input {...noAutofill}
       placeholder="Add wish…"
-      aria-label="Add wish"
       bind:value={wishTerm}
       on:keydown={onEnter(addWish)}
     />

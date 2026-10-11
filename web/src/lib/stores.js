@@ -11,5 +11,5 @@ export {
 	rooms, chatPartners, conversations, drafts, unread, roomKey, chatKey, markRead,
 	openChat, closeChat, joinRoom, leaveRoom, sendMessage,
 } from './state/chat.js';
-export { buddies, banned, ignored, userInfos, browses, knownUsers } from './state/users.js';
+export { buddies, banned, ignored, userInfos, browses } from './state/users.js';
 export { connectWebSocket, link } from './state/socket.js';

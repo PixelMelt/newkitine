@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import {
     connectWebSocket, link, status, loginFailure, shownReport, dismissReport,
-    speedTotals, unread, knownUsers,
+    speedTotals, unread,
   } from './lib/stores.js';
   import { formatSpeed, plural } from './lib/format.js';
   import { route, go, hrefOf, focusPane } from './lib/ui.js';
@@ -84,11 +84,6 @@
     if (isTyping(event)) {
       if (event.key !== 'Escape') return;
       event.preventDefault();
-      if (event.target.type === 'search' && event.target.value !== '') {
-        event.target.value = '';
-        event.target.dispatchEvent(new Event('input', { bubbles: true }));
-        return;
-      }
       focusPane($route.tab);
       if (document.activeElement === event.target) event.target.blur();
       return;
@@ -194,10 +189,6 @@
       {/if}
     {/if}
   </div>
-
-  <datalist id="known-users">
-    {#each $knownUsers as user}<option value={user}></option>{/each}
-  </datalist>
 
   <ContextMenu />
 </div>

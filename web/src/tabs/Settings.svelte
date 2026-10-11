@@ -304,8 +304,8 @@
             <tbody>
               {#each draft.shares as share}
                 <tr class:removed={removed.has(share)}>
-                  <td><input type="text" {...noAutofill} aria-label="Name shown to others" bind:value={share.virtual_name} /></td>
-                  <td class="grow"><input type="text" {...noAutofill} aria-label="Folder on the server" bind:value={share.path} /></td>
+                  <td><input type="text" {...noAutofill} bind:value={share.virtual_name} /></td>
+                  <td class="grow"><input type="text" {...noAutofill} bind:value={share.path} /></td>
                   <td><input type="checkbox" aria-label="Buddies only" bind:checked={share.buddy_only} /></td>
                   <td>
                     <button type="button" on:click={() => toggleRemoved(share)}>
@@ -317,10 +317,9 @@
             </tbody>
             <tfoot>
               <tr>
-                <td><input type="text" {...noAutofill} placeholder="Music" aria-label="New share name"
+                <td><input type="text" {...noAutofill} placeholder="Music"
                   bind:value={newShare.virtual_name} on:keydown={onEnter(addShare)} /></td>
-                <td class="grow"><input type="text" {...noAutofill} placeholder="/data/shared/music"
-                  aria-label="New share folder" bind:value={newShare.path} on:keydown={onEnter(addShare)} /></td>
+                <td class="grow"><input type="text" {...noAutofill} placeholder="/data/shared/music" bind:value={newShare.path} on:keydown={onEnter(addShare)} /></td>
                 <td><input type="checkbox" aria-label="New share is buddies only" bind:checked={newShare.buddy_only} /></td>
                 <td><button type="button" on:click={addShare}>Add</button></td>
               </tr>
@@ -563,7 +562,7 @@
         {:else if page === 'profile'}
           <h3>My Profile</h3>
           <p class="hint">Shown to users who view your profile.</p>
-          <textarea {...noAutofill} rows="10" aria-label="Profile description"
+          <textarea {...noAutofill} rows="10"
             bind:value={draft.description}></textarea>
           <p class="hint">
             $&#123;user.name&#125; inserts a value, $&#123;user.is_buddy?Hey buddy:Hi&#125; picks

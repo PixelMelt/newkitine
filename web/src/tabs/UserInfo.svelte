@@ -98,10 +98,8 @@
     <div class="toolbar">
       <input {...noAutofill}
         class="fill"
-        list="known-users"
         data-primary={users.length ? null : ''}
         placeholder="Username…"
-        aria-label="User whose profile to open"
         bind:value={newUser}
         on:keydown={onEnter(openNew)}
       />
