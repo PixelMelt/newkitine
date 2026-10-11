@@ -218,7 +218,7 @@
     } else if (command && event.key.toLowerCase() === 'c' && selection.size && copyText) {
       event.preventDefault();
       copy(selectedRows().map(copyText).join('\n'), selection.size > 1 ? 'selected rows' : 'selected row');
-    } else if ((event.key === 'Delete' || event.key === 'Backspace') && selection.size && ondelete) {
+    } else if (event.key === 'Delete' && selection.size && ondelete) {
       event.preventDefault();
       ondelete(selectedRows());
     } else if (

@@ -1,5 +1,6 @@
 <script>
   import { get, post } from '../lib/api.js';
+  import { loadIpBans } from '../lib/stores.js';
   import { act } from '../lib/act.js';
   import { persisted } from '../lib/persisted.js';
   import {
@@ -126,6 +127,7 @@
           act(() => post('/ip_bans', { pattern: row.last_ip }), {
             failed: `${row.last_ip} not banned`,
             done: `Banned IP address ${row.last_ip}`,
+            then: loadIpBans,
           }),
       },
       { sep: true },

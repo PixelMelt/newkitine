@@ -1,7 +1,8 @@
 <script>
   import { tick } from 'svelte';
   import {
-    searches, wishlist, rooms, downloadIndex, transferKey, startSearch, searchAgain, pendingTokens,
+    searches, wishlist, rooms, downloadIndex, transferKey, queueDownloads, startSearch, scopeOf,
+    pendingTokens,
     report,
   } from '../lib/stores.js';
   import { route, go, remember, forget, openBrowse, noAutofill } from '../lib/ui.js';
@@ -11,7 +12,7 @@
     formatSize, formatSpeed, formatQuality, formatDuration, formatCount, effectiveBitrate, plural,
   } from '../lib/format.js';
   import { emptyFilters, compileFilters, activeFilterCount } from '../lib/filters.js';
-  import { shortState, isActive } from '../lib/transferStatus.js';
+  import { shortState } from '../lib/transferStatus.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
@@ -121,6 +122,7 @@
 
   function closeSearch(id) {
     const search = $searches.find((s) => String(s.token) === id);
+    const scope = scopeOf(search);
     const next = strip.neighbour(id);
     if (wanted === id) {
       if (next) go('search', next);
@@ -129,43 +131,19 @@
     act(() => del(`/searches/${id}`), {
       failed: `Search "${search.query}" not closed`,
       done: `Closed search "${search.query}" (${plural(search.rows.length, 'result')})`,
-      action: { label: 'Search Again', run: () => searchAgain(search) },
+      action: { label: 'Search Again', run: () => startSearch(scope) },
     });
   }
 
-  async function download(picked) {
-    const fresh = picked.filter((r) => {
-      const transfer = stateOf($downloadIndex, r);
-      return !transfer || !isActive(transfer);
-    });
-    const outcomes = await Promise.allSettled(
-      fresh.map(({ response, file }) =>
-        post('/downloads', {
-          username: response.username,
-          virtual_path: file.name,
-          size: file.size,
-          attributes: file.attributes,
-        }),
-      ),
+  const download = (picked) =>
+    queueDownloads(
+      picked.map(({ response, file }) => ({
+        username: response.username,
+        virtual_path: file.name,
+        size: file.size,
+        attributes: file.attributes,
+      })),
     );
-    const failures = outcomes.filter((o) => o.status === 'rejected' && o.reason.status !== 409);
-    const queued = outcomes.filter((o) => o.status === 'fulfilled').length;
-    const skipped = picked.length - queued - failures.length;
-    if (failures.length) {
-      const cause =
-        failures[0].reason.status === undefined
-          ? "can't reach the Newkitine server"
-          : failures[0].reason.message;
-      report.error(`${plural(failures.length, 'download')} not queued: ${cause}.`);
-    } else if (!queued) {
-      report.info(picked.length > 1 ? 'Those files are already downloading.' : 'That file is already downloading.');
-    } else if (picked.length > 1) {
-      report.done(
-        `Queued ${plural(queued, 'file')}` + (skipped ? ` (${skipped} already in Downloads)` : ''),
-        { label: 'Show Downloads', run: () => go('downloads') },
-      );
-    }
-  }
 
   function downloadFolders(picked) {
     const folders = new Map(picked.map((r) => [`${r.response.username}\u0000${r.folder}`, r]));
@@ -205,7 +183,7 @@
   function tabMenu(event, id) {
     const search = $searches.find((s) => String(s.token) === id);
     openMenu(event, [
-      { label: 'Search Again', action: () => searchAgain(search) },
+      { label: 'Search Again', action: () => startSearch(scopeOf(search)) },
       { label: 'Copy Search Term', action: () => copy(search.query, 'search term') },
       { sep: true },
       { label: 'Close Search', action: () => closeSearch(id) },

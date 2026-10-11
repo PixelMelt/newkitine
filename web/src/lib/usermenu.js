@@ -1,5 +1,5 @@
 import { get } from 'svelte/store';
-import { buddies, banned, ignored, uploads, isCleared } from './stores.js';
+import { buddies, banned, ignored, uploads, isCleared, loadIpBans } from './stores.js';
 import { post, del } from './api.js';
 import { act, copy } from './act.js';
 import { plural } from './format.js';
@@ -65,8 +65,60 @@ function banIp(username) {
 		failed: `IP address of ${username} not banned`,
 		done: `Banned the last known IP address of ${username}`,
 		on: { 404: `no IP address is known for ${username}` },
+		then: loadIpBans,
 	});
 }
+
+function bulk(names, one, { request, failed, done, undo }) {
+	if (names.length === 1) return one(names[0]);
+	return act(() => Promise.all(names.map(request)), {
+		failed,
+		done,
+		action: { label: 'Undo', run: undo },
+	});
+}
+
+export function removeBuddies(names) {
+	const notes = names.map((name) => get(buddies).get(name).note);
+	return bulk(names, removeBuddy, {
+		request: (name) => del(`/buddies/${encoded(name)}`),
+		failed: 'Buddies not removed',
+		done: `Removed ${plural(names.length, 'buddy', 'buddies')}`,
+		undo: () =>
+			act(
+				() =>
+					Promise.all(
+						names.map(async (name, index) => {
+							await post('/buddies', { username: name });
+							if (notes[index]) await post(`/buddies/${encoded(name)}/note`, { note: notes[index] });
+						}),
+					),
+				{ failed: 'Buddies not restored' },
+			),
+	});
+}
+
+export const unbanAll = (names) =>
+	bulk(names, unban, {
+		request: (name) => del(`/banned/${encoded(name)}`),
+		failed: 'Users still banned',
+		done: `Unbanned ${plural(names.length, 'user')}`,
+		undo: () =>
+			act(() => Promise.all(names.map((name) => post('/banned', { username: name }))), {
+				failed: 'Users not banned again',
+			}),
+	});
+
+export const unignoreAll = (names) =>
+	bulk(names, unignore, {
+		request: (name) => del(`/ignored/${encoded(name)}`),
+		failed: 'Users still ignored',
+		done: `Stopped ignoring ${plural(names.length, 'user')}`,
+		undo: () =>
+			act(() => Promise.all(names.map((name) => post('/ignored', { username: name }))), {
+				failed: 'Users not ignored again',
+			}),
+	});
 
 export function userMenu(username, { current = null, primary = false } = {}) {
 	const isBuddy = get(buddies).has(username);

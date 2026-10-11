@@ -3,7 +3,7 @@
   import { downloads, uploads, isCleared, report } from '../lib/stores.js';
   import { openBrowse, openUserInfo } from '../lib/ui.js';
   import { post } from '../lib/api.js';
-  import { act, copy } from '../lib/act.js';
+  import { act, actEach, copy } from '../lib/act.js';
   import {
     formatSize, formatSpeed, formatDuration, formatQuality, formatCount,
     effectiveBitrate, baseName, folderName, plural,
@@ -84,36 +84,23 @@
   const nameOf = (rows) =>
     rows.length === 1 ? `"${baseName(rows[0].virtual_path)}"` : plural(rows.length, noun);
 
-  async function settle(requests, failed) {
-    const outcomes = await Promise.allSettled(requests);
-    const failures = outcomes.filter((o) => o.status === 'rejected' && o.reason.status !== 409);
-    if (failures.length) {
-      const cause =
-        failures[0].reason.status === undefined
-          ? "can't reach the Newkitine server"
-          : failures[0].reason.message;
-      report.error(`${failed}: ${cause}.`);
-    }
-    return !failures.length;
-  }
-
   async function retry(rows) {
     const targets = retryable(rows);
     if (!targets.length) return;
-    await settle(
+    await actEach(
       targets.map((t) => post('/downloads/retry', { id: t.id })),
-      `${nameOf(targets)} not retried`,
+      { failed: () => `${nameOf(targets)} not retried`, skip: [409] },
     );
   }
 
   async function abort(rows) {
     const targets = abortable(rows);
     if (!targets.length) return;
-    const done = await settle(
+    const result = await actEach(
       targets.map((t) => post(`${path}/abort`, { id: t.id })),
-      `${nameOf(targets)} not stopped`,
+      { failed: () => `${nameOf(targets)} not stopped` },
     );
-    if (done) {
+    if (result.ok) {
       report.done(
         `Stopped ${nameOf(targets)}`,
         isDownload ? { label: 'Retry', run: () => retry(targets.map((t) => $store[t.id]).filter(Boolean)) } : undefined,

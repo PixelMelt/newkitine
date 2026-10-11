@@ -91,7 +91,12 @@
 
   onDestroy(
     settings.subscribe((value) => {
-      if (value.settings && (!draft || !isDirty())) adopt(value.settings);
+      if (!value.settings) return;
+      if (!draft || !isDirty()) adopt(value.settings);
+      else if (value.gluetun || value.locked.includes('listen_port')) {
+        draft.listen_port = value.settings.listen_port;
+        baseline.listen_port = value.settings.listen_port;
+      }
     }),
   );
 

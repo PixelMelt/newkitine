@@ -83,7 +83,8 @@
   function follow(event, link) {
     if (!link.startsWith('slsk://')) return;
     event.preventDefault();
-    const [user, ...folders] = link.slice(7).split('/').filter(Boolean).map(decodeSegment);
+    const [user, ...parts] = link.slice(7).split('/').filter(Boolean).map(decodeSegment);
+    const folders = link.endsWith('/') ? parts : parts.slice(0, -1);
     if (user) openBrowse(user, folders.length ? folders.join('\\') : null);
   }
 

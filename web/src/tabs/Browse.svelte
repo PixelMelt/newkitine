@@ -1,8 +1,8 @@
 <script>
   import { tick } from 'svelte';
-  import { browses, downloadIndex, transferKey, report, link } from '../lib/stores.js';
+  import { browses, downloadIndex, transferKey, queueDownloads, link } from '../lib/stores.js';
   import { route, go, openBrowse, noAutofill } from '../lib/ui.js';
-  import { shortState, isActive } from '../lib/transferStatus.js';
+  import { shortState } from '../lib/transferStatus.js';
   import { get, post } from '../lib/api.js';
   import { act, copy } from '../lib/act.js';
   import {
@@ -205,40 +205,15 @@
     revealFolder(viewing, rows[0].directory);
   }
 
-  async function downloadFiles(files) {
-    const { username: user, dir } = listing;
-    const fresh = files.filter((f) => {
-      const transfer = stateOf($downloadIndex, f);
-      return !transfer || !isActive(transfer);
-    });
-    const outcomes = await Promise.allSettled(
-      fresh.map((file) =>
-        post('/downloads', {
-          username: user,
-          virtual_path: `${dir}\\${file.name}`,
-          size: file.size,
-          attributes: file.attributes,
-        }),
-      ),
+  const downloadFiles = (files) =>
+    queueDownloads(
+      files.map((file) => ({
+        username: listing.username,
+        virtual_path: `${listing.dir}\\${file.name}`,
+        size: file.size,
+        attributes: file.attributes,
+      })),
     );
-    const failures = outcomes.filter((o) => o.status === 'rejected' && o.reason.status !== 409);
-    const queued = outcomes.filter((o) => o.status === 'fulfilled').length;
-    if (failures.length) {
-      const cause =
-        failures[0].reason.status === undefined
-          ? "can't reach the Newkitine server"
-          : failures[0].reason.message;
-      report.error(`${plural(failures.length, 'download')} not queued: ${cause}.`);
-    } else if (!queued) {
-      report.info(files.length > 1 ? 'Those files are already downloading.' : 'That file is already downloading.');
-    } else if (files.length > 1) {
-      const skipped = files.length - queued;
-      report.done(
-        `Queued ${plural(queued, 'file')}` + (skipped ? ` (${skipped} already in Downloads)` : ''),
-        { label: 'Show Downloads', run: () => go('downloads') },
-      );
-    }
-  }
 
   function downloadFolder(dir, recursive) {
     act(() => post('/downloads/folder', { username: viewing, dir, recursive }), {

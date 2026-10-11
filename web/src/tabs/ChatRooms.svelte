@@ -8,6 +8,7 @@
   import { onEnter } from '../lib/keys.js';
   import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { compareNames } from '../lib/sort.js';
   import Subtabs from '../lib/Subtabs.svelte';
   import DataTable from '../lib/DataTable.svelte';
   import MessageLog from '../lib/MessageLog.svelte';
@@ -28,18 +29,18 @@
   ];
   const userColumns = [{ key: 'username', label: 'User', grow: 1, min: 100, text: (u) => u }];
 
-  $: joinedNames = [...$rooms.joined.keys()].sort((a, b) => a.localeCompare(b));
+  $: joinedNames = [...$rooms.joined.keys()].sort(compareNames);
   $: wanted = $route.items.rooms;
   $: selected = $rooms.joined.has(wanted) ? wanted : (joinedNames[0] ?? null);
   $: showList = listRequested || !selected;
   $: current = selected ? $rooms.joined.get(selected) : null;
-  $: users = current
-    ? [...current.users].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-    : [];
+  $: users = current && !showList ? [...current.users].sort(compareNames) : [];
   $: needle = fold(roomName.trim());
-  $: available = $rooms.available
-    .filter((room) => fold(room.name).includes(needle))
-    .map((room) => ({ ...room, joined: $rooms.joined.has(room.name) }));
+  $: available = showList
+    ? $rooms.available
+        .filter((room) => fold(room.name).includes(needle))
+        .map((room) => ({ ...room, joined: $rooms.joined.has(room.name) }))
+    : [];
   $: items = joinedNames.map((room) => ({
     id: room,
     label: room,

@@ -1,5 +1,7 @@
 import { writable } from 'svelte/store';
 
+import { act } from '../act.js';
+import { get as apiGet } from '../api.js';
 import { report } from './session.js';
 
 export const buddies = writable(new Map());
@@ -7,6 +9,13 @@ export const banned = writable([]);
 export const ignored = writable([]);
 export const userInfos = writable(new Map());
 export const browses = writable(new Map());
+export const ipBans = writable([]);
+
+export const loadIpBans = () =>
+	act(() => apiGet('/ip_bans'), {
+		failed: 'Banned IP addresses not loaded',
+		then: (data) => ipBans.set(data.patterns),
+	});
 
 function removeKey(key) {
 	return (map) => {

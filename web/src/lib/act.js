@@ -28,6 +28,21 @@ export async function act(request, { failed, done, action, on = {}, where, then 
 	return true;
 }
 
+export async function actEach(requests, { failed, skip = [] }) {
+	const outcomes = await Promise.allSettled(requests);
+	const rejected = outcomes.filter((o) => o.status === 'rejected').map((o) => o.reason);
+	const failures = rejected.filter((error) => !skip.includes(error.status));
+	if (failures.length) {
+		const { cause, action } = explain(failures[0], {});
+		report.error(`${failed(failures.length)}: ${cause}.`, action);
+	}
+	return {
+		ok: !failures.length,
+		done: outcomes.length - rejected.length,
+		skipped: rejected.length - failures.length,
+	};
+}
+
 export function copy(text, what) {
 	const field = document.createElement('textarea');
 	const focused = document.activeElement;

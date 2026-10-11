@@ -1,6 +1,6 @@
 <script>
   import {
-    chatPartners, conversations, unread, chatKey, closeChat, openChat, status, report,
+    chatPartners, conversations, unread, chatKey, closeChat, openChat, forgetChat, status,
   } from '../lib/stores.js';
   import { route, go, forget, openPrivateChat, noAutofill } from '../lib/ui.js';
   import { del } from '../lib/api.js';
@@ -43,9 +43,9 @@
 
   function closeAll() {
     const partners = [...$chatPartners];
-    chatPartners.set([]);
     act(() => Promise.all(partners.map((user) => del(`/chats/${encodeURIComponent(user)}`))), {
       failed: 'Chats not closed',
+      then: () => partners.forEach(forgetChat),
       done: `Closed ${plural(partners.length, 'chat')}`,
       action: { label: 'Undo', run: () => partners.forEach(openChat) },
     });

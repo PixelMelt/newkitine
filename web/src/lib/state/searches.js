@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 
 import { act } from '../act.js';
 import { post } from '../api.js';
@@ -44,7 +44,7 @@ export function startSearch(scope) {
 		failed: `Search for "${scope.query}" not started`,
 		then: ({ token }) => {
 			scopes.set(token, scope);
-			pendingTokens.add(String(token));
+			if (!get(searches).some((s) => s.token === token)) pendingTokens.add(String(token));
 			go('search', String(token));
 		},
 	});
@@ -52,8 +52,8 @@ export function startSearch(scope) {
 
 export const openSearch = (query) => startSearch({ query, mode: 'global' });
 
-export const searchAgain = (search) =>
-	startSearch(scopes.get(search.token) ?? { query: search.query, mode: 'global' });
+export const scopeOf = (search) =>
+	scopes.get(search.token) ?? { query: search.query, mode: 'global' };
 
 export function applySnapshot(msg) {
 	searches.set(msg.searches.map(viewOf));

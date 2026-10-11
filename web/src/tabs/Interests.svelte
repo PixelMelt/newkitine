@@ -3,7 +3,7 @@
   import { route, openUserInfo, noAutofill } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { act } from '../lib/act.js';
-  import { formatCount } from '../lib/format.js';
+  import { formatCount, plural } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
@@ -58,6 +58,20 @@
       action: { label: 'Undo', run: () => add(kind, thing) },
     });
 
+  function removeAll(kind, things) {
+    if (things.length === 1) return remove(kind, things[0]);
+    const change = (path) => () =>
+      Promise.all(things.map((thing) => post(`/interests/${path}`, { kind, thing })));
+    return act(change('remove'), {
+      failed: 'Interests not removed',
+      done: `Removed ${plural(things.length, 'interest')}`,
+      action: {
+        label: 'Undo',
+        run: () => act(change('add'), { failed: 'Interests not restored' }),
+      },
+    });
+  }
+
   const recommendItem = (thing) =>
     act(() => post('/interests/item', { thing }), {
       failed: `Recommendations for "${thing}" not requested`,
@@ -79,7 +93,7 @@
       },
       { label: 'Search for Item', action: () => openSearch(rows[0]) },
       { sep: true },
-      { label: 'Remove', action: () => rows.forEach((t) => remove(kind, t)) },
+      { label: 'Remove', action: () => removeAll(kind, rows) },
     ]);
 
   function recommendationMenu(rows, point) {
@@ -136,7 +150,7 @@
       empty="Nothing yet."
       onactivate={(rows) => recommendItem(rows[0])}
       onmenu={ownMenu('liked')}
-      ondelete={(rows) => rows.forEach((thing) => remove('liked', thing))}
+      ondelete={(rows) => removeAll('liked', rows)}
     />
     <h3>Things I Dislike</h3>
     <div class="toolbar">
@@ -160,7 +174,7 @@
       empty="Nothing yet."
       onactivate={(rows) => recommendItem(rows[0])}
       onmenu={ownMenu('hated')}
-      ondelete={(rows) => rows.forEach((thing) => remove('hated', thing))}
+      ondelete={(rows) => removeAll('hated', rows)}
     />
   </div>
   <div class="main">

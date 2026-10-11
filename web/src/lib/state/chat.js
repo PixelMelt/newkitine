@@ -84,10 +84,10 @@ function addPartner(username) {
 
 export function openChat(username) {
 	if (!addPartner(username)) return;
-	loadChatHistory(username);
 	act(() => post(`/chats/${encodeURIComponent(username)}/open`), {
 		failed: `Chat with ${username} not opened`,
-	});
+		then: () => loadChatHistory(username),
+	}).then((opened) => opened || forgetChat(username));
 }
 
 function dropConversation(key) {
@@ -97,15 +97,15 @@ function dropConversation(key) {
 	});
 }
 
-function removePartner(username) {
+export function forgetChat(username) {
 	chatPartners.update((list) => list.filter((user) => user !== username));
 	dropConversation(chatKey(username));
 }
 
 export function closeChat(username) {
-	removePartner(username);
 	return act(() => del(`/chats/${encodeURIComponent(username)}`), {
 		failed: `Chat with ${username} not closed`,
+		then: () => forgetChat(username),
 		done: `Closed chat with ${username}`,
 		action: { label: 'Undo', run: () => openChat(username) },
 	});
@@ -166,7 +166,7 @@ export const handlers = {
 	chat_opened: (msg) => {
 		if (addPartner(msg.username)) loadChatHistory(msg.username);
 	},
-	chat_closed: (msg) => removePartner(msg.username),
+	chat_closed: (msg) => forgetChat(msg.username),
 	room_message: (msg) => merge(roomKey(msg.room), [msg.message], ROOM_MESSAGE_LIMIT),
 	room_list: (msg) => {
 		rooms.update((r) => ({ ...r, available: msg.rooms }));

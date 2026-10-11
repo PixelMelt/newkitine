@@ -1,13 +1,15 @@
 <script>
   import { tick } from 'svelte';
-  import { buddies, banned, ignored } from '../lib/stores.js';
+  import { buddies, banned, ignored, ipBans, loadIpBans } from '../lib/stores.js';
   import { route, openUserInfo, noAutofill } from '../lib/ui.js';
-  import { get, post } from '../lib/api.js';
+  import { post } from '../lib/api.js';
   import { act } from '../lib/act.js';
   import { formatSpeed, formatCount, plural } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
-  import { userMenu, addBuddy, removeBuddy, ban, unban, ignore, unignore } from '../lib/usermenu.js';
+  import {
+    userMenu, addBuddy, removeBuddies, ban, unbanAll, ignore, unignoreAll,
+  } from '../lib/usermenu.js';
   import DataTable from '../lib/DataTable.svelte';
 
   const STATUS = {
@@ -37,7 +39,6 @@
   let banName = '';
   let ignoreName = '';
   let ipPattern = '';
-  let ipBans = [];
   let ipError = '';
   let editing = null;
   let noteText = '';
@@ -49,10 +50,6 @@
   $: banRows = [...$banned].sort(byName);
   $: ignoreRows = [...$ignored].sort(byName);
   $: if ($route.tab === 'buddies') loadIpBans();
-
-  async function loadIpBans() {
-    ipBans = (await get('/ip_bans')).patterns;
-  }
 
   async function submit(run, name, clear) {
     const username = name.trim();
@@ -155,7 +152,7 @@
   empty="No buddies."
   onactivate={(rows) => openUserInfo(rows[0].username)}
   onmenu={buddyMenu}
-  ondelete={(rows) => rows.forEach((b) => removeBuddy(b.username))}
+  ondelete={(rows) => removeBuddies(rows.map((b) => b.username))}
 />
 
 <div class="split short">
@@ -181,8 +178,8 @@
       copyText={(name) => name}
       empty="Nobody is banned."
       onactivate={(rows) => openUserInfo(rows[0])}
-      onmenu={removal('Unban', (rows) => rows.forEach(unban), true)}
-      ondelete={(rows) => rows.forEach(unban)}
+      onmenu={removal('Unban', unbanAll, true)}
+      ondelete={unbanAll}
     />
   </div>
   <div class="main">
@@ -207,8 +204,8 @@
       copyText={(name) => name}
       empty="Nobody is ignored."
       onactivate={(rows) => openUserInfo(rows[0])}
-      onmenu={removal('Stop Ignoring', (rows) => rows.forEach(unignore), true)}
-      ondelete={(rows) => rows.forEach(unignore)}
+      onmenu={removal('Stop Ignoring', unignoreAll, true)}
+      ondelete={unignoreAll}
     />
   </div>
   <div class="main">
@@ -227,7 +224,7 @@
     <DataTable
       id="ip-bans"
       label="Banned IP addresses"
-      rows={ipBans}
+      rows={$ipBans}
       key={(pattern) => pattern}
       columns={nameColumn('Address or Pattern')}
       headless

@@ -1,4 +1,10 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
+
+import { actEach } from '../act.js';
+import { post } from '../api.js';
+import { plural } from '../format.js';
+import { go } from '../ui.js';
+import { report } from './session.js';
 
 export const downloads = writable({});
 export const uploads = writable({});
@@ -19,6 +25,28 @@ export const downloadIndex = derived(downloads, ($downloads) => {
 	}
 	return index;
 });
+
+export async function queueDownloads(files) {
+	const index = get(downloadIndex);
+	const fresh = files.filter((file) => {
+		const transfer = index.get(transferKey(file.username, file.virtual_path));
+		return !transfer || isCleared(transfer.status);
+	});
+	const result = await actEach(
+		fresh.map((file) => post('/downloads', file)),
+		{ failed: (count) => `${plural(count, 'download')} not queued`, skip: [409] },
+	);
+	if (!result.ok) return;
+	const skipped = files.length - result.done;
+	if (!result.done) {
+		report.info(files.length > 1 ? 'Those files are already downloading.' : 'That file is already downloading.');
+	} else if (files.length > 1) {
+		report.done(
+			`Queued ${plural(result.done, 'file')}` + (skipped ? ` (${skipped} already in Downloads)` : ''),
+			{ label: 'Show Downloads', run: () => go('downloads') },
+		);
+	}
+}
 
 export function applySnapshot(msg) {
 	downloads.set(Object.fromEntries(msg.downloads.map((t) => [t.id, t])));

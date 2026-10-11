@@ -1,5 +1,7 @@
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
+export const compareNames = (a, b) => collator.compare(a, b);
+
 function compare(a, b) {
 	if (typeof a === 'number' && typeof b === 'number') return a - b;
 	return collator.compare(String(a), String(b));
