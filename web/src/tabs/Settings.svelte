@@ -4,7 +4,6 @@
   import { route, go, noAutofill } from '../lib/ui.js';
   import { put, post } from '../lib/api.js';
   import { act } from '../lib/act.js';
-  import { formatTime } from '../lib/format.js';
   import { onEnter, hasCommand } from '../lib/keys.js';
   import NumberField from '../lib/NumberField.svelte';
 
@@ -181,7 +180,7 @@
     sent.password_set = draft.password_set;
     baseline = sent;
     await tick();
-    savedAt = Date.now() / 1000;
+    savedAt = Date.now();
     return true;
   }
 
@@ -257,12 +256,9 @@
             <label for="set-password">Password</label>
             <div class="control">
               <input {...noAutofill} autocomplete="new-password" id="set-password" type="password"
-                bind:value={draft.password} readonly={locked.has('password')} />
-              <span class="hint">
-                {#if locked.has('password')}Set by {lockedBy.password}.
-                {:else if draft.password_set}A password is saved. Leave empty to keep it.
-                {:else}No password saved.{/if}
-              </span>
+                bind:value={draft.password} placeholder={draft.password_set ? 'unchanged' : ''}
+                readonly={locked.has('password')} />
+              {#if locked.has('password')}<span class="hint">Set by {lockedBy.password}.</span>{/if}
             </div>
           </div>
           <div class="form-row">
@@ -278,11 +274,8 @@
             <div class="control">
               <NumberField id="set-port" min={1024} max={65535} locked={portManaged}
                 bind:value={draft.listen_port} bind:invalid={invalid.listen_port} />
-              <span class="hint">
-                {#if $settings.gluetun}Managed by Gluetun port forwarding.
-                {:else if locked.has('listen_port')}Set by {lockedBy.listen_port}.
-                {:else}Other users connect to you on this port. Forward it in your router or VPN.{/if}
-              </span>
+              {#if $settings.gluetun}<span class="hint">Managed by Gluetun port forwarding.</span>
+              {:else if locked.has('listen_port')}<span class="hint">Set by {lockedBy.listen_port}.</span>{/if}
             </div>
           </div>
           <div class="form-row check">
@@ -332,11 +325,7 @@
                 on:click={() => act(() => post('/shares/rescan'), { failed: 'Rescan not started' })}>
                 {$status.scanning ? 'Scanning…' : 'Rescan Shares Now'}
               </button>
-              <span class="hint">
-                {changedPages.has('shares')
-                  ? 'Rescans the saved shares. Save first to include your changes.'
-                  : 'Saving a change to shares or excluded names starts a full rescan.'}
-              </span>
+              <span class="hint">Saving share or exclusion changes starts a full rescan.</span>
             </div>
           </div>
           <div class="form-row">
@@ -344,7 +333,7 @@
             <div class="control">
               <textarea {...noAutofill} id="set-share-filters" rows="4" bind:value={shareFiltersText}
                 placeholder="Thumbs.db&#10;desktop.ini"></textarea>
-              <span class="hint">One exact file or folder name per line. Skipped when scanning.</span>
+              <span class="hint">One exact file or folder name per line.</span>
             </div>
           </div>
           <div class="form-row check">
@@ -386,7 +375,6 @@
             <div class="control">
               <input {...noAutofill} id="set-incompletedir" class="long" type="text" bind:value={draft.incomplete_dir}
                 placeholder="{draft.download_dir}/incomplete" />
-              <span class="hint">Leave empty to use the folder shown.</span>
             </div>
           </div>
           <div class="form-row">
@@ -521,11 +509,6 @@
               Clear a peer's verdict when they send a private message
             </label>
           </div>
-          <p class="hint">
-            Banned users, ignored users and banned IP addresses are on the
-            <a href="/buddies" on:click|preventDefault={() => go('buddies')}>Buddies</a> tab; they
-            apply as soon as you add them.
-          </p>
 
         {:else if page === 'notifications'}
           <h3>Pushover</h3>
@@ -561,7 +544,6 @@
 
         {:else if page === 'profile'}
           <h3>My Profile</h3>
-          <p class="hint">Shown to users who view your profile.</p>
           <textarea {...noAutofill} rows="10"
             bind:value={draft.description}></textarea>
           <p class="hint">
@@ -581,16 +563,13 @@
         {:else if page === 'ui'}
           <h3>Appearance</h3>
           <div class="form-row">
-            <span>Theme</span>
+            <label for="set-theme">Theme</label>
             <div class="control">
-              {#each themes as [id, label]}
-                <label>
-                  <input type="radio" name="theme" value={id} bind:group={draft.theme}
-                    on:change={() => previewTheme(draft.theme)} />
-                  {label}
-                </label>
-              {/each}
-              <span class="hint">Previewed at once, kept when you save.</span>
+              <select id="set-theme" bind:value={draft.theme} on:change={() => previewTheme(draft.theme)}>
+                {#each themes as [id, label]}
+                  <option value={id}>{label}</option>
+                {/each}
+              </select>
             </div>
           </div>
 
@@ -605,7 +584,7 @@
         {:else if discarded}
           <span>Changes discarded.</span>
           <button type="button" on:click={restoreDiscarded}>Undo</button>
-        {:else if savedAt}<span class="hint">Saved at {formatTime(savedAt)}.</span>{/if}
+        {:else if savedAt}<span class="hint">Saved.</span>{/if}
         <button type="button" class="spaced" on:click={discard}>Discard Changes</button>
       </div>
     </div>

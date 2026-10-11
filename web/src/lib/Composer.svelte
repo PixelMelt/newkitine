@@ -40,7 +40,7 @@
 {#if error}
   <div class="notice">{error}</div>
 {:else if !$status.logged_in}
-  <div class="hint">Not connected to Soulseek. Your message stays here until you can send it.</div>
+  <div class="hint">Not connected to Soulseek.</div>
 {/if}
 <div class="toolbar">
   <input {...noAutofill}

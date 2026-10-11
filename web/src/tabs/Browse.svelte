@@ -6,7 +6,7 @@
   import { get, post } from '../lib/api.js';
   import { act, copy } from '../lib/act.js';
   import {
-    formatSize, formatQuality, formatDuration, formatTime, effectiveBitrate, plural,
+    formatSize, formatQuality, formatDuration, effectiveBitrate, plural,
   } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
@@ -154,7 +154,7 @@
   }
 
   async function requestList(user) {
-    request = { at: Date.now() / 1000, failed: null };
+    request = { failed: null };
     await act(() => post(`/users/${encode(user)}/browse`), {
       failed: `Share list of ${user} not requested`,
       where: (text) => user === viewing && (request = { ...request, failed: text }),
@@ -303,7 +303,7 @@
       {formatSize(summary.size)}
     {/if}
     {#if request && !request.failed}
-      {treeLoaded ? 'Refreshing…' : `Asked ${viewing} for their share list at ${formatTime(request.at)}. Large lists take a while.`}
+      {treeLoaded ? 'Refreshing…' : `Waiting for ${viewing}'s share list…`}
     {/if}
   </span>
   {#if request?.failed}<span class="notice">{request.failed}</span>{/if}

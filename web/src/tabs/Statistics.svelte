@@ -90,7 +90,7 @@
   }
 
   $: if ($route.tab === 'statistics') refresh();
-  $: waiting = failure ? '' : 'Adding up the transfer history… This can take a quarter of a minute.';
+  $: waiting = failure ? '' : 'Loading statistics…';
   $: maxWeekday = transfers ? Math.max(1, ...transfers.weekday_uploads) : 1;
   $: countries = peers ? countryRows(peers.countries) : [];
 

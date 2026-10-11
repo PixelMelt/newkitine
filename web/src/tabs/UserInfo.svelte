@@ -5,7 +5,7 @@
   import { route, go, forget, openUserInfo, noAutofill } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { act } from '../lib/act.js';
-  import { formatSpeed, formatCount, formatTime, segments } from '../lib/format.js';
+  import { formatSpeed, formatCount, segments } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
@@ -37,7 +37,7 @@
   }
 
   async function request(username) {
-    requests[username] = { at: Date.now() / 1000, failed: null };
+    requests[username] = { failed: null };
     await act(() => post(`/users/${encodeURIComponent(username)}/info`), {
       failed: `Profile of ${username} not requested`,
       where: (text) => (requests[username] = { ...requests[username], failed: text }),
@@ -138,8 +138,7 @@
               {#if requests[info.username]?.failed}
                 {requests[info.username].failed}
               {:else if requests[info.username]}
-                Asked {info.username} at {formatTime(requests[info.username].at)}, no answer yet.
-                Users who are offline cannot answer.
+                Waiting for {info.username} to answer…
               {:else}
                 No answer from {info.username} yet.
               {/if}
@@ -203,7 +202,7 @@
     {:else if wanted && requests[wanted]}
       <p class={requests[wanted].failed ? 'notice' : 'hint'}>
         {requests[wanted].failed ??
-          `Asked the server about ${wanted} at ${formatTime(requests[wanted].at)}…`}
+          `Waiting for ${wanted} to answer…`}
       </p>
     {/if}
   </div>

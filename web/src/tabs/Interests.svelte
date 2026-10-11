@@ -108,7 +108,7 @@
 <div class="toolbar">
   <button on:click={refresh}>Refresh Recommendations</button>
   {#if !$status.logged_in}
-    <span class="hint">Not connected to Soulseek. Recommendations load after login.</span>
+    <span class="hint">Not connected to Soulseek.</span>
   {/if}
 </div>
 

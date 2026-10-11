@@ -138,7 +138,6 @@
     onactivate={(rows) => join(rows[0].name)}
     onmenu={roomMenu}
   />
-  <p class="hint">Double-click a room to join it.</p>
 {:else}
   <div class="split">
     <div class="main">
