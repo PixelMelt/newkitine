@@ -287,7 +287,7 @@
 <div class="toolbar">
   <input {...noAutofill}
     data-primary={treeLoaded ? null : ''}
-    placeholder="Username…"
+    placeholder="Browse shares of…"
     bind:value={username}
     on:focus={(e) => e.target.select()}
     on:keydown={onEnter(submit)}

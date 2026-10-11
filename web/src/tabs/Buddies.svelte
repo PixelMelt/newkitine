@@ -164,7 +164,7 @@
     <div class="toolbar">
       <input {...noAutofill}
         class="fill"
-        placeholder="Ban user…"
+        placeholder="Name to ban…"
         bind:value={banName}
         on:keydown={onEnter(() => submit(ban, banName, () => (banName = '')))}
       />
@@ -190,7 +190,7 @@
     <div class="toolbar">
       <input {...noAutofill}
         class="fill"
-        placeholder="Ignore user…"
+        placeholder="Name to ignore…"
         bind:value={ignoreName}
         on:keydown={onEnter(() => submit(ignore, ignoreName, () => (ignoreName = '')))}
       />

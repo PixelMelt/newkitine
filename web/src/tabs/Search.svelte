@@ -272,7 +272,7 @@
   {:else if mode === 'user'}
     <input {...noAutofill}
       class="narrow"
-      placeholder="Username…"
+      placeholder="Shared by…"
       bind:value={modeUser}
       on:keydown={onEnter(submit)}
     />

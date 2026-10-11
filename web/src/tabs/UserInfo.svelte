@@ -99,7 +99,7 @@
       <input {...noAutofill}
         class="fill"
         data-primary={users.length ? null : ''}
-        placeholder="Username…"
+        placeholder="Open profile of…"
         bind:value={newUser}
         on:keydown={onEnter(openNew)}
       />
