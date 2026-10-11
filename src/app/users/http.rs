@@ -165,7 +165,10 @@ async fn user_tree(
         let (mut files, mut size) = (0u64, 0u64);
         for folder in all {
             files += folder.files.len() as u64;
-            size += folder.files.iter().map(|file| file.size).sum::<u64>();
+            size = folder
+                .files
+                .iter()
+                .fold(size, |total, file| total.saturating_add(file.size));
         }
         response["summary"] = json!({
             "folders": folders.len() + private_folders.len(),
@@ -274,6 +277,9 @@ async fn set_buddy_note(
     if !app.projection.read().users.is_buddy(&username) {
         return StatusCode::NOT_FOUND;
     }
+    if body.note.len() > NOTE_LIMIT {
+        return StatusCode::BAD_REQUEST;
+    }
     if let Err(error) = set_note(&app.db, &username, &body.note).await {
         return api::db_failed(error);
     }
@@ -377,6 +383,8 @@ async fn ban_user_ip(State(app): State<Arc<App>>, Path(username): Path<String>) 
     push_ip_bans(&app).await;
     StatusCode::ACCEPTED
 }
+
+const NOTE_LIMIT: usize = 16 * 1024;
 
 #[derive(Deserialize)]
 struct IpBanBody {

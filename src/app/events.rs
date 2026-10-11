@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::client::{ClientEvent, Observation};
+use crate::types::USERNAME_LIMIT;
 
 use super::contract::AppEvent;
 use super::state::{App, now};
@@ -15,7 +16,35 @@ pub async fn run(app: Arc<App>, mut events: mpsc::Receiver<ClientEvent>) {
     tracing::error!("client event stream ended, client actor is gone");
 }
 
+fn stored_names(event: &ClientEvent) -> [Option<&str>; 2] {
+    match event {
+        ClientEvent::PrivateMessage { username, .. }
+        | ClientEvent::WatchedUser { username, .. }
+        | ClientEvent::UserStats { username, .. }
+        | ClientEvent::PeerAddress { username, .. }
+        | ClientEvent::Observed(
+            Observation::SearchSeen { username, .. }
+            | Observation::QueueRequest { username, .. }
+            | Observation::BrowseRequest { username }
+            | Observation::UserInfoRequest { username }
+            | Observation::FolderContentsRequest { username }
+            | Observation::PeerConnected { username, .. },
+        ) => [Some(username), None],
+        ClientEvent::RoomMessage { room, username, .. } => [Some(room), Some(username)],
+        ClientEvent::RoomJoined { room, .. } => [Some(room), None],
+        _ => [None, None],
+    }
+}
+
 async fn handle(app: &Arc<App>, event: ClientEvent) {
+    if stored_names(&event)
+        .into_iter()
+        .flatten()
+        .any(|name| name.len() > USERNAME_LIMIT)
+    {
+        tracing::warn!("dropping an event whose user or room name exceeds the stored length");
+        return;
+    }
     match event {
         ClientEvent::Connecting => session::connecting(app),
         ClientEvent::LoggedIn { username, banner } => {

@@ -17,6 +17,7 @@ use super::contract::AppEvent;
 use super::db;
 use super::projection::ProjectionWriter;
 use super::state::{App, now};
+use crate::types::USERNAME_LIMIT;
 
 #[derive(Clone, serde::Serialize)]
 pub struct ChatMessage {
@@ -400,6 +401,9 @@ struct RoomBody {
 async fn join_room(State(app): State<Arc<App>>, Json(body): Json<RoomBody>) -> StatusCode {
     if let Err(status) = api::require_login(&app) {
         return status;
+    }
+    if body.room.len() > USERNAME_LIMIT {
+        return StatusCode::BAD_REQUEST;
     }
     app.client.join_room(&body.room).await;
     StatusCode::ACCEPTED

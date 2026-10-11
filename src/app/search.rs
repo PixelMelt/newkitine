@@ -10,7 +10,7 @@ use serde_json::json;
 use sqlx::MySqlPool;
 
 use crate::client::{SearchResult, SearchScope};
-use crate::types::FileAttributes;
+use crate::types::{FileAttributes, USERNAME_LIMIT};
 
 use super::api;
 use super::contract::AppEvent;
@@ -273,7 +273,7 @@ async fn list_wishlist(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 }
 
 async fn add_wish(State(app): State<Arc<App>>, Json(body): Json<WishBody>) -> StatusCode {
-    if body.term.trim().is_empty() {
+    if body.term.trim().is_empty() || body.term.len() > USERNAME_LIMIT {
         return StatusCode::BAD_REQUEST;
     }
     let _mutation = app.list_mutation.lock().await;

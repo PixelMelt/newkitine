@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::MySqlPool;
 
-use crate::types::{Recommendations, SimilarUser};
+use crate::types::{Recommendations, SimilarUser, USERNAME_LIMIT};
 
 use super::api;
 use super::contract::AppEvent;
@@ -186,6 +186,9 @@ async fn add_interest(State(app): State<Arc<App>>, Json(body): Json<InterestBody
     let Some(thing) = normalize_interest(&body.thing) else {
         return StatusCode::BAD_REQUEST;
     };
+    if thing.len() > USERNAME_LIMIT {
+        return StatusCode::BAD_REQUEST;
+    }
     if let Err(error) = insert_interest(&app.db, &body.kind, &thing).await {
         return api::db_failed(error);
     }

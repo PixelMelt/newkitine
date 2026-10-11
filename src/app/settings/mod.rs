@@ -93,6 +93,10 @@ pub struct Settings {
 }
 
 const MAX_QUEUE_SIZE_LIMIT_MB: u64 = 1 << 30;
+const MAX_UPLOAD_SLOTS: usize = 1_000_000;
+const PATH_LIMIT: usize = 4096;
+const NAME_LIMIT: usize = 255;
+const MESSAGE_LIMIT: usize = 255;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -297,8 +301,38 @@ impl Settings {
         {
             return Err("download_dir and incomplete_dir must not contain a NUL byte".into());
         }
-        if self.upload_slots == 0 {
-            return Err("upload_slots must be at least 1".into());
+        if paths
+            .into_iter()
+            .flatten()
+            .any(|path| path.as_os_str().len() > PATH_LIMIT)
+        {
+            return Err(format!(
+                "download_dir and incomplete_dir are bounded to {PATH_LIMIT} bytes"
+            ));
+        }
+        if self
+            .shares
+            .iter()
+            .any(|share| share.virtual_name.len() > NAME_LIMIT)
+        {
+            return Err(format!("share names are bounded to {NAME_LIMIT} bytes"));
+        }
+        let messages = [
+            &self.banned_message,
+            &self.abusive_message,
+            &self.leech_message,
+        ];
+        if messages
+            .into_iter()
+            .any(|message| message.chars().count() > MESSAGE_LIMIT)
+        {
+            return Err(format!(
+                "banned_message, abusive_message and leech_message are bounded to \
+                 {MESSAGE_LIMIT} characters"
+            ));
+        }
+        if self.upload_slots == 0 || self.upload_slots > MAX_UPLOAD_SLOTS {
+            return Err(format!("upload_slots must be 1-{MAX_UPLOAD_SLOTS}"));
         }
         if self.queue_file_limit == 0 {
             return Err("queue_file_limit must be at least 1".into());
