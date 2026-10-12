@@ -8,6 +8,6 @@ Very simple, probably unstable.
 
 Works good enough for me.
 
-![alt text](static/image.png)
-
 ![Line count](resources/loc.svg)
+
+![alt text](resources/image.png)
