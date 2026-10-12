@@ -13,4 +13,4 @@ A template that can fail to render must not reach the peer-response hot path.
 
 ## Consequences
 
-A `validate()` beside a `render()` would be two copies of the grammar plus unreachable error arms. Migration 9 escapes `$` in stored descriptions because boot exits before the HTTP server starts: an unescaped pre-feature `${` would otherwise lock the user out of the UI that fixes it.
+A `validate()` beside a `render()` would be two copies of the grammar plus unreachable error arms. Boot exits before the HTTP server starts, so a stored description that fails to parse locks the user out of the UI that fixes it; `PUT /api/settings` is what keeps one from being stored.

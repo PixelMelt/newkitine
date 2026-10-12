@@ -5,7 +5,7 @@ Nicotine+: No counterpart
 
 ## Context
 
-Failed transfer rows may legitimately carry a NULL `failure_reason`: rows that predate migration 2, which extracted reasons from the old status strings.
+Failed transfer rows may legitimately carry a NULL `failure_reason`: rows written before the column existed, and failed rows whose reason was never recorded.
 
 ## Decision
 
@@ -13,4 +13,4 @@ Failed transfer rows may legitimately carry a NULL `failure_reason`: rows that p
 
 ## Consequences
 
-Mapping NULL to an empty reason handles real data, not a failed code path. Making it an error would crash boot on valid legacy databases. A backfill migration plus an `expect` would be the stricter form; it has not been worth a schema round for an empty string.
+Mapping NULL to an empty reason handles real data, not a failed code path. Making it an error would crash boot on a valid database. A `NOT NULL` column plus an `expect` would be the stricter form; it has not been worth a schema change for an empty string.
