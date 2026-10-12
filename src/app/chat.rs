@@ -356,6 +356,9 @@ async fn send_private_message(
     if let Err(status) = api::require_login(&app) {
         return status;
     }
+    if body.message.len() > CHAT_MESSAGE_LIMIT {
+        return StatusCode::BAD_REQUEST;
+    }
     let _mutation = app.list_mutation.lock().await;
     let sender = app.projection.read().session.status().username.clone();
     let mut tx = match app.db.begin().await {
@@ -449,6 +452,9 @@ async fn say_room(
 ) -> StatusCode {
     if let Err(status) = api::require_login(&app) {
         return status;
+    }
+    if body.message.len() > CHAT_MESSAGE_LIMIT {
+        return StatusCode::BAD_REQUEST;
     }
     app.client
         .say_room(&room, &outgoing_text(&body.message))
