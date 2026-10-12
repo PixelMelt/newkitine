@@ -1,0 +1,22 @@
+name: Line count
+
+on:
+  push:
+    branches: [master]
+    paths: [src/**, tests/**, web/src/**, docs/**, .github/scripts/loc.py]
+
+permissions:
+  contents: write
+
+jobs:
+  loc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/scripts/loc.py
+      - run: |
+          git diff --quiet resources/loc.svg && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Update line count" resources/loc.svg
+          git push
