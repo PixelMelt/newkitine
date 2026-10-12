@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use super::ClientActor;
-use crate::client::shares::{self, ScanError, SharesIndex};
+use crate::client::shares::{self, ScanError, ShareCatalog, SharesIndex};
 use crate::client::{ClientEvent, Observation};
 use crate::protocol::{PeerMessage, ServerRequest};
 use crate::types::Restriction;
@@ -49,7 +49,7 @@ impl ScanJob {
 pub(super) struct Sharing {
     pub(super) index: Option<SharesIndex>,
     running: Option<ScanJob>,
-    cached_loading: bool,
+    pub(super) cached_loading: bool,
     pending: Option<ScanJob>,
     cancel: Arc<AtomicBool>,
     scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
@@ -80,10 +80,6 @@ impl Sharing {
             empty_browse_frame: shares::empty_browse_frame(),
             browse_times: HashMap::new(),
         }
-    }
-
-    pub(super) fn is_loading_cached(&self) -> bool {
-        self.cached_loading
     }
 
     pub(super) fn counts(&self) -> (u32, u32) {
@@ -134,17 +130,19 @@ impl ClientActor {
                 let send = |update: ScanUpdate| {
                     let _ = results.send((generation, update));
                 };
+                let install = |catalog| {
+                    send(ScanUpdate::Index(Box::new(SharesIndex::from_catalog(
+                        catalog,
+                    ))));
+                };
                 if shared_folders.is_empty() {
-                    send(ScanUpdate::Index(Box::new(SharesIndex::empty())));
+                    install(ShareCatalog::empty());
                     send(ScanUpdate::Done(Ok(())));
                     return;
                 }
                 let cached = shares::load_catalog(&cache_path);
                 if job.install_cached && !cached.folders.is_empty() {
-                    let restricted = shares::restrict(&cached, &shared_folders);
-                    send(ScanUpdate::Index(Box::new(SharesIndex::from_catalog(
-                        restricted,
-                    ))));
+                    install(shares::restrict(&cached, &shared_folders));
                 }
                 send(ScanUpdate::CachedReady);
                 if !job.walk {
@@ -155,16 +153,10 @@ impl ClientActor {
                 let result =
                     shares::walk(&shared_folders, &share_filters, &cached, &cancel, &progress);
                 drop(cached);
-                match result {
-                    Ok(catalog) => {
-                        shares::save_catalog(&cache_path, &catalog);
-                        send(ScanUpdate::Index(Box::new(SharesIndex::from_catalog(
-                            catalog,
-                        ))));
-                        send(ScanUpdate::Done(Ok(())));
-                    }
-                    Err(error) => send(ScanUpdate::Done(Err(error))),
-                }
+                send(ScanUpdate::Done(result.map(|catalog| {
+                    shares::save_catalog(&cache_path, &catalog);
+                    install(catalog);
+                })));
             }
         });
         tokio::spawn(async move {

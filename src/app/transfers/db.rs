@@ -1,65 +1,30 @@
 use sqlx::MySqlPool;
 use sqlx::Row;
 
-use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus};
+use crate::types::{FileAttributes, TransferId, TransferSnapshot};
 
 use super::TransferView;
 
 const DELETE_BATCH_SIZE: usize = 1000;
 
-impl TransferDirection {
-    pub(in crate::app) fn as_str(self) -> &'static str {
-        match self {
-            Self::Download => "download",
-            Self::Upload => "upload",
-        }
+fn column(value: impl serde::Serialize) -> String {
+    match serde_json::to_value(value).unwrap() {
+        serde_json::Value::String(name) => name,
+        other => unreachable!("transfer column {other} is not a name"),
     }
 }
 
-impl std::str::FromStr for TransferDirection {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(match value {
-            "download" => Self::Download,
-            "upload" => Self::Upload,
-            other => return Err(format!("unknown transfer direction {other:?}")),
-        })
-    }
-}
-
-impl TransferStatus {
-    pub(in crate::app) fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Transferring => "transferring",
-            Self::Finished => "finished",
-            Self::Aborted => "aborted",
-            Self::Failed => "failed",
-        }
-    }
-}
-
-impl std::str::FromStr for TransferStatus {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(match value {
-            "queued" => Self::Queued,
-            "transferring" => Self::Transferring,
-            "finished" => Self::Finished,
-            "aborted" => Self::Aborted,
-            "failed" => Self::Failed,
-            other => return Err(format!("unknown transfer status {other:?}")),
-        })
-    }
+fn parse_column<T: serde::de::DeserializeOwned>(id: TransferId, value: String) -> T {
+    serde_json::from_value(serde_json::Value::String(value))
+        .unwrap_or_else(|error| panic!("corrupt transfer row {}: {error}", id.0))
 }
 
 pub(super) async fn upsert_transfer(
     executor: impl sqlx::MySqlExecutor<'_>,
     view: &TransferView,
 ) -> Result<(), sqlx::Error> {
-    let attributes = serde_json::to_string(&view.attributes).unwrap();
+    let snapshot = &view.snapshot;
+    let attributes = serde_json::to_string(&snapshot.attributes).unwrap();
     sqlx::query(
         "INSERT INTO transfers
             (id, direction, username, virtual_path, folder_path, size, bytes_done, status, failure_reason, file_path, attributes, updated_at)
@@ -69,16 +34,16 @@ pub(super) async fn upsert_transfer(
             failure_reason = VALUES(failure_reason), file_path = VALUES(file_path),
             attributes = VALUES(attributes), updated_at = VALUES(updated_at)",
     )
-    .bind(view.id.0)
-    .bind(view.direction.as_str())
-    .bind(&view.username)
-    .bind(&view.virtual_path)
-    .bind(&view.folder_path)
-    .bind(view.size)
-    .bind(view.bytes_done)
-    .bind(view.status.as_str())
-    .bind(&view.failure_reason)
-    .bind(&view.file_path)
+    .bind(snapshot.id.0)
+    .bind(column(snapshot.direction))
+    .bind(&snapshot.username)
+    .bind(&snapshot.virtual_path)
+    .bind(&snapshot.folder_path)
+    .bind(snapshot.size)
+    .bind(snapshot.bytes_done)
+    .bind(column(snapshot.status))
+    .bind(&snapshot.failure_reason)
+    .bind(&snapshot.file_path)
     .bind(attributes)
     .bind(view.updated_at)
     .execute(executor)
@@ -99,32 +64,28 @@ pub async fn load_transfers(pool: &MySqlPool) -> Vec<TransferView> {
         let id = TransferId(row.get(0));
         let username: String = row.get(2);
         let virtual_path: String = row.get(3);
-        let direction = row
-            .get::<String, _>(1)
-            .parse::<TransferDirection>()
-            .unwrap_or_else(|error| panic!("corrupt transfer row {}: {error}", id.0));
-        let status = row
-            .get::<String, _>(6)
-            .parse::<TransferStatus>()
-            .unwrap_or_else(|error| panic!("corrupt transfer row {}: {error}", id.0));
+        let direction = parse_column(id, row.get(1));
+        let status = parse_column(id, row.get(6));
         let attributes = serde_json::from_str::<FileAttributes>(&row.get::<String, _>(9))
             .unwrap_or_else(|error| {
                 panic!("corrupt attributes for transfer {} {username} {virtual_path}: {error}", id.0)
             });
         TransferView {
-            id,
-            direction,
-            username,
-            virtual_path,
-            folder_path: row.get(11),
-            size: row.get(4),
-            bytes_done: row.get(5),
-            status,
-            failure_reason: row.get(7),
-            file_path: row.get(8),
-            queue_place: 0,
-            speed_bps: 0,
-            attributes,
+            snapshot: TransferSnapshot {
+                id,
+                direction,
+                username,
+                virtual_path,
+                folder_path: row.get(11),
+                size: row.get(4),
+                bytes_done: row.get(5),
+                status,
+                failure_reason: row.get(7),
+                file_path: row.get(8),
+                queue_place: 0,
+                speed_bps: 0,
+                attributes,
+            },
             updated_at: row.get(10),
         }
     })
@@ -159,10 +120,10 @@ pub(super) async fn record_transfer(
             (direction, username, virtual_path, size, bytes, speed_bps, finished_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(view.direction.as_str())
-    .bind(&view.username)
-    .bind(&view.virtual_path)
-    .bind(view.size)
+    .bind(column(view.snapshot.direction))
+    .bind(&view.snapshot.username)
+    .bind(&view.snapshot.virtual_path)
+    .bind(view.snapshot.size)
     .bind(bytes)
     .bind(speed_bps)
     .bind(view.updated_at)

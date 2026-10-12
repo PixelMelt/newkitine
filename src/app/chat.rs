@@ -15,7 +15,7 @@ use super::api;
 use super::behavior;
 use super::contract::AppEvent;
 use super::db;
-use super::projection::ProjectionWriter;
+use super::projection::{ProjectionWriter, set_member};
 use super::state::{App, now};
 use crate::types::USERNAME_LIMIT;
 
@@ -69,7 +69,7 @@ impl Chat {
 
 const CHAT_MESSAGE_LIMIT: usize = 16 * 1024;
 
-pub async fn insert_chat(
+async fn insert_chat(
     executor: impl sqlx::MySqlExecutor<'_>,
     kind: &str,
     target: &str,
@@ -100,7 +100,7 @@ fn outgoing_text(message: &str) -> String {
     message.replace('\r', "").replace('\n', " ")
 }
 
-pub async fn load_chat(pool: &MySqlPool, kind: &str, target: &str, limit: u32) -> Vec<ChatMessage> {
+async fn load_chat(pool: &MySqlPool, kind: &str, target: &str, limit: u32) -> Vec<ChatMessage> {
     let mut messages: Vec<ChatMessage> = sqlx::query(
         "SELECT id, sender, message, timestamp FROM chat_messages
          WHERE kind = ? AND target = ? ORDER BY id DESC LIMIT ?",
@@ -134,6 +134,20 @@ fn record_private_message(app: &App, username: &str, message: ChatMessage) {
     });
 }
 
+async fn store_private_message(
+    app: &App,
+    partner: &str,
+    sender: String,
+    text: String,
+    timestamp: i64,
+) -> Result<ChatMessage, sqlx::Error> {
+    let mut tx = app.db.begin().await?;
+    let message = insert_chat(&mut *tx, "private", partner, sender, text, timestamp).await?;
+    db::add_to_list(&mut *tx, "chat", partner).await?;
+    tx.commit().await?;
+    Ok(message)
+}
+
 pub async fn private_message_received(
     app: &Arc<App>,
     username: String,
@@ -141,25 +155,10 @@ pub async fn private_message_received(
     timestamp: u32,
 ) {
     let _mutation = app.list_mutation.lock().await;
-    let mut tx = app
-        .db
-        .begin()
+    let sender = username.clone();
+    let message = store_private_message(app, &username, sender, message, timestamp as i64)
         .await
         .unwrap_or_else(|error| db::fatal(error));
-    let message = insert_chat(
-        &mut *tx,
-        "private",
-        &username,
-        username.clone(),
-        message,
-        timestamp as i64,
-    )
-    .await
-    .unwrap_or_else(|error| db::fatal(error));
-    db::add_to_list(&mut *tx, "chat", &username)
-        .await
-        .unwrap_or_else(|error| db::fatal(error));
-    tx.commit().await.unwrap_or_else(|error| db::fatal(error));
     if let Some(keys) = app.settings.pushover_private_messages() {
         app.pushover.notify(
             keys,
@@ -230,35 +229,23 @@ pub async fn room_left(app: &App, room: String) {
     data.broadcast(AppEvent::RoomLeft { room });
 }
 
-pub fn room_user_joined(app: &App, room: String, username: String) {
+pub fn room_user(app: &App, room: String, username: String, joined: bool) {
     let mut data = app.projection.write();
     let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
         tracing::debug!(
             room,
             username,
-            "user joined a room we have not joined, dropping"
+            joined,
+            "membership change in a room we have not joined, dropping"
         );
         return;
     };
-    if !view.users.contains(&username) {
-        view.users.push(username.clone());
-        view.users.sort();
-    }
-    data.broadcast(AppEvent::RoomUserJoined { room, username });
-}
-
-pub fn room_user_left(app: &App, room: String, username: String) {
-    let mut data = app.projection.write();
-    let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
-        tracing::debug!(
-            room,
-            username,
-            "user left a room we have not joined, dropping"
-        );
-        return;
-    };
-    view.users.retain(|user| user != &username);
-    data.broadcast(AppEvent::RoomUserLeft { room, username });
+    set_member(&mut view.users, &username, joined);
+    data.broadcast(if joined {
+        AppEvent::RoomUserJoined { room, username }
+    } else {
+        AppEvent::RoomUserLeft { room, username }
+    });
 }
 
 pub fn server_disconnected(data: &mut ProjectionWriter<'_>) {
@@ -307,28 +294,34 @@ async fn list_chats(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(json!({ "chats": data.chat.partners() }))
 }
 
-async fn open_chat(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+async fn open_chat(
+    State(app): State<Arc<App>>,
+    Path(username): Path<String>,
+) -> Result<StatusCode, StatusCode> {
     let _mutation = app.list_mutation.lock().await;
-    if let Err(error) = db::add_to_list(&app.db, "chat", &username).await {
-        return api::db_failed(error);
-    }
+    db::add_to_list(&app.db, "chat", &username)
+        .await
+        .map_err(api::db_failed)?;
     let mut data = app.projection.write();
     if !data.chat.partners.contains(&username) {
         data.chat.partners.push(username.clone());
     }
     data.broadcast(AppEvent::ChatOpened { username });
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
-async fn close_chat(State(app): State<Arc<App>>, Path(username): Path<String>) -> StatusCode {
+async fn close_chat(
+    State(app): State<Arc<App>>,
+    Path(username): Path<String>,
+) -> Result<StatusCode, StatusCode> {
     let _mutation = app.list_mutation.lock().await;
-    if let Err(error) = db::remove_from_list(&app.db, "chat", &username).await {
-        return api::db_failed(error);
-    }
+    db::remove_from_list(&app.db, "chat", &username)
+        .await
+        .map_err(api::db_failed)?;
     let mut data = app.projection.write();
     data.chat.partners.retain(|user| user != &username);
     data.broadcast(AppEvent::ChatClosed { username });
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn chat_history(
@@ -352,43 +345,22 @@ async fn send_private_message(
     State(app): State<Arc<App>>,
     Path(username): Path<String>,
     Json(body): Json<MessageBody>,
-) -> StatusCode {
-    if let Err(status) = api::require_login(&app) {
-        return status;
-    }
+) -> Result<StatusCode, StatusCode> {
+    api::require_login(&app)?;
     if body.message.len() > CHAT_MESSAGE_LIMIT {
-        return StatusCode::BAD_REQUEST;
+        return Err(StatusCode::BAD_REQUEST);
     }
     let _mutation = app.list_mutation.lock().await;
-    let sender = app.projection.read().session.status().username.clone();
-    let mut tx = match app.db.begin().await {
-        Ok(tx) => tx,
-        Err(error) => return api::db_failed(error),
-    };
-    let message = match insert_chat(
-        &mut *tx,
-        "private",
-        &username,
-        sender,
-        outgoing_text(&body.message),
-        now(),
-    )
-    .await
-    {
-        Ok(message) => message,
-        Err(error) => return api::db_failed(error),
-    };
-    if let Err(error) = db::add_to_list(&mut *tx, "chat", &username).await {
-        return api::db_failed(error);
-    }
-    if let Err(error) = tx.commit().await {
-        return api::db_failed(error);
-    }
+    let sender = app.projection.read().session.username.clone();
+    let text = outgoing_text(&body.message);
+    let message = store_private_message(&app, &username, sender, text, now())
+        .await
+        .map_err(api::db_failed)?;
     app.client
         .send_private_message(&username, &message.message)
         .await;
     record_private_message(&app, &username, message);
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn rooms(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
@@ -401,27 +373,29 @@ struct RoomBody {
     room: String,
 }
 
-async fn join_room(State(app): State<Arc<App>>, Json(body): Json<RoomBody>) -> StatusCode {
-    if let Err(status) = api::require_login(&app) {
-        return status;
-    }
+async fn join_room(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RoomBody>,
+) -> Result<StatusCode, StatusCode> {
+    api::require_login(&app)?;
     if body.room.len() > USERNAME_LIMIT {
-        return StatusCode::BAD_REQUEST;
+        return Err(StatusCode::BAD_REQUEST);
     }
     app.client.join_room(&body.room).await;
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
-async fn leave_room(State(app): State<Arc<App>>, Json(body): Json<RoomBody>) -> StatusCode {
-    if let Err(status) = api::require_login(&app) {
-        return status;
-    }
+async fn leave_room(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RoomBody>,
+) -> Result<StatusCode, StatusCode> {
+    api::require_login(&app)?;
     let _mutation = app.list_mutation.lock().await;
-    if let Err(error) = db::remove_from_list(&app.db, "room", &body.room).await {
-        return api::db_failed(error);
-    }
+    db::remove_from_list(&app.db, "room", &body.room)
+        .await
+        .map_err(api::db_failed)?;
     app.client.leave_room(&body.room).await;
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn room_history(
@@ -449,17 +423,15 @@ async fn say_room(
     State(app): State<Arc<App>>,
     Path(room): Path<String>,
     Json(body): Json<MessageBody>,
-) -> StatusCode {
-    if let Err(status) = api::require_login(&app) {
-        return status;
-    }
+) -> Result<StatusCode, StatusCode> {
+    api::require_login(&app)?;
     if body.message.len() > CHAT_MESSAGE_LIMIT {
-        return StatusCode::BAD_REQUEST;
+        return Err(StatusCode::BAD_REQUEST);
     }
     app.client
         .say_room(&room, &outgoing_text(&body.message))
         .await;
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[cfg(test)]

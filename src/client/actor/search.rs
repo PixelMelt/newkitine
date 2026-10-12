@@ -6,7 +6,7 @@ use tracing::debug;
 use super::ClientActor;
 use crate::client::search::SearchQuery;
 use crate::client::{ClientEvent, SearchResult, SearchScope};
-use crate::network::NetworkCommand;
+use crate::network::AllowedResponse;
 use crate::protocol::ServerRequest;
 
 pub(super) struct ActiveSearch {
@@ -20,6 +20,7 @@ struct Wish {
     token: u32,
 }
 
+#[derive(Default)]
 pub(super) struct Wishlist {
     wishes: Vec<Wish>,
     interval: Option<Duration>,
@@ -28,15 +29,6 @@ pub(super) struct Wishlist {
 }
 
 impl Wishlist {
-    pub(super) fn new() -> Self {
-        Self {
-            wishes: Vec::new(),
-            interval: None,
-            cursor: 0,
-            at: None,
-        }
-    }
-
     pub(super) fn stop(&mut self) {
         self.interval = None;
         self.at = None;
@@ -51,7 +43,7 @@ impl ClientActor {
         filter: SearchQuery,
         scope: SearchScope,
     ) {
-        self.net.send(NetworkCommand::AllowSearchToken(token));
+        self.net.allow(AllowedResponse::Search(token));
         let search_term = filter.transmitted.clone();
         self.emit(ClientEvent::SearchStarted {
             token,
@@ -97,7 +89,7 @@ impl ClientActor {
     }
 
     pub(super) fn cancel_search(&mut self, token: u32) {
-        self.net.send(NetworkCommand::DisallowSearchToken(token));
+        self.net.disallow(AllowedResponse::Search(token));
         self.searches.remove(&token);
     }
 
@@ -180,7 +172,7 @@ impl ClientActor {
         self.wishlist.cursor += 1;
         let filter = SearchQuery::parse(&term);
         if !filter.transmitted.is_empty() {
-            self.net.send(NetworkCommand::AllowSearchToken(token));
+            self.net.allow(AllowedResponse::Search(token));
             let search_term = filter.transmitted.clone();
             self.searches.entry(token).or_insert(ActiveSearch {
                 query: term,

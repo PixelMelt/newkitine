@@ -9,7 +9,7 @@ pub(crate) struct SpeedMeter {
 }
 
 impl SpeedMeter {
-    pub(crate) fn sample(&mut self, bytes_done: u64) -> u32 {
+    pub(crate) fn sample(&mut self, bytes_done: u64) {
         let now = Instant::now();
         match self.last {
             None => self.last = Some((now, bytes_done)),
@@ -21,6 +21,9 @@ impl SpeedMeter {
                 }
             }
         }
+    }
+
+    pub(crate) fn bps(&self) -> u32 {
         self.bps
     }
 

@@ -1,3 +1,4 @@
+mod handle;
 mod peers;
 mod profile;
 mod search;
@@ -11,21 +12,26 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-use super::ClientCommand;
 use super::transfers::{Downloads, FolderRequests, TransferIds, Uploads};
 use super::users::Users;
 use crate::client::{ClientBootstrap, ClientEvent, Observation, TransferWork};
-use crate::network::{NetworkCommand, NetworkEvent, NetworkHandle, spawn as spawn_network};
+use crate::network::{
+    AllowedResponse, NetworkCommand, NetworkEvent, NetworkHandle, spawn as spawn_network,
+};
 use crate::protocol::PeerMessage;
 use crate::types::{RuntimeConfig, TransferDirection};
 
 use search::{ActiveSearch, Wishlist};
 use session::Session;
 use sharing::{ScanJob, Sharing};
+
+pub use handle::Client;
+
+type Command = Box<dyn FnOnce(&mut ClientActor) + Send>;
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -48,9 +54,9 @@ struct ClientActor {
     hated_interests: Vec<String>,
 }
 
-pub(super) async fn run(
+async fn run(
     config: ClientBootstrap,
-    mut commands: mpsc::Receiver<ClientCommand>,
+    mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<ClientEvent>,
     transfers: mpsc::Sender<TransferWork>,
     token_counter: Arc<AtomicU32>,
@@ -88,7 +94,7 @@ pub(super) async fn run(
         ),
         sharing: Sharing::new(scan_tx, config.scan_cache),
         session: Session::new(),
-        wishlist: Wishlist::new(),
+        wishlist: Wishlist::default(),
         searches: HashMap::new(),
         liked_interests: config.liked_interests,
         hated_interests: config.hated_interests,
@@ -132,7 +138,7 @@ pub(super) async fn run(
         tokio::select! {
             command = commands.recv() => {
                 match command {
-                    Some(command) => actor.handle_command(command),
+                    Some(command) => command(&mut actor),
                     None => {
                         actor.net.send(NetworkCommand::Quit);
                         return;
@@ -188,119 +194,46 @@ impl ClientActor {
         }
     }
 
-    fn ack<T>(ack: oneshot::Sender<T>, value: T) {
-        if ack.send(value).is_err() {
-            debug!("command acknowledgement dropped, caller went away");
-        }
-    }
-
     fn next_token(&self) -> u32 {
         self.token_counter.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    fn handle_command(&mut self, command: ClientCommand) {
-        match command {
-            ClientCommand::Search {
-                token,
-                query,
-                filter,
-                scope,
-            } => self.start_search(token, query, filter, scope),
-            ClientCommand::CancelSearch { token } => self.cancel_search(token),
-            ClientCommand::Download {
-                username,
-                virtual_path,
-                size,
-                attributes,
-                root,
-                ack,
-            } => self.enqueue_download(username, virtual_path, size, attributes, root, ack),
-            ClientCommand::RequestFolder {
-                username,
-                directory,
-            } => self.folder_requests.request(username, directory),
-            ClientCommand::RetryDownload { id, ack } => self.retry_download(id, ack),
-            ClientCommand::AbortTransfer { direction, id, ack } => {
-                self.abort_transfer(direction, id, ack);
-            }
-            ClientCommand::ClearTransfers {
-                direction,
-                statuses,
-                ack,
-            } => self.clear_transfers(direction, statuses, ack),
-            ClientCommand::ClearAllTransfers { direction, ack } => {
-                self.clear_all_transfers(direction, ack);
-            }
-            ClientCommand::BrowseUser { username } => {
-                self.net
-                    .send(NetworkCommand::AllowSharedListUser(username.clone()));
-                self.net.peer(username, PeerMessage::SharedFileListRequest);
-            }
-            ClientCommand::RequestUserInfo { username } => {
-                self.net
-                    .send(NetworkCommand::AllowUserInfoUser(username.clone()));
-                self.net.peer(username, PeerMessage::UserInfoRequest);
-            }
-            ClientCommand::AddBuddy { username } => {
-                self.users.add_buddy(&self.net, username);
-            }
-            ClientCommand::RemoveBuddy { username } => {
-                let keep_watch =
-                    username == self.config.login.username || self.downloads.needs_watch(&username);
-                self.users.remove_buddy(&self.net, &username, keep_watch);
-            }
-            ClientCommand::BanUser { username } => self.ban_user(username),
-            ClientCommand::UnbanUser { username } => {
-                self.users.banned.remove(&username);
-            }
-            ClientCommand::IgnoreUser { username } => {
-                self.users.ignored.insert(username);
-            }
-            ClientCommand::UnignoreUser { username } => {
-                self.users.ignored.remove(&username);
-            }
-            ClientCommand::SetIpBans { patterns } => {
-                self.net
-                    .send(NetworkCommand::BanAddresses(patterns.clone()));
-                self.users.set_ip_bans(patterns);
-            }
-            ClientCommand::SetUserRestriction {
-                username,
-                restriction,
-            } => self.set_user_restriction(username, restriction),
-            ClientCommand::DenyFile {
-                username,
-                virtual_path,
-                ttl,
-            } => self.deny_file(username, virtual_path, ttl),
-            ClientCommand::ClearFileDenials { username } => {
-                self.users.clear_file_denials(&username);
-            }
-            ClientCommand::AddInterest { thing, hated } => self.add_interest(thing, hated),
-            ClientCommand::RemoveInterest { thing, hated } => self.remove_interest(&thing, hated),
-            ClientCommand::AddWish { term } => self.add_wish(term),
-            ClientCommand::RemoveWish { term } => self.remove_wish(&term),
-            ClientCommand::RescanShares => self.start_scan(ScanJob::RESCAN),
-            ClientCommand::ApplyConfig { config, ack } => {
-                self.apply_config(*config);
-                Self::ack(ack, ());
-            }
-            ClientCommand::Server(request) => self.net.server(request),
-            ClientCommand::Connect => {
-                if self.session.connected {
-                    warn!("already connected, ignoring connect request");
-                } else {
-                    self.connect();
-                }
-            }
-            ClientCommand::Reconnect => self.reconnect(),
-            ClientCommand::Disconnect => {
-                self.session.connect_deferred = false;
-                self.session.reconnect_at = None;
-                self.session.reconnect_now = false;
-                self.net.send(NetworkCommand::ServerDisconnect);
-            }
+    fn browse_user(&mut self, username: String) {
+        self.net
+            .allow(AllowedResponse::SharedList(username.clone()));
+        self.net.peer(username, PeerMessage::SharedFileListRequest);
+    }
+
+    fn request_user_info(&mut self, username: String) {
+        self.net.allow(AllowedResponse::UserInfo(username.clone()));
+        self.net.peer(username, PeerMessage::UserInfoRequest);
+    }
+
+    fn remove_buddy(&mut self, username: &str) {
+        let keep_watch =
+            username == self.config.login.username || self.downloads.needs_watch(username);
+        self.users.remove_buddy(&self.net, username, keep_watch);
+    }
+
+    fn set_ip_bans(&mut self, patterns: Vec<String>) {
+        self.net
+            .send(NetworkCommand::BanAddresses(patterns.clone()));
+        self.users.set_ip_bans(patterns);
+    }
+
+    fn request_connect(&mut self) {
+        if self.session.connected {
+            warn!("already connected, ignoring connect request");
+        } else {
+            self.connect();
         }
+    }
+
+    fn disconnect(&mut self) {
+        self.session.connect_deferred = false;
+        self.session.reconnect_at = None;
+        self.session.reconnect_now = false;
+        self.net.send(NetworkCommand::ServerDisconnect);
     }
 
     fn handle_network_event(&mut self, event: NetworkEvent) {

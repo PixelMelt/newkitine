@@ -5,6 +5,7 @@ use crate::types::Restriction;
 use super::registry::TransferKey;
 use crate::client::users::Users;
 
+#[derive(Default)]
 pub(super) struct UploadQueue {
     entries: Vec<TransferKey>,
     active_users: HashMap<String, u32>,
@@ -13,15 +14,6 @@ pub(super) struct UploadQueue {
 }
 
 impl UploadQueue {
-    pub(super) fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-            active_users: HashMap::new(),
-            user_counters: HashMap::new(),
-            counter: 0,
-        }
-    }
-
     pub(super) fn is_active(&self, username: &str) -> bool {
         self.active_users.contains_key(username)
     }
@@ -106,12 +98,6 @@ impl UploadQueue {
         }
         self.entries.retain(|queued| queued != key);
         self.record_user(&key.0);
-    }
-
-    pub(super) fn clear(&mut self) {
-        self.entries.clear();
-        self.active_users.clear();
-        self.user_counters.clear();
     }
 
     fn record_user(&mut self, username: &str) {

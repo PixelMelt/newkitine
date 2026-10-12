@@ -4,13 +4,14 @@ use std::process::Command;
 use super::{AppEvent, Envelope, SettingsPayload, Snapshot};
 use crate::app::chat::{ChatMessage, RoomEntry, RoomView, RoomsView};
 use crate::app::interests::InterestsView;
-use crate::app::search::{SearchFileView, SearchResponseView, SearchView};
+use crate::app::search::{SearchResponseView, SearchView};
 use crate::app::session::Status;
-use crate::app::settings::{PublicSettings, Settings};
+use crate::app::settings::Settings;
 use crate::app::transfers::TransferView;
 use crate::app::users::{BuddyView, UserInfoView};
 use crate::types::{
-    FileAttributes, SimilarUser, TransferDirection, TransferId, TransferStatus, UserStats,
+    FileAttributes, FileInfo, SimilarUser, TransferDirection, TransferId, TransferSnapshot,
+    TransferStatus, UserStats,
 };
 
 macro_rules! event_tags {
@@ -99,19 +100,21 @@ fn status_fixture() -> Status {
 
 fn transfer_view() -> TransferView {
     TransferView {
-        id: TransferId(7),
-        direction: TransferDirection::Download,
-        username: "peer".into(),
-        virtual_path: "Music\\song.mp3".into(),
-        folder_path: Some("/downloads/Music".into()),
-        size: 10,
-        bytes_done: 5,
-        status: TransferStatus::Transferring,
-        failure_reason: Some("reason".into()),
-        file_path: Some("/downloads/song.mp3".into()),
-        queue_place: 1,
-        speed_bps: 99,
-        attributes: attributes(),
+        snapshot: TransferSnapshot {
+            id: TransferId(7),
+            direction: TransferDirection::Download,
+            username: "peer".into(),
+            virtual_path: "Music\\song.mp3".into(),
+            folder_path: Some("/downloads/Music".into()),
+            size: 10,
+            bytes_done: 5,
+            status: TransferStatus::Transferring,
+            failure_reason: Some("reason".into()),
+            file_path: Some("/downloads/song.mp3".into()),
+            queue_place: 1,
+            speed_bps: 99,
+            attributes: attributes(),
+        },
         updated_at: 1,
     }
 }
@@ -122,7 +125,7 @@ fn search_response() -> SearchResponseView {
         free_upload_slots: true,
         upload_speed: 500,
         queue_size: 2,
-        files: vec![SearchFileView {
+        files: vec![FileInfo {
             name: "Music\\song.mp3".into(),
             size: 10,
             attributes: attributes(),
@@ -160,6 +163,7 @@ fn user_info_view() -> UserInfoView {
         stats: Some(stats()),
         interests_liked: vec!["jazz".into()],
         interests_hated: vec![],
+        sequence: 0,
     }
 }
 
@@ -205,7 +209,7 @@ fn interests_view() -> InterestsView {
 
 fn settings_payload() -> SettingsPayload {
     SettingsPayload {
-        settings: PublicSettings::from(&Settings::default()),
+        settings: Settings::default().into(),
         locked: vec!["server"],
         gluetun: true,
     }
@@ -423,51 +427,36 @@ if (undeclared.length) {{
 
 #[test]
 fn events_carry_type_tag_and_revision() {
-    let event = AppEvent::ConnCount { count: 3 };
-    let value = serde_json::to_value(&Envelope {
-        rev: 7,
-        event: &event,
-    })
-    .unwrap();
+    let envelope =
+        |rev, event: AppEvent| serde_json::to_value(Envelope { rev, event: &event }).unwrap();
+
+    let value = envelope(7, AppEvent::ConnCount { count: 3 });
     assert_eq!(value["type"], "conn_count");
     assert_eq!(value["rev"], 7);
     assert_eq!(value["count"], 3);
 
-    let event = AppEvent::TransfersRemoved {
-        direction: TransferDirection::Download,
-        ids: vec![TransferId(4)],
-    };
-    let value = serde_json::to_value(&Envelope {
-        rev: 8,
-        event: &event,
-    })
-    .unwrap();
+    let value = envelope(
+        8,
+        AppEvent::TransfersRemoved {
+            direction: TransferDirection::Download,
+            ids: vec![TransferId(4)],
+        },
+    );
     assert_eq!(value["type"], "transfers_removed");
     assert_eq!(value["direction"], "download");
     assert_eq!(value["ids"][0], 4);
 
-    let event = AppEvent::RoomUserLeft {
-        room: "indie".into(),
-        username: "someone".into(),
-    };
-    let value = serde_json::to_value(&Envelope {
-        rev: 9,
-        event: &event,
-    })
-    .unwrap();
+    let value = envelope(
+        9,
+        AppEvent::RoomUserLeft {
+            room: "indie".into(),
+            username: "someone".into(),
+        },
+    );
     assert_eq!(value["type"], "room_user_left");
     assert_eq!(value["room"], "indie");
 
-    let event = AppEvent::Settings(Box::new(SettingsPayload {
-        settings: PublicSettings::from(&Settings::default()),
-        locked: vec!["server"],
-        gluetun: true,
-    }));
-    let value = serde_json::to_value(&Envelope {
-        rev: 10,
-        event: &event,
-    })
-    .unwrap();
+    let value = envelope(10, AppEvent::Settings(Box::new(settings_payload())));
     assert_eq!(value["type"], "settings");
     assert_eq!(value["locked"][0], "server");
     assert_eq!(value["gluetun"], true);

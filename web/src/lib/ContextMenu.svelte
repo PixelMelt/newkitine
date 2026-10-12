@@ -37,7 +37,7 @@
   }
 
   const checks = (list) => list.some((item) => item.checked !== undefined);
-  const selectable = (item) => !item.sep && !item.title && !item.disabled;
+  const selectable = (item) => !item.sep && !item.disabled;
 
   function placeRoot(node, point) {
     const { offsetWidth: width, offsetHeight: height } = node;
@@ -222,6 +222,31 @@
 
 <svelte:window on:pointerdown|capture={outsideDown} on:mouseup={release} on:blur={closeMenu} />
 
+{#snippet entries(list, at, hover, click)}
+  {#each list as item, index}
+    {#if item.sep}
+      <div class="sep"></div>
+    {:else}
+      <div
+        class="item"
+        class:active={at === index}
+        class:disabled={item.disabled}
+        class:primary={item.primary}
+        role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+        aria-checked={item.checked}
+        aria-disabled={item.disabled}
+        data-index={index}
+        on:pointermove={(e) => hover(e, index)}
+        on:click={() => click(index)}
+      >
+        {#if checks(list)}<span class="check">{#if item.checked}<Check size={12} />{/if}</span>{/if}
+        <span class="label">{item.label}</span>
+        {#if item.submenu}<span class="arrow"><ChevronRight size={14} /></span>{/if}
+      </div>
+    {/if}
+  {/each}
+{/snippet}
+
 {#if $menu}
   {#key $menu}
     <div
@@ -234,30 +259,7 @@
       on:mousedown|preventDefault
       on:contextmenu|preventDefault|stopPropagation
     >
-      {#each items as item, index}
-        {#if item.sep}
-          <div class="sep"></div>
-        {:else if item.title}
-          <div class="title">{item.title}</div>
-        {:else}
-          <div
-            class="item"
-            class:active={active === index}
-            class:disabled={item.disabled}
-            class:primary={item.primary}
-            role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
-            aria-checked={item.checked}
-            aria-disabled={item.disabled}
-            data-index={index}
-            on:pointermove={(e) => hoverRoot(e, index)}
-            on:click={() => clickRoot(index)}
-          >
-            {#if checks(items)}<span class="check">{#if item.checked}<Check size={12} />{/if}</span>{/if}
-            <span class="label">{item.label}</span>
-            {#if item.submenu}<span class="arrow"><ChevronRight size={14} /></span>{/if}
-          </div>
-        {/if}
-      {/each}
+      {@render entries(items, active, hoverRoot, clickRoot)}
     </div>
     {#if sub !== -1}
       {#key sub}
@@ -268,29 +270,7 @@
           on:mousedown|preventDefault
           on:contextmenu|preventDefault|stopPropagation
         >
-          {#each subItems as item, index}
-            {#if item.sep}
-              <div class="sep"></div>
-            {:else if item.title}
-              <div class="title">{item.title}</div>
-            {:else}
-              <div
-                class="item"
-                class:active={subActive === index}
-                class:disabled={item.disabled}
-                class:primary={item.primary}
-                role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
-                aria-checked={item.checked}
-                aria-disabled={item.disabled}
-                data-index={index}
-                on:pointermove={() => hoverSub(index)}
-                on:click={() => run(item)}
-              >
-                {#if checks(subItems)}<span class="check">{#if item.checked}<Check size={12} />{/if}</span>{/if}
-                <span class="label">{item.label}</span>
-              </div>
-            {/if}
-          {/each}
+          {@render entries(subItems, subActive, (_, index) => hoverSub(index), (index) => run(subItems[index]))}
         </div>
       {/key}
     {/if}

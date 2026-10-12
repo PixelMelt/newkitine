@@ -10,9 +10,7 @@ use sqlx::MySqlPool;
 use tokio::sync::mpsc;
 
 use crate::client::TransferWork;
-use crate::types::{
-    FileAttributes, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
-};
+use crate::types::{TransferDirection, TransferId, TransferSnapshot, TransferStatus};
 
 use super::behavior;
 use super::contract::AppEvent;
@@ -21,60 +19,16 @@ use super::state::{App, now};
 
 #[derive(Clone, serde::Serialize)]
 pub struct TransferView {
-    pub id: TransferId,
-    #[serde(skip)]
-    pub direction: TransferDirection,
-    pub username: String,
-    pub virtual_path: String,
-    pub folder_path: Option<String>,
-    pub size: u64,
-    pub bytes_done: u64,
-    pub status: TransferStatus,
-    pub failure_reason: Option<String>,
-    pub file_path: Option<String>,
-    pub queue_place: u32,
-    pub speed_bps: u32,
-    pub attributes: FileAttributes,
+    #[serde(flatten)]
+    pub snapshot: TransferSnapshot,
     pub updated_at: i64,
 }
 
 impl TransferView {
-    pub fn from_snapshot(snapshot: TransferSnapshot, updated_at: i64) -> Self {
+    fn new(snapshot: TransferSnapshot) -> Self {
         Self {
-            id: snapshot.id,
-            direction: snapshot.direction,
-            username: snapshot.username,
-            virtual_path: snapshot.virtual_path,
-            folder_path: snapshot.folder_path,
-            size: snapshot.size,
-            bytes_done: snapshot.bytes_done,
-            status: snapshot.status,
-            failure_reason: snapshot.failure_reason,
-            file_path: snapshot.file_path,
-            queue_place: snapshot.queue_place,
-            speed_bps: snapshot.speed_bps,
-            attributes: snapshot.attributes,
-            updated_at,
-        }
-    }
-}
-
-impl From<&TransferView> for TransferSnapshot {
-    fn from(view: &TransferView) -> Self {
-        Self {
-            id: view.id,
-            direction: view.direction,
-            username: view.username.clone(),
-            virtual_path: view.virtual_path.clone(),
-            folder_path: view.folder_path.clone(),
-            size: view.size,
-            bytes_done: view.bytes_done,
-            status: view.status,
-            failure_reason: view.failure_reason.clone(),
-            file_path: view.file_path.clone(),
-            queue_place: view.queue_place,
-            speed_bps: view.speed_bps,
-            attributes: view.attributes.clone(),
+            snapshot,
+            updated_at: now(),
         }
     }
 }
@@ -87,7 +41,10 @@ pub struct Transfers {
 impl Transfers {
     pub fn load(views: Vec<TransferView>) -> Self {
         Self {
-            transfers: views.into_iter().map(|view| (view.id, view)).collect(),
+            transfers: views
+                .into_iter()
+                .map(|view| (view.snapshot.id, view))
+                .collect(),
         }
     }
 
@@ -95,46 +52,32 @@ impl Transfers {
         let mut list: Vec<&TransferView> = self
             .transfers
             .values()
-            .filter(|view| view.direction == direction)
+            .filter(|view| view.snapshot.direction == direction)
             .collect();
         list.sort_by_key(|view| std::cmp::Reverse(view.updated_at));
         list
-    }
-
-    fn upsert(&mut self, view: TransferView) {
-        self.transfers.insert(view.id, view);
-    }
-
-    fn remove(&mut self, ids: &[TransferId]) {
-        for id in ids {
-            self.transfers.remove(id);
-        }
     }
 }
 
 pub async fn bootstrap(pool: &MySqlPool) -> Vec<TransferView> {
     let mut views = db::load_transfers(pool).await;
     for view in &mut views {
-        let normalized = match (view.direction, view.status) {
+        let snapshot = &mut view.snapshot;
+        match (snapshot.direction, snapshot.status) {
             (TransferDirection::Download, TransferStatus::Transferring) => {
-                view.status = TransferStatus::Queued;
-                view.failure_reason = None;
-                true
+                snapshot.status = TransferStatus::Queued;
+                snapshot.failure_reason = None;
             }
             (TransferDirection::Upload, TransferStatus::Queued | TransferStatus::Transferring) => {
-                view.status = TransferStatus::Failed;
-                view.failure_reason = Some("interrupted by restart".into());
-                true
+                snapshot.status = TransferStatus::Failed;
+                snapshot.failure_reason = Some("interrupted by restart".into());
             }
-            _ => false,
-        };
-        if normalized {
-            view.speed_bps = 0;
-            view.updated_at = now();
-            db::upsert_transfer(pool, view)
-                .await
-                .unwrap_or_else(|error| fatal(error));
+            _ => continue,
         }
+        view.updated_at = now();
+        db::upsert_transfer(pool, view)
+            .await
+            .unwrap_or_else(|error| fatal(error));
     }
     views
 }
@@ -142,10 +85,10 @@ pub async fn bootstrap(pool: &MySqlPool) -> Vec<TransferView> {
 fn project(app: &App, view: TransferView) {
     let mut data = app.projection.write();
     let event = AppEvent::Transfer {
-        direction: view.direction,
+        direction: view.snapshot.direction,
         transfer: view.clone(),
     };
-    data.transfers.upsert(view);
+    data.transfers.transfers.insert(view.snapshot.id, view);
     data.broadcast(event);
 }
 
@@ -153,10 +96,10 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
     while let Some(item) = work.recv().await {
         match item {
             TransferWork::Progress(snapshot) => {
-                project(&app, TransferView::from_snapshot(snapshot, now()));
+                project(&app, TransferView::new(snapshot));
             }
             TransferWork::Update(snapshot) => {
-                let view = TransferView::from_snapshot(snapshot, now());
+                let view = TransferView::new(snapshot);
                 db::upsert_transfer(&app.db, &view)
                     .await
                     .unwrap_or_else(|error| fatal(error));
@@ -167,8 +110,8 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
                 avg_speed_bps,
                 delivered_bytes,
             } => {
-                let view = TransferView::from_snapshot(snapshot, now());
-                let direction = view.direction;
+                let view = TransferView::new(snapshot);
+                let direction = view.snapshot.direction;
                 let mut tx = app.db.begin().await.unwrap_or_else(|error| fatal(error));
                 if delivered_bytes > 0 {
                     db::record_transfer(&mut *tx, &view, delivered_bytes, avg_speed_bps)
@@ -180,12 +123,14 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
                     .unwrap_or_else(|error| fatal(error));
                 tx.commit().await.unwrap_or_else(|error| fatal(error));
                 if delivered_bytes > 0 && direction == TransferDirection::Upload {
-                    behavior::upload_delivered(&app, &view.username, &view.virtual_path).await;
+                    let snapshot = &view.snapshot;
+                    behavior::upload_delivered(&app, &snapshot.username, &snapshot.virtual_path)
+                        .await;
                 }
                 project(&app, view);
                 if app.settings.autoclear(direction) {
                     app.client
-                        .clear_transfers(direction, vec![TransferStatus::Finished])
+                        .clear_transfers(direction, Some(vec![TransferStatus::Finished]))
                         .await;
                 }
             }
@@ -194,7 +139,9 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
                     .await
                     .unwrap_or_else(|error| fatal(error));
                 let mut data = app.projection.write();
-                data.transfers.remove(&ids);
+                for id in &ids {
+                    data.transfers.transfers.remove(id);
+                }
                 data.broadcast(AppEvent::TransfersRemoved { direction, ids });
             }
         }

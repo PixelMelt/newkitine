@@ -13,10 +13,11 @@ use std::path::PathBuf;
 use super::punctuation::split_words;
 use crate::types::{FileAttributes, FileInfo, FolderContents};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ShareCatalog {
     pub folders: Vec<ShareCatalogFolder>,
     pub files: Vec<ShareCatalogFile>,
+    #[serde(skip)]
     folders_by_path: Vec<u32>,
 }
 
@@ -52,16 +53,17 @@ impl ShareCatalog {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShareCatalogFolder {
     pub virtual_path: Box<str>,
     pub virtual_path_lower: Box<str>,
+    #[serde(with = "cache::path_bytes")]
     pub real_path: PathBuf,
     pub files: Range<u32>,
     pub buddy_only: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShareCatalogFile {
     pub name: Box<str>,
     pub name_lower: Box<str>,
@@ -213,10 +215,6 @@ impl SharesIndex {
         }
     }
 
-    pub fn empty() -> Self {
-        Self::from_catalog(ShareCatalog::empty())
-    }
-
     pub fn counts(&self) -> (u32, u32) {
         self.public_counts
     }
@@ -273,14 +271,14 @@ impl SharesIndex {
         let mut exact = None;
         for &folder_id in &self.folders_by_lower_path[folder_range] {
             let folder = &self.catalog.folders[folder_id as usize];
-            let resolve_range = self.resolve_range(folder_id);
-            let file_range = equal_range(&self.resolve_files[resolve_range], |&file| {
+            let files = &self.resolve_files[folder.files.start as usize..folder.files.end as usize];
+            let file_range = equal_range(files, |&file| {
                 self.catalog.files[file as usize]
                     .name_lower
                     .as_ref()
                     .cmp(name_lower.as_str())
             });
-            for &file_id in &self.resolve_files[self.resolve_range(folder_id)][file_range] {
+            for &file_id in &files[file_range] {
                 first.get_or_insert((folder_id, file_id));
                 let file = &self.catalog.files[file_id as usize];
                 if folder.virtual_path.as_ref() == directory && file.name.as_ref() == name {
@@ -476,16 +474,13 @@ impl SharesIndex {
             files: folder
                 .files
                 .clone()
-                .map(|file| self.file_view(&self.catalog.files[file as usize]))
+                .map(|file| &self.catalog.files[file as usize])
+                .map(|file| FileInfo {
+                    name: file.name.to_string(),
+                    size: file.size,
+                    attributes: file.attributes.clone(),
+                })
                 .collect(),
-        }
-    }
-
-    fn file_view(&self, file: &ShareCatalogFile) -> FileInfo {
-        FileInfo {
-            name: file.name.to_string(),
-            size: file.size,
-            attributes: file.attributes.clone(),
         }
     }
 
@@ -493,11 +488,6 @@ impl SharesIndex {
         self.catalog
             .folders
             .partition_point(|folder| folder.files.end <= file_id) as u32
-    }
-
-    fn resolve_range(&self, folder_id: u32) -> Range<usize> {
-        let folder = &self.catalog.folders[folder_id as usize];
-        folder.files.start as usize..folder.files.end as usize
     }
 }
 

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
-use crate::network::{NetworkCommand, NetworkHandle};
+use crate::network::{AllowedResponse, NetworkHandle};
 use crate::protocol::PeerMessage;
 use crate::types::{FileInfo, FolderContents};
 
@@ -60,7 +60,7 @@ impl FolderRequests {
         let (username, directory) = key;
         self.token = self.token.wrapping_add(1);
         info!(username, directory, "requesting folder contents");
-        self.net.send(NetworkCommand::AllowFolderContents {
+        self.net.allow(AllowedResponse::FolderContents {
             username: username.clone(),
             directory: directory.clone(),
         });
@@ -140,7 +140,7 @@ impl FolderRequests {
 
     fn forget(&mut self, key: &FolderKey) {
         self.requests.remove(key);
-        self.net.send(NetworkCommand::DisallowFolderContents {
+        self.net.disallow(AllowedResponse::FolderContents {
             username: key.0.clone(),
             directory: key.1.clone(),
         });
@@ -148,7 +148,7 @@ impl FolderRequests {
 
     pub fn clear(&mut self) {
         for key in self.requests.keys() {
-            self.net.send(NetworkCommand::DisallowFolderContents {
+            self.net.disallow(AllowedResponse::FolderContents {
                 username: key.0.clone(),
                 directory: key.1.clone(),
             });

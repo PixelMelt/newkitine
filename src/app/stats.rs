@@ -38,37 +38,27 @@ pub struct PeerActivity {
 
 impl StatsSink {
     pub fn record(&self, observation: &Observation, geo: Option<&Geo>) {
+        let (Observation::SearchSeen { username, .. }
+        | Observation::QueueRequest { username, .. }
+        | Observation::BrowseRequest { username }
+        | Observation::UserInfoRequest { username }
+        | Observation::FolderContentsRequest { username }
+        | Observation::PeerConnected { username, .. }) = observation;
         let mut pending = self.pending.lock().unwrap();
+        let entry = pending.entry(username.clone()).or_default();
         match observation {
-            Observation::SearchSeen {
-                username, matched, ..
-            } => {
-                let entry = pending.entry(username.clone()).or_default();
+            Observation::SearchSeen { matched, .. } => {
                 entry.searches += 1;
-                if *matched {
-                    entry.searches_matched += 1;
-                }
+                entry.searches_matched += u32::from(*matched);
             }
-            Observation::QueueRequest {
-                username, accepted, ..
-            } => {
-                let entry = pending.entry(username.clone()).or_default();
+            Observation::QueueRequest { accepted, .. } => {
                 entry.queue_requests += 1;
-                if !accepted {
-                    entry.queue_rejected += 1;
-                }
+                entry.queue_rejected += u32::from(!accepted);
             }
-            Observation::BrowseRequest { username } => {
-                pending.entry(username.clone()).or_default().browses += 1;
-            }
-            Observation::UserInfoRequest { username } => {
-                pending.entry(username.clone()).or_default().info_requests += 1;
-            }
-            Observation::FolderContentsRequest { username } => {
-                pending.entry(username.clone()).or_default().folder_requests += 1;
-            }
-            Observation::PeerConnected { username, ip, .. } => {
-                let entry = pending.entry(username.clone()).or_default();
+            Observation::BrowseRequest { .. } => entry.browses += 1,
+            Observation::UserInfoRequest { .. } => entry.info_requests += 1,
+            Observation::FolderContentsRequest { .. } => entry.folder_requests += 1,
+            Observation::PeerConnected { ip, .. } => {
                 entry.connections += 1;
                 if let Some(ip) = ip {
                     entry.last_ip = Some(ip.to_string());
@@ -138,42 +128,6 @@ async fn transfer_stats(pool: &MySqlPool, utc_offset: i64) -> serde_json::Value 
     .expect("unique upload users")
     .get(0);
 
-    let top_files: Vec<serde_json::Value> = sqlx::query(
-        "SELECT virtual_path, COUNT(*) AS c, CAST(SUM(COALESCE(bytes, size)) AS UNSIGNED)
-         FROM transfer_history WHERE direction = 'upload'
-         GROUP BY virtual_path ORDER BY c DESC LIMIT 10",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("top files")
-    .into_iter()
-    .map(|row| {
-        serde_json::json!({
-            "virtual_path": row.get::<String, _>(0),
-            "count": row.get::<i64, _>(1),
-            "bytes": row.get::<u64, _>(2),
-        })
-    })
-    .collect();
-
-    let top_users: Vec<serde_json::Value> = sqlx::query(
-        "SELECT username, COUNT(*) AS c, CAST(SUM(COALESCE(bytes, size)) AS UNSIGNED)
-         FROM transfer_history WHERE direction = 'upload'
-         GROUP BY username ORDER BY c DESC LIMIT 10",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("top users")
-    .into_iter()
-    .map(|row| {
-        serde_json::json!({
-            "username": row.get::<String, _>(0),
-            "count": row.get::<i64, _>(1),
-            "bytes": row.get::<u64, _>(2),
-        })
-    })
-    .collect();
-
     let mut weekday_uploads = [0i64; 7];
     for row in sqlx::query(
         "SELECT CAST(MOD(FLOOR((CAST(finished_at AS SIGNED) + ?) / 86400) + 3, 7) AS UNSIGNED) AS d,
@@ -191,10 +145,30 @@ async fn transfer_stats(pool: &MySqlPool, utc_offset: i64) -> serde_json::Value 
     serde_json::json!({
         "totals": totals,
         "unique_upload_users": unique_upload_users,
-        "top_files": top_files,
-        "top_users": top_users,
+        "top_files": top_uploads(pool, "virtual_path").await,
+        "top_users": top_uploads(pool, "username").await,
         "weekday_uploads": weekday_uploads,
     })
+}
+
+async fn top_uploads(pool: &MySqlPool, column: &str) -> Vec<serde_json::Value> {
+    sqlx::query(&format!(
+        "SELECT {column}, COUNT(*) AS c, CAST(SUM(COALESCE(bytes, size)) AS UNSIGNED)
+         FROM transfer_history WHERE direction = 'upload'
+         GROUP BY {column} ORDER BY c DESC LIMIT 10"
+    ))
+    .fetch_all(pool)
+    .await
+    .expect("top uploads")
+    .into_iter()
+    .map(|row| {
+        serde_json::json!({
+            column: row.get::<String, _>(0),
+            "count": row.get::<i64, _>(1),
+            "bytes": row.get::<u64, _>(2),
+        })
+    })
+    .collect()
 }
 
 async fn peers_seen(pool: &MySqlPool, limit: u32) -> serde_json::Value {

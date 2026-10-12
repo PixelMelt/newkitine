@@ -8,7 +8,7 @@ use tracing::debug;
 
 const DEFAULT_BASENAME_BYTE_LIMIT: usize = 255;
 
-pub(super) fn clean_file_name(name: &str) -> String {
+fn clean_file_name(name: &str) -> String {
     let replaced: String = name
         .chars()
         .map(|c| {
@@ -48,22 +48,10 @@ fn virtual_folder(virtual_path: &str) -> &str {
         .map_or("", |(folder, _)| folder)
 }
 
-pub(super) fn virtual_basename(virtual_path: &str) -> &str {
+fn virtual_basename(virtual_path: &str) -> &str {
     virtual_path
         .rsplit_once('\\')
         .map_or(virtual_path, |(_, basename)| basename)
-}
-
-pub(super) fn default_download_dir(
-    download_dir: &Path,
-    username_subfolders: bool,
-    username: &str,
-) -> PathBuf {
-    if username_subfolders {
-        join_clean(download_dir, [username])
-    } else {
-        download_dir.to_path_buf()
-    }
 }
 
 pub(super) fn folder_destination(
@@ -73,7 +61,11 @@ pub(super) fn folder_destination(
     virtual_path: &str,
     root: Option<&str>,
 ) -> PathBuf {
-    let base = default_download_dir(download_dir, username_subfolders, username);
+    let base = if username_subfolders {
+        join_clean(download_dir, [username])
+    } else {
+        download_dir.to_path_buf()
+    };
     let Some(root) = root else {
         return base;
     };
@@ -96,11 +88,11 @@ pub(super) fn download_basename(virtual_path: &str, max_bytes: usize) -> String 
     let basename = clean_file_name(virtual_basename(virtual_path));
     let (stem, extension) = split_extension(&basename);
     if extension.len() > max_bytes {
-        return truncate_bytes(extension, max_bytes).to_owned();
+        return extension[..extension.floor_char_boundary(max_bytes)].to_owned();
     }
     format!(
         "{}{extension}",
-        truncate_bytes(stem, max_bytes - extension.len())
+        &stem[..stem.floor_char_boundary(max_bytes - extension.len())]
     )
 }
 
@@ -116,17 +108,16 @@ pub(super) fn incomplete_file_path(
     incomplete_dir.join(format!("{prefix}{basename}"))
 }
 
-pub(super) fn complete_file_path(dir: &Path, basename: &str, size: u64) -> Option<PathBuf> {
+fn candidates<'a>(dir: &'a Path, basename: &'a str) -> impl Iterator<Item = PathBuf> + 'a {
     let (stem, extension) = split_extension(basename);
-    let mut candidate = dir.join(basename);
-    let mut counter = 1;
-    loop {
-        if fs::metadata(&candidate).ok()?.len() == size {
-            return Some(candidate);
-        }
-        candidate = dir.join(format!("{stem} ({counter}){extension}"));
-        counter += 1;
-    }
+    let numbered = (1..).map(move |counter| dir.join(format!("{stem} ({counter}){extension}")));
+    std::iter::once(dir.join(basename)).chain(numbered)
+}
+
+pub(super) fn complete_file_path(dir: &Path, basename: &str, size: u64) -> Option<PathBuf> {
+    candidates(dir, basename)
+        .map_while(|candidate| Some((fs::metadata(&candidate).ok()?.len(), candidate)))
+        .find_map(|(len, candidate)| (len == size).then_some(candidate))
 }
 
 pub(super) fn open_incomplete(
@@ -186,23 +177,18 @@ fn claim_destination(
     destination_dir: &Path,
     basename: &str,
 ) -> std::io::Result<(PathBuf, fs::File)> {
-    let (stem, extension) = split_extension(basename);
-    let mut candidate = destination_dir.join(basename);
-    let mut counter = 1;
-    loop {
+    for candidate in candidates(destination_dir, basename) {
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&candidate)
         {
             Ok(file) => return Ok((candidate, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                candidate = destination_dir.join(format!("{stem} ({counter}){extension}"));
-                counter += 1;
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
     }
+    unreachable!("destination candidates never run out")
 }
 
 fn split_extension(basename: &str) -> (&str, &str) {
@@ -210,17 +196,6 @@ fn split_extension(basename: &str) -> (&str, &str) {
         Some(index) if index > 0 => basename.split_at(index),
         _ => (basename, ""),
     }
-}
-
-fn truncate_bytes(value: &str, limit: usize) -> &str {
-    if value.len() <= limit {
-        return value;
-    }
-    let mut end = limit;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    &value[..end]
 }
 
 #[cfg(test)]

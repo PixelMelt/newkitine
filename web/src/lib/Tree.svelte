@@ -8,7 +8,6 @@
   export let nodes;
   export let selected;
   export let expanded;
-  export let primary = false;
   export let onselect;
   export let ontoggle;
   export let onmenu;
@@ -94,7 +93,7 @@
   role="tree"
   aria-label={label}
   tabindex="0"
-  data-primary={primary ? '' : null}
+  data-primary
   bind:this={container}
   on:keydown={keydown}
 >

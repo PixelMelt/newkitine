@@ -9,6 +9,7 @@
   import { route, openUserInfo } from '../lib/ui.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { numeric } from '../lib/columns.js';
   import DataTable from '../lib/DataTable.svelte';
 
   const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -31,17 +32,18 @@
     text: (r) => (r[key] ? formatDateTime(r[key]) : ''), sortValue: (r) => r[key] ?? 0,
   });
   const user = { key: 'username', label: 'User', grow: 1, min: 140, text: (r) => r.username };
+  const sent = numeric('bytes', 'Sent', 96, (r) => r.bytes, formatSize);
   const text = (key, label, width) => ({ key, label, width, text: (r) => r[key] ?? '' });
 
   const fileColumns = [
     { key: 'file', label: 'File', grow: 1, min: 240, tail: 12, text: (f) => baseName(f.virtual_path) },
     count('count', 'Times'),
-    { key: 'bytes', label: 'Sent', width: 96, align: 'end', desc: true, text: (f) => formatSize(f.bytes), sortValue: (f) => f.bytes },
+    sent,
   ];
   const recipientColumns = [
     user,
     count('count', 'Files'),
-    { key: 'bytes', label: 'Sent', width: 96, align: 'end', desc: true, text: (u) => formatSize(u.bytes), sortValue: (u) => u.bytes },
+    sent,
   ];
   const verdictColumns = [
     user,
@@ -82,12 +84,14 @@
     }).then(() => (loading -= 1));
   }
 
+  const loadVerdicts = () => load('/stats/verdicts', 'Peer verdicts', (data) => (verdicts = data.users));
+
   function refresh() {
     if (loading) return;
     failure = '';
     load(`/stats/transfers?utc_offset=${-new Date().getTimezoneOffset() * 60}`, 'Transfer statistics', (data) => (transfers = data));
     load('/stats/peers?limit=1000', 'Peer statistics', (data) => (peers = data));
-    load('/stats/verdicts', 'Peer verdicts', (data) => (verdicts = data.users));
+    loadVerdicts();
   }
 
   $: if ($route.tab === 'statistics') refresh();
@@ -118,7 +122,7 @@
           act(() => post(`/users/${encodeURIComponent(row.username)}/clear_verdict`, {}), {
             failed: `Verdict on ${row.username} not cleared`,
             done: `Cleared the verdict on ${row.username}`,
-            then: () => load('/stats/verdicts', 'Peer verdicts', (data) => (verdicts = data.users)),
+            then: loadVerdicts,
           }),
       },
       {

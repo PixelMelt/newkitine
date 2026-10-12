@@ -2,7 +2,7 @@
   import {
     chatPartners, conversations, unread, chatKey, closeChat, openChat, status,
   } from '../lib/stores.js';
-  import { route, go, forget, openPrivateChat, noAutofill } from '../lib/ui.js';
+  import { route, go, openPrivateChat, noAutofill } from '../lib/ui.js';
   import { del } from '../lib/api.js';
   import { act } from '../lib/act.js';
   import { plural } from '../lib/format.js';
@@ -33,11 +33,7 @@
   }
 
   function close(username) {
-    const next = strip.neighbour(username);
-    if (selected === username) {
-      if (next) go('chat', next);
-      else forget('chat', username);
-    }
+    strip.leave(username, selected);
     closeChat(username);
   }
 

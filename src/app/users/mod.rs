@@ -16,7 +16,7 @@ use super::behavior;
 use super::contract::AppEvent;
 use super::db::fatal;
 use super::peer_history::record_user_shares;
-use super::projection::ProjectionWriter;
+use super::projection::{ProjectionWriter, set_member};
 use super::state::{App, now};
 
 #[derive(Default, Clone, serde::Serialize)]
@@ -40,13 +40,26 @@ pub struct UserInfoView {
     pub stats: Option<UserStats>,
     pub interests_liked: Vec<String>,
     pub interests_hated: Vec<String>,
+    #[serde(skip)]
+    pub sequence: u64,
 }
 
+#[derive(Clone)]
 pub struct BrowseView {
     pub username: String,
     pub folders: Arc<Vec<FolderContents>>,
     pub private_folders: Arc<Vec<FolderContents>>,
     pub received_at: i64,
+}
+
+impl BrowseView {
+    pub fn all(&self) -> impl Iterator<Item = &FolderContents> + Clone {
+        self.folders.iter().chain(self.private_folders.iter())
+    }
+}
+
+pub fn browse(app: &App, username: &str) -> Option<BrowseView> {
+    app.projection.read().users.browses.get(username).cloned()
 }
 
 const MAX_RETAINED_BROWSES: usize = 8;
@@ -58,7 +71,6 @@ pub struct UsersState {
     banned: Vec<String>,
     ignored: Vec<String>,
     user_infos: HashMap<String, UserInfoView>,
-    info_sequence: HashMap<String, u64>,
     info_counter: u64,
     browses: HashMap<String, BrowseView>,
 }
@@ -77,10 +89,7 @@ impl UsersState {
                 .collect(),
             banned,
             ignored,
-            user_infos: HashMap::new(),
-            info_sequence: HashMap::new(),
-            info_counter: 0,
-            browses: HashMap::new(),
+            ..Default::default()
         };
         for (username, note) in notes {
             match state.buddies.get_mut(&username) {
@@ -105,10 +114,6 @@ impl UsersState {
 
     pub fn ignored(&self) -> &[String] {
         &self.ignored
-    }
-
-    pub fn browse(&self, username: &str) -> Option<&BrowseView> {
-        self.browses.get(username)
     }
 
     pub fn browse_timestamps(&self) -> impl Iterator<Item = (&String, i64)> {
@@ -147,12 +152,6 @@ impl UsersState {
         self.buddies.remove(username);
     }
 
-    fn set_note(&mut self, username: &str, note: String) -> Option<BuddyView> {
-        let buddy = self.buddies.get_mut(username)?;
-        buddy.note = note;
-        Some(buddy.clone())
-    }
-
     fn reset_statuses(&mut self) -> Vec<BuddyView> {
         self.buddies
             .values_mut()
@@ -164,144 +163,79 @@ impl UsersState {
             .collect()
     }
 
-    fn set_status(
+    fn update_buddy(
         &mut self,
         username: &str,
-        status: &'static str,
-        privileged: bool,
+        apply: impl FnOnce(&mut BuddyView),
     ) -> Option<BuddyView> {
         let buddy = self.buddies.get_mut(username)?;
-        buddy.status = status.into();
-        buddy.privileged = privileged;
+        apply(buddy);
         Some(buddy.clone())
     }
 
-    fn apply_watch(
+    fn update_info(
         &mut self,
         username: &str,
-        status: Option<&'static str>,
-        stats: Option<UserStats>,
-    ) -> Option<BuddyView> {
-        let buddy = self.buddies.get_mut(username)?;
-        if let Some(status) = status {
-            buddy.status = status.into();
-        }
-        if let Some(stats) = stats {
-            buddy.stats = stats;
-        }
-        Some(buddy.clone())
-    }
-
-    fn set_buddy_stats(&mut self, username: &str, stats: &UserStats) -> Option<BuddyView> {
-        let buddy = self.buddies.get_mut(username)?;
-        buddy.stats = stats.clone();
-        Some(buddy.clone())
-    }
-
-    fn set_info_stats(&mut self, username: &str, stats: UserStats) -> Option<UserInfoView> {
-        let info = self.user_infos.get_mut(username)?;
-        info.stats = Some(stats);
-        Some(info.clone())
-    }
-
-    fn set_info_interests(
-        &mut self,
-        username: &str,
-        liked: Vec<String>,
-        hated: Vec<String>,
+        apply: impl FnOnce(&mut UserInfoView),
     ) -> Option<UserInfoView> {
         let info = self.user_infos.get_mut(username)?;
-        info.interests_liked = liked;
-        info.interests_hated = hated;
+        apply(info);
         Some(info.clone())
-    }
-
-    fn evict_excess_infos(&mut self, keep: &str) -> Vec<String> {
-        self.info_counter += 1;
-        self.info_sequence
-            .insert(keep.to_owned(), self.info_counter);
-        let mut evicted = Vec::new();
-        while self.user_infos.len() > MAX_RETAINED_USER_INFOS {
-            let oldest = self
-                .info_sequence
-                .iter()
-                .min_by_key(|(_, sequence)| **sequence)
-                .map(|(username, _)| username.clone())
-                .unwrap();
-            self.user_infos.remove(&oldest);
-            self.info_sequence.remove(&oldest);
-            evicted.push(oldest);
-        }
-        evicted
     }
 
     pub fn infos(&self) -> impl Iterator<Item = &UserInfoView> {
         self.user_infos.values()
     }
 
-    fn ensure_info(&mut self, username: &str) -> (UserInfoView, Vec<String>) {
+    fn info(&self, username: &str) -> Option<&UserInfoView> {
+        self.user_infos.get(username)
+    }
+
+    fn touch_info(
+        &mut self,
+        username: &str,
+        apply: impl FnOnce(&mut UserInfoView),
+    ) -> (UserInfoView, Vec<String>) {
+        self.info_counter += 1;
         let info = self
             .user_infos
             .entry(username.to_owned())
             .or_insert_with(|| UserInfoView {
                 username: username.to_owned(),
                 ..Default::default()
-            })
-            .clone();
-        let evicted = self.evict_excess_infos(username);
-        (info, evicted)
-    }
-
-    fn info(&self, username: &str) -> Option<&UserInfoView> {
-        self.user_infos.get(username)
-    }
-
-    fn info_received(&mut self, received: UserInfoReceived) -> (UserInfoView, Vec<String>) {
-        let info = self
-            .user_infos
-            .entry(received.username.clone())
-            .or_insert_with(|| UserInfoView {
-                username: received.username,
-                ..Default::default()
             });
-        info.received = true;
-        info.description = received.description;
-        info.picture_base64 = received
-            .picture
-            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
-        info.upload_slots = received.total_uploads;
-        info.queue_size = received.queue_size;
-        info.slots_available = received.slots_available;
+        info.sequence = self.info_counter;
+        apply(info);
         let info = info.clone();
-        let evicted = self.evict_excess_infos(&info.username);
+        let mut evicted = Vec::new();
+        while self.user_infos.len() > MAX_RETAINED_USER_INFOS {
+            let oldest = self
+                .user_infos
+                .values()
+                .min_by_key(|info| info.sequence)
+                .unwrap()
+                .username
+                .clone();
+            self.user_infos.remove(&oldest);
+            evicted.push(oldest);
+        }
         (info, evicted)
     }
 
-    fn ban(&mut self, username: String) -> Vec<String> {
-        if !self.banned.contains(&username) {
-            self.banned.push(username);
-            self.banned.sort();
-        }
-        self.banned.clone()
+    fn set_blocked(&mut self, block: Block, username: &str, blocked: bool) -> Vec<String> {
+        let list = match block {
+            Block::Banned => &mut self.banned,
+            Block::Ignored => &mut self.ignored,
+        };
+        set_member(list, username, blocked);
+        list.clone()
     }
+}
 
-    fn unban(&mut self, username: &str) -> Vec<String> {
-        self.banned.retain(|user| user != username);
-        self.banned.clone()
-    }
-
-    fn ignore(&mut self, username: String) -> Vec<String> {
-        if !self.ignored.contains(&username) {
-            self.ignored.push(username);
-            self.ignored.sort();
-        }
-        self.ignored.clone()
-    }
-
-    fn unignore(&mut self, username: &str) -> Vec<String> {
-        self.ignored.retain(|user| user != username);
-        self.ignored.clone()
-    }
+#[derive(Clone, Copy)]
+enum Block {
+    Banned,
+    Ignored,
 }
 
 pub fn buddy_view(username: &str) -> BuddyView {
@@ -327,14 +261,34 @@ pub fn server_disconnected(data: &mut ProjectionWriter<'_>) {
     }
 }
 
-pub fn user_status(app: &App, username: String, status: Option<UserStatus>, privileged: bool) {
+fn publish_buddy(app: &App, username: &str, apply: impl FnOnce(&mut BuddyView)) {
     let mut data = app.projection.write();
-    if let Some(buddy) = data
-        .users
-        .set_status(&username, status_string(status), privileged)
-    {
+    if let Some(buddy) = data.users.update_buddy(username, apply) {
         data.broadcast(AppEvent::Buddy { buddy });
     }
+}
+
+fn publish_info(app: &App, username: &str, apply: impl FnOnce(&mut UserInfoView)) {
+    let mut data = app.projection.write();
+    if let Some(info) = data.users.update_info(username, apply) {
+        data.broadcast(AppEvent::UserInfo { info });
+    }
+}
+
+fn open_info(app: &App, username: &str, apply: impl FnOnce(&mut UserInfoView)) {
+    let mut data = app.projection.write();
+    let (info, evicted) = data.users.touch_info(username, apply);
+    for username in evicted {
+        data.broadcast(AppEvent::UserInfoRemoved { username });
+    }
+    data.broadcast(AppEvent::UserInfo { info });
+}
+
+pub fn user_status(app: &App, username: String, status: Option<UserStatus>, privileged: bool) {
+    publish_buddy(app, &username, |buddy| {
+        buddy.status = status_string(status).into();
+        buddy.privileged = privileged;
+    });
 }
 
 pub async fn shared_file_list(
@@ -367,12 +321,23 @@ pub async fn shared_file_list(
 }
 
 pub fn user_info_received(app: &App, received: UserInfoReceived) {
-    let mut data = app.projection.write();
-    let (info, evicted) = data.users.info_received(received);
-    for username in evicted {
-        data.broadcast(AppEvent::UserInfoRemoved { username });
-    }
-    data.broadcast(AppEvent::UserInfo { info });
+    open_info(app, &received.username, |info| {
+        info.received = true;
+        info.description = received.description;
+        info.picture_base64 = received
+            .picture
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+        info.upload_slots = received.total_uploads;
+        info.queue_size = received.queue_size;
+        info.slots_available = received.slots_available;
+    });
+}
+
+async fn record_stats(app: &Arc<App>, user: &str, stats: &UserStats) {
+    record_user_shares(&app.db, user, stats.files, stats.dirs, now())
+        .await
+        .unwrap_or_else(|error| fatal(error));
+    behavior::stats_received(app, user, stats.files, stats.dirs).await;
 }
 
 pub async fn watch_user(
@@ -383,37 +348,40 @@ pub async fn watch_user(
     stats: Option<UserStats>,
 ) {
     if let Some(stats) = &stats {
-        record_user_shares(&app.db, &user, stats.files, stats.dirs, now())
-            .await
-            .unwrap_or_else(|error| fatal(error));
-        behavior::stats_received(app, &user, stats.files, stats.dirs).await;
+        record_stats(app, &user, stats).await;
     }
-    let status = user_exists.then(|| status_string(status));
-    let mut data = app.projection.write();
-    if let Some(buddy) = data.users.apply_watch(&user, status, stats) {
-        data.broadcast(AppEvent::Buddy { buddy });
-    }
+    publish_buddy(app, &user, |buddy| {
+        if user_exists {
+            buddy.status = status_string(status).into();
+        }
+        if let Some(stats) = stats {
+            buddy.stats = stats;
+        }
+    });
 }
 
 pub async fn user_stats(app: &Arc<App>, user: String, stats: UserStats) {
-    record_user_shares(&app.db, &user, stats.files, stats.dirs, now())
-        .await
-        .unwrap_or_else(|error| fatal(error));
-    behavior::stats_received(app, &user, stats.files, stats.dirs).await;
+    record_stats(app, &user, &stats).await;
     let mut data = app.projection.write();
-    if let Some(buddy) = data.users.set_buddy_stats(&user, &stats) {
+    if let Some(buddy) = data
+        .users
+        .update_buddy(&user, |buddy| buddy.stats = stats.clone())
+    {
         data.broadcast(AppEvent::Buddy { buddy });
     }
-    if let Some(info) = data.users.set_info_stats(&user, stats) {
+    if let Some(info) = data
+        .users
+        .update_info(&user, |info| info.stats = Some(stats))
+    {
         data.broadcast(AppEvent::UserInfo { info });
     }
 }
 
 pub fn user_interests(app: &App, user: String, likes: Vec<String>, hates: Vec<String>) {
-    let mut data = app.projection.write();
-    if let Some(info) = data.users.set_info_interests(&user, likes, hates) {
-        data.broadcast(AppEvent::UserInfo { info });
-    }
+    publish_info(app, &user, |info| {
+        info.interests_liked = likes;
+        info.interests_hated = hates;
+    });
 }
 
 #[cfg(test)]
@@ -442,23 +410,24 @@ mod tests {
         let evicted = state.insert_browse(browse("newcomer", 100));
         assert_eq!(evicted, vec!["user0".to_string()]);
         assert_eq!(state.browses.len(), MAX_RETAINED_BROWSES);
-        assert!(state.browse("user0").is_none());
-        assert!(state.browse("newcomer").is_some());
+        assert!(!state.browses.contains_key("user0"));
+        assert!(state.browses.contains_key("newcomer"));
     }
 
     #[test]
     fn replies_to_a_requested_profile_land_on_its_entry() {
         let mut state = UsersState::default();
-        state.ensure_info("peer");
+        state.touch_info("peer", |_| {});
         let stats = state
-            .set_info_stats("peer", UserStats::default())
+            .update_info("peer", |info| info.stats = Some(UserStats::default()))
             .expect("stats reply after request");
         assert_eq!(stats.stats, Some(UserStats::default()));
         let interests = state
-            .set_info_interests("peer", vec!["jazz".into()], vec![])
+            .update_info("peer", |info| info.interests_liked = vec!["jazz".into()])
             .expect("interests reply after request");
         assert_eq!(interests.interests_liked, vec!["jazz".to_string()]);
         assert!(!interests.received);
+        assert!(state.update_info("stranger", |_| {}).is_none());
     }
 
     #[test]

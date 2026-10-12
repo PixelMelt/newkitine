@@ -28,32 +28,11 @@ pub struct Status {
     pub peer_connections: usize,
 }
 
-pub struct Session {
-    status: Status,
-}
-
-impl Session {
-    pub fn new(server: String, username: String, listen_port: u16) -> Self {
-        Self {
-            status: Status {
-                server,
-                username,
-                listen_port,
-                ..Default::default()
-            },
-        }
-    }
-
-    pub fn status(&self) -> &Status {
-        &self.status
-    }
-}
-
 fn update_status(app: &App, apply: impl FnOnce(&mut Status)) {
     let mut data = app.projection.write();
-    apply(&mut data.session.status);
+    apply(&mut data.session);
     let event = AppEvent::Status {
-        status: data.session.status.clone(),
+        status: data.session.clone(),
     };
     data.broadcast(event);
 }
@@ -101,19 +80,19 @@ pub fn disconnected(app: &App) {
     let mut data = app.projection.write();
     chat::server_disconnected(&mut data);
     users::server_disconnected(&mut data);
-    data.session.status.peer_connections = 0;
+    data.session.peer_connections = 0;
     data.broadcast(AppEvent::ConnCount { count: 0 });
-    data.session.status.connected = false;
-    data.session.status.logged_in = false;
+    data.session.connected = false;
+    data.session.logged_in = false;
     let event = AppEvent::Status {
-        status: data.session.status.clone(),
+        status: data.session.clone(),
     };
     data.broadcast(event);
 }
 
 pub fn connection_count(app: &App, count: usize) {
     let mut data = app.projection.write();
-    data.session.status.peer_connections = count;
+    data.session.peer_connections = count;
     data.broadcast(AppEvent::ConnCount { count });
 }
 
@@ -176,7 +155,7 @@ pub(super) fn router() -> Router<Arc<App>> {
 
 async fn status(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
-    Json(json!({ "status": data.session.status() }))
+    Json(json!({ "status": data.session }))
 }
 
 async fn connect(State(app): State<Arc<App>>) -> StatusCode {

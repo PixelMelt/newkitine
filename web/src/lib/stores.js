@@ -9,7 +9,7 @@ export {
 } from './state/searches.js';
 export {
 	rooms, chatPartners, conversations, drafts, unread, roomKey, chatKey, markRead,
-	openChat, closeChat, forgetChat, joinRoom, leaveRoom, sendMessage,
+	openChat, closeChat, joinRoom, leaveRoom, sendMessage,
 } from './state/chat.js';
 export {
 	buddies, banned, ignored, userInfos, browses, browseFailure, browseLoad, ipBans, loadIpBans,

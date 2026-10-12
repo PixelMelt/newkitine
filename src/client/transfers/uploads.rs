@@ -8,7 +8,10 @@ use tracing::{debug, info};
 use super::queue::UploadQueue;
 use super::registry::{Registry, TransferKey};
 use super::speed::SpeedMeter;
-use super::{TransferIds, TransferPhase, TransferRejectReason, peer_reason};
+use super::{
+    CONNECTION_CLOSED, CONNECTION_TIMEOUT, LOCAL_FILE_ERROR, TRANSFER_REQUEST_TIMEOUT, TransferIds,
+    TransferPhase, TransferRejectReason, USER_OFFLINE, peer_reason,
+};
 use crate::client::shares::SharesIndex;
 use crate::client::users::Users;
 use crate::client::{AbortResult, TransferWork};
@@ -19,16 +22,7 @@ use crate::types::{
     FileAttributes, Restriction, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
 };
 
-const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const TIMED_OUT_RETRY_INTERVAL: Duration = Duration::from_secs(180);
-const CONNECTION_TIMEOUT: &str = "connection timeout";
-const USER_OFFLINE: &str = "user is offline";
-const FILE_READ_ERROR: &str = "File read error.";
-
-enum Admission {
-    Accept(PathBuf, u64, FileAttributes),
-    AlreadyQueued,
-}
 
 #[derive(Debug)]
 struct UploadTransfer {
@@ -40,7 +34,6 @@ struct UploadTransfer {
     attributes: FileAttributes,
     phase: TransferPhase,
     bytes_done: u64,
-    speed_bps: u32,
     started_offset: u64,
     activated_at: Option<Instant>,
     started_at: Option<Instant>,
@@ -48,8 +41,27 @@ struct UploadTransfer {
 }
 
 impl UploadTransfer {
-    fn key(&self) -> TransferKey {
-        (self.username.clone(), self.virtual_path.clone())
+    fn new(
+        id: TransferId,
+        key: TransferKey,
+        real_path: Option<PathBuf>,
+        size: u64,
+        attributes: FileAttributes,
+    ) -> Self {
+        Self {
+            id,
+            username: key.0,
+            virtual_path: key.1,
+            real_path,
+            size,
+            attributes,
+            phase: TransferPhase::Queued,
+            bytes_done: 0,
+            started_offset: 0,
+            activated_at: None,
+            started_at: None,
+            speed: SpeedMeter::default(),
+        }
     }
 
     fn is_timed_out(&self) -> bool {
@@ -76,7 +88,7 @@ impl UploadTransfer {
                 .map(|path| path.display().to_string()),
             queue_place: 0,
             speed_bps: if self.phase == TransferPhase::Transferring {
-                self.speed_bps
+                self.speed.bps()
             } else {
                 0
             },
@@ -114,7 +126,7 @@ impl Uploads {
             queue_size_limit_mb,
             banned_message,
             transfers: Registry::default(),
-            queue: UploadQueue::new(),
+            queue: UploadQueue::default(),
             token: initial_token(),
             retried_at: Instant::now(),
             upload_speed: 0,
@@ -167,90 +179,58 @@ impl Uploads {
 
     pub fn seed(&mut self, seed: TransferSnapshot) {
         let phase = TransferPhase::from_seed(&seed);
-        let key = (seed.username.clone(), seed.virtual_path.clone());
-        self.transfers.insert(
+        let key = (seed.username, seed.virtual_path);
+        let mut transfer = UploadTransfer::new(
             seed.id,
-            key,
-            UploadTransfer {
-                id: seed.id,
-                username: seed.username,
-                virtual_path: seed.virtual_path,
-                real_path: seed.file_path.map(PathBuf::from),
-                size: seed.size,
-                attributes: seed.attributes,
-                phase,
-                bytes_done: seed.bytes_done,
-                speed_bps: 0,
-                started_offset: 0,
-                activated_at: None,
-                started_at: None,
-                speed: SpeedMeter::default(),
-            },
+            key.clone(),
+            seed.file_path.map(PathBuf::from),
+            seed.size,
+            seed.attributes,
         );
+        transfer.phase = phase;
+        transfer.bytes_done = seed.bytes_done;
+        self.transfers.insert(seed.id, key, transfer);
     }
 
     pub fn handle_queue_upload(
         &mut self,
         ids: &mut TransferIds,
         username: &str,
+        legacy_token: Option<u32>,
         virtual_path: &str,
         shares: Option<&SharesIndex>,
         users: &Users,
     ) -> (Vec<TransferWork>, bool) {
-        match self.admit(username, virtual_path, shares, users) {
-            Ok(Admission::Accept(real_path, size, attributes)) => {
-                let mut updates =
-                    self.enqueue(ids, username, virtual_path, real_path, size, attributes);
-                updates.extend(self.check_queue(users));
-                (updates, true)
-            }
-            Ok(Admission::AlreadyQueued) => (Vec::new(), true),
-            Err(reason) => {
-                self.net.peer(
-                    username,
-                    PeerMessage::UploadDenied {
-                        file: virtual_path.to_owned(),
-                        reason,
-                    },
-                );
-                (Vec::new(), false)
-            }
-        }
-    }
-
-    pub fn handle_legacy_transfer_request(
-        &mut self,
-        ids: &mut TransferIds,
-        username: &str,
-        token: u32,
-        virtual_path: &str,
-        shares: Option<&SharesIndex>,
-        users: &Users,
-    ) -> (Vec<TransferWork>, bool) {
+        let key = (username.to_owned(), virtual_path.to_owned());
         let admission = self.admit(username, virtual_path, shares, users);
-        let reason = match &admission {
-            Ok(_) => TransferRejectReason::QUEUED.to_owned(),
-            Err(reason) => reason.clone(),
-        };
-        self.net.peer(
-            username,
-            PeerMessage::TransferResponse {
-                token,
-                allowed: false,
-                reason: Some(reason),
-                filesize: None,
-            },
-        );
-        match admission {
-            Ok(Admission::Accept(real_path, size, attributes)) => {
-                let mut updates =
-                    self.enqueue(ids, username, virtual_path, real_path, size, attributes);
-                updates.extend(self.check_queue(users));
-                (updates, true)
+        let refusal = admission.as_ref().err();
+        match legacy_token {
+            Some(token) => self.net.peer(
+                username,
+                PeerMessage::TransferResponse {
+                    token,
+                    allowed: false,
+                    reason: Some(
+                        refusal
+                            .map_or(TransferRejectReason::QUEUED, String::as_str)
+                            .into(),
+                    ),
+                    filesize: None,
+                },
+            ),
+            None => {
+                if let Some(reason) = refusal {
+                    self.deny(&key, reason);
+                }
             }
-            Ok(Admission::AlreadyQueued) => (Vec::new(), true),
-            Err(_) => (Vec::new(), false),
         }
+        let accepted = admission.is_ok();
+        let mut updates = Vec::new();
+        if let Ok(Some((real_path, size, attributes))) = admission {
+            updates = self.enqueue(ids, key, real_path, size, attributes);
+            updates.extend(self.check_queue(users));
+        }
+        (updates, accepted)
     }
 
     fn refusal(&self, username: &str, virtual_path: &str, users: &Users) -> Option<String> {
@@ -272,7 +252,7 @@ impl Uploads {
         virtual_path: &str,
         shares: Option<&SharesIndex>,
         users: &Users,
-    ) -> Result<Admission, String> {
+    ) -> Result<Option<(PathBuf, u64, FileAttributes)>, String> {
         if let Some(reason) = self.refusal(username, virtual_path, users) {
             return Err(reason);
         }
@@ -283,7 +263,7 @@ impl Uploads {
             .is_some_and(|transfer| transfer.phase.is_active())
         {
             debug!(username, virtual_path, "upload already queued");
-            return Ok(Admission::AlreadyQueued);
+            return Ok(None);
         }
         let (real_path, size, attributes) = shares
             .and_then(|shares| shares.resolve(virtual_path, users.is_buddy(username)))
@@ -296,7 +276,7 @@ impl Uploads {
         {
             return Err(TransferRejectReason::TOO_MANY_MEGABYTES.into());
         }
-        Ok(Admission::Accept(real_path, size, attributes.clone()))
+        Ok(Some((real_path, size, attributes.clone())))
     }
 
     fn queued_bytes_for(&self, username: &str) -> u64 {
@@ -312,32 +292,16 @@ impl Uploads {
     fn enqueue(
         &mut self,
         ids: &mut TransferIds,
-        username: &str,
-        virtual_path: &str,
+        key: TransferKey,
         real_path: PathBuf,
         size: u64,
         attributes: FileAttributes,
     ) -> Vec<TransferWork> {
-        let key = (username.to_owned(), virtual_path.to_owned());
         let id = match self.transfers.get(&key) {
             Some(existing) => existing.id,
             None => ids.mint(),
         };
-        let transfer = UploadTransfer {
-            id,
-            username: username.to_owned(),
-            virtual_path: virtual_path.to_owned(),
-            real_path: Some(real_path),
-            size,
-            attributes,
-            phase: TransferPhase::Queued,
-            bytes_done: 0,
-            speed_bps: 0,
-            started_offset: 0,
-            activated_at: None,
-            started_at: None,
-            speed: SpeedMeter::default(),
-        };
+        let transfer = UploadTransfer::new(id, key.clone(), Some(real_path), size, attributes);
         let queued = TransferWork::Update(transfer.snapshot());
         self.transfers.insert(id, key.clone(), transfer);
         self.queue.push(key);
@@ -361,12 +325,9 @@ impl Uploads {
     pub fn ban(&mut self, username: &str, users: &Users) -> Vec<TransferWork> {
         let reason = self.banned_message.clone();
         let mut updates = self.deny_all(username, &reason, users);
-        let retryable: Vec<TransferKey> = self
+        let retryable = self
             .transfers
-            .values()
-            .filter(|transfer| transfer.username == username && transfer.is_timed_out())
-            .map(UploadTransfer::key)
-            .collect();
+            .keys_where(|transfer| transfer.username == username && transfer.is_timed_out());
         for key in &retryable {
             let transfer = self.transfers.get_mut(key).unwrap();
             transfer.phase = TransferPhase::Failed(reason.clone());
@@ -376,68 +337,74 @@ impl Uploads {
     }
 
     pub fn deny_all(&mut self, username: &str, reason: &str, users: &Users) -> Vec<TransferWork> {
-        let pending: Vec<TransferKey> = self
+        let pending = self
             .transfers
-            .values()
-            .filter(|transfer| transfer.username == username && transfer.phase.is_active())
-            .map(UploadTransfer::key)
-            .collect();
-        self.deny_each(&pending, reason, users)
+            .keys_where(|transfer| transfer.username == username && transfer.phase.is_active());
+        self.fail_each(&pending, reason, true, users)
     }
 
     pub fn deny_file(&mut self, key: &TransferKey, users: &Users) -> Vec<TransferWork> {
-        let active = self
-            .transfers
-            .get(key)
-            .is_some_and(|transfer| transfer.phase.is_active());
-        if !active {
+        let active = |transfer: &UploadTransfer| transfer.phase.is_active();
+        if !self.transfers.get(key).is_some_and(active) {
             return Vec::new();
         }
-        self.deny_each(
-            std::slice::from_ref(key),
-            TransferRejectReason::REPEATED,
+        let keys = std::slice::from_ref(key);
+        self.fail_each(keys, TransferRejectReason::REPEATED, true, users)
+    }
+
+    pub fn revalidate(&mut self, shares: &SharesIndex, users: &Users) -> Vec<TransferWork> {
+        let unshared = self.transfers.keys_where(|transfer| {
+            transfer.phase.is_active()
+                && shares
+                    .resolve(&transfer.virtual_path, users.is_buddy(&transfer.username))
+                    .is_none_or(|(real_path, _, _)| transfer.real_path.as_ref() != Some(&real_path))
+        });
+        self.fail_each(
+            &unshared,
+            TransferRejectReason::FILE_NOT_SHARED,
+            true,
             users,
         )
     }
 
-    pub fn revalidate(&mut self, shares: &SharesIndex, users: &Users) -> Vec<TransferWork> {
-        let unshared: Vec<TransferKey> = self
-            .transfers
-            .values()
-            .filter(|transfer| {
-                transfer.phase.is_active()
-                    && shares
-                        .resolve(&transfer.virtual_path, users.is_buddy(&transfer.username))
-                        .is_none_or(|(real_path, _, _)| {
-                            transfer.real_path.as_ref() != Some(&real_path)
-                        })
-            })
-            .map(UploadTransfer::key)
-            .collect();
-        self.deny_each(&unshared, TransferRejectReason::FILE_NOT_SHARED, users)
+    fn deny(&self, key: &TransferKey, reason: &str) {
+        self.net.peer(
+            key.0.clone(),
+            PeerMessage::UploadDenied {
+                file: key.1.clone(),
+                reason: reason.to_owned(),
+            },
+        );
     }
 
-    fn deny_each(
+    fn fail_each(
         &mut self,
         keys: &[TransferKey],
         reason: &str,
+        deny: bool,
         users: &Users,
     ) -> Vec<TransferWork> {
         let mut updates = Vec::new();
         for key in keys {
-            self.net.peer(
-                key.0.clone(),
-                PeerMessage::UploadDenied {
-                    file: key.1.clone(),
-                    reason: reason.to_owned(),
-                },
-            );
+            if deny {
+                self.deny(key, reason);
+            }
             updates.extend(self.fail(key, reason.to_owned()));
         }
-        if !keys.is_empty() {
+        if !updates.is_empty() {
             updates.extend(self.check_queue(users));
         }
         updates
+    }
+
+    fn fail_notified(&mut self, key: &TransferKey, reason: String) -> Vec<TransferWork> {
+        self.net.peer(
+            key.0.clone(),
+            PeerMessage::UploadFailed {
+                file: key.1.clone(),
+            },
+        );
+        self.fail(key, reason)
     }
 
     fn activate(&mut self, key: &TransferKey) -> Vec<TransferWork> {
@@ -451,14 +418,8 @@ impl Uploads {
         let size = match fs::metadata(real_path) {
             Ok(metadata) => metadata.len(),
             Err(error) => {
-                self.net.peer(
-                    key.0.clone(),
-                    PeerMessage::UploadDenied {
-                        file: key.1.clone(),
-                        reason: FILE_READ_ERROR.into(),
-                    },
-                );
-                return self.fail(key, format!("local file error: {error}"));
+                self.deny(key, TransferRejectReason::FILE_READ_ERROR);
+                return self.fail(key, format!("{LOCAL_FILE_ERROR}: {error}"));
             }
         };
         self.token = increment_token(self.token);
@@ -560,7 +521,6 @@ impl Uploads {
             Ok(file) => {
                 transfer.phase = TransferPhase::Transferring;
                 transfer.started_at = Some(Instant::now());
-                transfer.speed_bps = 0;
                 transfer.speed.reset();
                 let started = TransferWork::Update(transfer.snapshot());
                 info!(username, virtual_path = key.1, size, "upload started");
@@ -572,13 +532,7 @@ impl Uploads {
                 vec![started]
             }
             Err(error) => {
-                self.net.peer(
-                    username,
-                    PeerMessage::UploadFailed {
-                        file: key.1.clone(),
-                    },
-                );
-                let mut updates = self.fail(&key, format!("local file error: {error}"));
+                let mut updates = self.fail_notified(&key, format!("{LOCAL_FILE_ERROR}: {error}"));
                 updates.extend(self.check_queue(users));
                 updates
             }
@@ -598,7 +552,7 @@ impl Uploads {
         let transfer = self.transfers.get_mut(&key).unwrap();
         transfer.started_offset = offset;
         transfer.bytes_done = offset + bytes_sent;
-        transfer.speed_bps = transfer.speed.sample(transfer.bytes_done);
+        transfer.speed.sample(transfer.bytes_done);
         vec![TransferWork::Progress(transfer.snapshot())]
     }
 
@@ -612,13 +566,7 @@ impl Uploads {
         let Some(key) = self.transfers.key_by_token(username, token).cloned() else {
             return Vec::new();
         };
-        self.net.peer(
-            username,
-            PeerMessage::UploadFailed {
-                file: key.1.clone(),
-            },
-        );
-        let mut updates = self.fail(&key, error.to_owned());
+        let mut updates = self.fail_notified(&key, error.to_owned());
         updates.extend(self.check_queue(users));
         updates
     }
@@ -630,14 +578,13 @@ impl Uploads {
         conn_id: ConnId,
         users: &Users,
     ) -> Vec<TransferWork> {
-        let key = match self.transfers.key_by_conn(conn_id).cloned().or_else(|| {
+        let Some(key) = self.transfers.key_by_conn(conn_id).cloned().or_else(|| {
             self.transfers
                 .key_by_token(username, token)
                 .cloned()
                 .filter(|key| self.transfers.conn_of(key).is_none())
-        }) {
-            Some(key) => key,
-            None => return Vec::new(),
+        }) else {
+            return Vec::new();
         };
         self.transfers.detach_conn(&key);
         let transfer = self.transfers.get(&key).unwrap();
@@ -646,15 +593,7 @@ impl Uploads {
                 let delivered_bytes = transfer.bytes_done.saturating_sub(transfer.started_offset);
                 self.finish(&key, delivered_bytes)
             }
-            TransferPhase::Transferring => {
-                self.net.peer(
-                    key.0.clone(),
-                    PeerMessage::UploadFailed {
-                        file: key.1.clone(),
-                    },
-                );
-                self.fail(&key, "connection closed".into())
-            }
+            TransferPhase::Transferring => self.fail_notified(&key, CONNECTION_CLOSED.into()),
             _ => self.fail(&key, CONNECTION_TIMEOUT.into()),
         };
         updates.extend(self.check_queue(users));
@@ -668,108 +607,73 @@ impl Uploads {
         is_offline: bool,
         users: &Users,
     ) -> Vec<TransferWork> {
-        let mut updates = Vec::new();
-        for message in unsent {
-            if let PeerMessage::TransferRequest {
-                direction: TransferDirection::Upload,
-                file,
-                ..
-            } = message
-            {
-                let key = (username.to_owned(), file.clone());
-                let reason = if is_offline {
-                    USER_OFFLINE
-                } else {
-                    CONNECTION_TIMEOUT
-                };
-                updates.extend(self.fail(&key, reason.into()));
-            }
-        }
-        if !updates.is_empty() {
-            updates.extend(self.check_queue(users));
-        }
-        updates
+        let reason = if is_offline {
+            USER_OFFLINE
+        } else {
+            CONNECTION_TIMEOUT
+        };
+        let keys: Vec<TransferKey> = unsent
+            .iter()
+            .filter_map(|message| match message {
+                PeerMessage::TransferRequest {
+                    direction: TransferDirection::Upload,
+                    file,
+                    ..
+                } => Some((username.to_owned(), file.clone())),
+                _ => None,
+            })
+            .collect();
+        self.fail_each(&keys, reason, false, users)
     }
 
     pub fn abort(&mut self, id: TransferId, users: &Users) -> (AbortResult, Vec<TransferWork>) {
         let Some(key) = self.transfers.key_of(id).cloned() else {
             return (AbortResult::NotFound, Vec::new());
         };
-        let transfer = self.transfers.get_mut(&key).unwrap();
-        if transfer.is_timed_out() {
-            transfer.phase = TransferPhase::Aborted;
-            return (
-                AbortResult::Aborted,
-                vec![TransferWork::Update(transfer.snapshot())],
-            );
-        }
-        if !transfer.phase.is_active() {
+        let transfer = self.transfers.get(&key).unwrap();
+        let active = transfer.phase.is_active();
+        if !active && !transfer.is_timed_out() {
             return (AbortResult::Aborted, Vec::new());
         }
-        self.deactivate(&key);
-        self.close_conn(&key);
+        if active {
+            self.release(&key);
+        }
         let transfer = self.transfers.get_mut(&key).unwrap();
         transfer.phase = TransferPhase::Aborted;
-        let aborted = TransferWork::Update(transfer.snapshot());
-        self.net.peer(
-            key.0,
-            PeerMessage::UploadDenied {
-                file: key.1,
-                reason: TransferRejectReason::CANCELLED.into(),
-            },
-        );
-        let mut updates = vec![aborted];
-        updates.extend(self.check_queue(users));
+        let mut updates = vec![TransferWork::Update(transfer.snapshot())];
+        if active {
+            self.deny(&key, TransferRejectReason::CANCELLED);
+            updates.extend(self.check_queue(users));
+        }
         (AbortResult::Aborted, updates)
     }
 
     pub fn clear(
         &mut self,
-        statuses: &[TransferStatus],
+        statuses: Option<&[TransferStatus]>,
         users: &Users,
     ) -> (Vec<TransferId>, Vec<TransferWork>) {
-        let removed: Vec<TransferId> = self
-            .transfers
-            .values()
-            .filter(|transfer| statuses.contains(&transfer.phase.status()))
-            .map(|transfer| transfer.id)
-            .collect();
-        for id in &removed {
-            let (key, detached) = self.transfers.remove(*id).unwrap();
-            if let Some(conn_id) = detached.conn_id {
-                self.net.send(NetworkCommand::CloseConnection(conn_id));
-            }
-            self.queue.release(&key, detached.token);
-        }
-        let updates = self.check_queue(users);
-        (removed, updates)
-    }
-
-    pub fn clear_all(&mut self) -> Vec<TransferId> {
         let entries: Vec<(TransferId, bool)> = self
             .transfers
             .values()
+            .filter(|transfer| {
+                statuses.is_none_or(|statuses| statuses.contains(&transfer.phase.status()))
+            })
             .map(|transfer| (transfer.id, transfer.phase.is_active()))
             .collect();
-        let mut removed = Vec::new();
+        let mut removed = Vec::with_capacity(entries.len());
         for (id, active) in entries {
             let (key, detached) = self.transfers.remove(id).unwrap();
             if let Some(conn_id) = detached.conn_id {
                 self.net.send(NetworkCommand::CloseConnection(conn_id));
             }
+            self.queue.release(&key, detached.token);
             if active {
-                self.net.peer(
-                    key.0,
-                    PeerMessage::UploadDenied {
-                        file: key.1,
-                        reason: TransferRejectReason::CANCELLED.into(),
-                    },
-                );
+                self.deny(&key, TransferRejectReason::CANCELLED);
             }
             removed.push(id);
         }
-        self.queue.clear();
-        removed
+        (removed, self.check_queue(users))
     }
 
     pub fn handle_place_in_queue_request(
@@ -791,44 +695,20 @@ impl Uploads {
     }
 
     pub fn user_offline(&mut self, username: &str, users: &Users) -> Vec<TransferWork> {
-        let pending: Vec<TransferKey> = self
-            .transfers
-            .values()
-            .filter(|transfer| {
-                transfer.username == username && transfer.phase == TransferPhase::GettingStatus
-            })
-            .map(UploadTransfer::key)
-            .collect();
-        let mut updates = Vec::new();
-        for key in &pending {
-            updates.extend(self.fail(key, USER_OFFLINE.into()));
-        }
-        if !pending.is_empty() {
-            updates.extend(self.check_queue(users));
-        }
-        updates
+        let pending = self.transfers.keys_where(|transfer| {
+            transfer.username == username && transfer.phase == TransferPhase::GettingStatus
+        });
+        self.fail_each(&pending, USER_OFFLINE, false, users)
     }
 
     pub fn sweep_request_timeouts(&mut self, users: &Users) -> Vec<TransferWork> {
-        let expired: Vec<TransferKey> = self
-            .transfers
-            .values()
-            .filter(|transfer| {
-                transfer.phase == TransferPhase::GettingStatus
-                    && transfer
-                        .activated_at
-                        .is_some_and(|at| at.elapsed() > TRANSFER_REQUEST_TIMEOUT)
-            })
-            .map(UploadTransfer::key)
-            .collect();
-        let mut updates = Vec::new();
-        for key in &expired {
-            updates.extend(self.fail(key, CONNECTION_TIMEOUT.into()));
-        }
-        if !expired.is_empty() {
-            updates.extend(self.check_queue(users));
-        }
-        updates
+        let expired = self.transfers.keys_where(|transfer| {
+            transfer.phase == TransferPhase::GettingStatus
+                && transfer
+                    .activated_at
+                    .is_some_and(|at| at.elapsed() > TRANSFER_REQUEST_TIMEOUT)
+        });
+        self.fail_each(&expired, CONNECTION_TIMEOUT, false, users)
     }
 
     pub fn sweep_queue(
@@ -852,31 +732,19 @@ impl Uploads {
         shares: Option<&SharesIndex>,
         users: &Users,
     ) -> Vec<TransferWork> {
-        let timed_out: Vec<TransferKey> = self
-            .transfers
-            .values()
-            .filter(|transfer| transfer.is_timed_out())
-            .map(UploadTransfer::key)
-            .collect();
+        let timed_out = self.transfers.keys_where(UploadTransfer::is_timed_out);
         let mut updates = Vec::new();
-        for (username, virtual_path) in timed_out {
-            if self.refusal(&username, &virtual_path, users).is_some() {
+        for key in timed_out {
+            if self.refusal(&key.0, &key.1, users).is_some() {
                 continue;
             }
             let Some((real_path, size, attributes)) =
-                shares.and_then(|shares| shares.resolve(&virtual_path, users.is_buddy(&username)))
+                shares.and_then(|shares| shares.resolve(&key.1, users.is_buddy(&key.0)))
             else {
                 continue;
             };
             let attributes = attributes.clone();
-            updates.extend(self.enqueue(
-                ids,
-                &username,
-                &virtual_path,
-                real_path,
-                size,
-                attributes,
-            ));
+            updates.extend(self.enqueue(ids, key, real_path, size, attributes));
         }
         updates
     }
@@ -884,27 +752,20 @@ impl Uploads {
     pub fn reset(&mut self) -> Vec<TransferWork> {
         self.suspended = true;
         self.upload_speed = 0;
-        let active: Vec<TransferKey> = self
-            .transfers
-            .values()
-            .filter(|transfer| {
-                matches!(
-                    transfer.phase,
-                    TransferPhase::GettingStatus | TransferPhase::Transferring
-                )
-            })
-            .map(UploadTransfer::key)
-            .collect();
-        let mut updates = Vec::new();
-        for key in &active {
-            updates.extend(self.fail(key, "server disconnected".into()));
-        }
-        updates
+        let active = self.transfers.keys_where(|transfer| {
+            matches!(
+                transfer.phase,
+                TransferPhase::GettingStatus | TransferPhase::Transferring
+            )
+        });
+        active
+            .iter()
+            .flat_map(|key| self.fail(key, "server disconnected".into()))
+            .collect()
     }
 
     fn finish(&mut self, key: &TransferKey, delivered_bytes: u64) -> Vec<TransferWork> {
-        self.deactivate(key);
-        self.close_conn(key);
+        self.release(key);
         let transfer = self.transfers.get_mut(key).unwrap();
         transfer.phase = TransferPhase::Finished;
         transfer.bytes_done = transfer.size;
@@ -917,7 +778,7 @@ impl Uploads {
                 avg_speed_bps = Some((delivered_bytes as f64 / elapsed) as u32);
             }
         }
-        let snapshot = self.transfers.get(key).unwrap().snapshot();
+        let snapshot = transfer.snapshot();
         if let Some(speed) = avg_speed_bps {
             self.net.server(ServerRequest::SendUploadSpeed { speed });
         }
@@ -930,31 +791,22 @@ impl Uploads {
     }
 
     fn fail(&mut self, key: &TransferKey, reason: String) -> Vec<TransferWork> {
-        let Some(transfer) = self.transfers.get(key) else {
-            return Vec::new();
-        };
-        if matches!(
-            transfer.phase,
-            TransferPhase::Finished | TransferPhase::Aborted | TransferPhase::Failed(_)
-        ) {
+        let active = |transfer: &UploadTransfer| transfer.phase.is_active();
+        if !self.transfers.get(key).is_some_and(active) {
             return Vec::new();
         }
-        self.deactivate(key);
-        self.close_conn(key);
+        self.release(key);
         let transfer = self.transfers.get_mut(key).unwrap();
         transfer.phase = TransferPhase::Failed(reason);
         vec![TransferWork::Update(transfer.snapshot())]
     }
 
-    fn close_conn(&mut self, key: &TransferKey) {
-        if let Some(conn_id) = self.transfers.detach_conn(key) {
+    fn release(&mut self, key: &TransferKey) {
+        let detached = self.transfers.detach(key);
+        self.queue.release(key, detached.token);
+        if let Some(conn_id) = detached.conn_id {
             self.net.send(NetworkCommand::CloseConnection(conn_id));
         }
-    }
-
-    fn deactivate(&mut self, key: &TransferKey) {
-        let token = self.transfers.detach_token(key);
-        self.queue.release(key, token);
     }
 }
 
@@ -964,10 +816,12 @@ mod tests {
 
     use super::*;
     use crate::client::shares::{self, ShareCatalog};
-    use crate::network::spawn as spawn_network;
+    use crate::network::{NetworkEvent, spawn as spawn_network};
     use crate::types::SharedFolder;
+    use tokio::sync::mpsc;
 
     const TRACKS: [&str; 3] = ["Music\\a.mp3", "Music\\b.mp3", "Music\\c.mp3"];
+    const CONN: ConnId = 7;
 
     fn shares_of(tag: &str, names: &[&str]) -> SharesIndex {
         let dir = std::env::temp_dir().join(format!("newkitine-{tag}-test-{}", std::process::id()));
@@ -991,564 +845,471 @@ mod tests {
         SharesIndex::from_catalog(catalog)
     }
 
-    fn three_track_shares(tag: &str) -> SharesIndex {
-        shares_of(tag, &["a.mp3", "b.mp3", "c.mp3"])
+    struct Harness {
+        uploads: Uploads,
+        ids: TransferIds,
+        shares: SharesIndex,
+        users: Users,
+        _events: mpsc::Receiver<NetworkEvent>,
+    }
+
+    impl Harness {
+        fn new(tag: &str, slots: usize) -> Self {
+            let (net, _events) = spawn_network();
+            let mut uploads = Uploads::new(net, slots, 500, 0, "Banned".into());
+            uploads.suspended = false;
+            Self {
+                uploads,
+                ids: TransferIds::new(&[]),
+                shares: shares_of(tag, &["a.mp3", "b.mp3", "c.mp3"]),
+                users: Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new()),
+                _events,
+            }
+        }
+
+        fn transferring(tag: &str) -> (Self, u32, u64) {
+            let mut harness = Self::new(tag, 999);
+            harness.queue("peer", TRACKS[0]);
+            let token = harness.uploads.token;
+            harness
+                .uploads
+                .handle_file_transfer_init("peer", token, CONN, &harness.users);
+            let size = harness.transfer("peer", TRACKS[0]).size;
+            (harness, token, size)
+        }
+
+        fn request(&mut self, username: &str, path: &str) -> (Vec<TransferWork>, bool) {
+            self.uploads.handle_queue_upload(
+                &mut self.ids,
+                username,
+                None,
+                path,
+                Some(&self.shares),
+                &self.users,
+            )
+        }
+
+        fn queue(&mut self, username: &str, path: &str) {
+            assert!(self.request(username, path).1);
+        }
+
+        fn transfer(&self, username: &str, path: &str) -> &UploadTransfer {
+            let key = (username.to_owned(), path.to_owned());
+            self.uploads.transfers.get(&key).unwrap()
+        }
+
+        fn phase(&self, username: &str, path: &str) -> TransferPhase {
+            self.transfer(username, path).phase.clone()
+        }
+
+        fn conn(&self, username: &str, path: &str) -> Option<ConnId> {
+            let key = (username.to_owned(), path.to_owned());
+            self.uploads.transfers.conn_of(&key)
+        }
+
+        fn set_slots(&mut self, slots: usize) -> Vec<TransferWork> {
+            self.uploads.set_limits(slots, 500, 0, "Banned".into());
+            self.uploads.check_queue(&self.users)
+        }
+
+        fn abort(&mut self, username: &str, path: &str) -> Vec<TransferWork> {
+            let id = self.transfer(username, path).id;
+            self.uploads.abort(id, &self.users).1
+        }
+
+        fn close(&mut self, token: u32, conn_id: ConnId) -> Vec<TransferWork> {
+            self.uploads
+                .handle_file_connection_closed("peer", token, conn_id, &self.users)
+        }
+
+        fn drop_request(&mut self, username: &str, is_offline: bool) {
+            let request = PeerMessage::TransferRequest {
+                direction: TransferDirection::Upload,
+                token: 0,
+                file: TRACKS[0].to_owned(),
+                filesize: None,
+            };
+            let _ = self.uploads.handle_peer_connection_error(
+                username,
+                &[request],
+                is_offline,
+                &self.users,
+            );
+        }
+
+        fn retry_due(&mut self) -> Vec<TransferWork> {
+            self.uploads.retried_at -= TIMED_OUT_RETRY_INTERVAL;
+            self.sweep()
+        }
+
+        fn sweep(&mut self) -> Vec<TransferWork> {
+            self.uploads
+                .sweep_queue(&mut self.ids, Some(&self.shares), &self.users)
+        }
+    }
+
+    fn not_shared() -> TransferPhase {
+        TransferPhase::Failed(TransferRejectReason::FILE_NOT_SHARED.into())
     }
 
     #[tokio::test]
     async fn a_new_index_denies_uploads_it_no_longer_shares() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-
-        let shares = three_track_shares("revalidate");
+        let mut harness = Harness::new("revalidate", 0);
         for path in [TRACKS[0], TRACKS[2]] {
-            let (_, accepted) =
-                uploads.handle_queue_upload(&mut ids, "peer", path, Some(&shares), &users);
-            assert!(accepted);
+            harness.queue("peer", path);
         }
 
         let shrunk = shares_of("revalidate", &["a.mp3", "b.mp3"]);
-        let updates = uploads.revalidate(&shrunk, &users);
+        let updates = harness.uploads.revalidate(&shrunk, &harness.users);
         assert_eq!(updates.len(), 1);
-        let kept = ("peer".to_owned(), TRACKS[0].to_owned());
-        let dropped = ("peer".to_owned(), TRACKS[2].to_owned());
-        assert_eq!(
-            uploads.transfers.get(&kept).unwrap().phase,
-            TransferPhase::Queued
+        assert_eq!(harness.phase("peer", TRACKS[0]), TransferPhase::Queued);
+        assert_eq!(harness.phase("peer", TRACKS[2]), not_shared());
+        assert!(
+            harness
+                .uploads
+                .revalidate(&shrunk, &harness.users)
+                .is_empty()
         );
-        assert_eq!(
-            uploads.transfers.get(&dropped).unwrap().phase,
-            TransferPhase::Failed(TransferRejectReason::FILE_NOT_SHARED.into())
-        );
-        assert!(uploads.revalidate(&shrunk, &users).is_empty());
     }
 
     #[tokio::test]
     async fn held_users_are_skipped_until_the_hold_lifts() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
+        let mut harness = Harness::new("slots", 0);
+        harness.queue("leech", TRACKS[0]);
+        harness.queue("human", TRACKS[0]);
 
-        let shares = three_track_shares("slots");
+        harness
+            .users
+            .set_restriction("leech".into(), Restriction::Hold);
+        harness.set_slots(2);
+        assert!(harness.uploads.queue.is_active("human"));
+        assert!(!harness.uploads.queue.is_active("leech"));
 
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "leech", TRACKS[0], Some(&shares), &users);
-        assert!(accepted);
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "human", TRACKS[0], Some(&shares), &users);
-        assert!(accepted);
-
-        users.set_restriction("leech".into(), Restriction::Hold);
-        uploads.set_limits(2, 500, 0, "Banned".into());
-        uploads.check_queue(&users);
-        assert!(uploads.queue.is_active("human"));
-        assert!(!uploads.queue.is_active("leech"));
-
-        users.set_restriction("leech".into(), Restriction::None);
-        uploads.check_queue(&users);
-        assert!(uploads.queue.is_active("leech"));
+        harness
+            .users
+            .set_restriction("leech".into(), Restriction::None);
+        harness.uploads.check_queue(&harness.users);
+        assert!(harness.uploads.queue.is_active("leech"));
     }
 
     #[tokio::test]
     async fn denied_restriction_rejects_queue_requests() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 2, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-
-        let shares = three_track_shares("deny");
-
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        users.set_restriction(
+        let mut harness = Harness::new("deny", 2);
+        harness.users.set_restriction(
             "leech".into(),
             Restriction::Denied {
                 reason: "not welcome".into(),
             },
         );
-        let (updates, accepted) =
-            uploads.handle_queue_upload(&mut ids, "leech", TRACKS[0], Some(&shares), &users);
+        let (updates, accepted) = harness.request("leech", TRACKS[0]);
         assert!(!accepted);
         assert!(updates.is_empty());
     }
 
-    #[tokio::test]
-    async fn one_upload_per_peer_and_no_peer_waits_behind_another() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("nowait");
-        let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-
+    fn three_peers_queue_every_track(tag: &str, slots: usize) -> Harness {
+        let mut harness = Harness::new(tag, slots);
         for peer in ["one", "two", "three"] {
             for path in TRACKS {
-                let (_, accepted) =
-                    uploads.handle_queue_upload(&mut ids, peer, path, Some(&shares), &users);
-                assert!(accepted);
+                harness.queue(peer, path);
             }
         }
-        uploads.check_queue(&users);
-        uploads.check_queue(&users);
+        harness.uploads.check_queue(&harness.users);
+        harness
+    }
 
+    #[tokio::test]
+    async fn one_upload_per_peer_and_no_peer_waits_behind_another() {
+        let harness = three_peers_queue_every_track("nowait", 999);
         for peer in ["one", "two", "three"] {
-            assert!(uploads.queue.is_active(peer), "{peer} is transferring");
+            assert!(
+                harness.uploads.queue.is_active(peer),
+                "{peer} is transferring"
+            );
         }
-        assert_eq!(uploads.queue.active_user_count(), 3);
-        assert_eq!(uploads.queue.len(), 6);
+        assert_eq!(harness.uploads.queue.active_user_count(), 3);
+        assert_eq!(harness.uploads.queue.len(), 6);
     }
 
     #[tokio::test]
     async fn slot_ceiling_counts_peers_not_transfers() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 2, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("ceiling");
-        let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-
-        for peer in ["one", "two", "three"] {
-            for path in TRACKS {
-                uploads.handle_queue_upload(&mut ids, peer, path, Some(&shares), &users);
-            }
-        }
-        uploads.check_queue(&users);
-
-        assert_eq!(uploads.queue.active_user_count(), 2);
-        assert!(!uploads.is_new_upload_accepted());
-    }
-
-    fn transferring(tag: &str) -> (Uploads, Users, u32, u64, u64) {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares(tag);
-        let users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
-        assert!(accepted);
-        let token = uploads.token;
-        let conn_id: ConnId = 7;
-        uploads.handle_file_transfer_init("peer", token, conn_id, &users);
-        let size = uploads
-            .transfers
-            .get(&("peer".to_owned(), TRACKS[0].to_owned()))
-            .unwrap()
-            .size;
-        (uploads, users, token, conn_id, size)
-    }
-
-    fn delivered_of(work: &[TransferWork]) -> Option<u64> {
-        work.iter().find_map(|item| match item {
-            TransferWork::Finished {
-                delivered_bytes, ..
-            } => Some(*delivered_bytes),
-            _ => None,
-        })
+        let harness = three_peers_queue_every_track("ceiling", 2);
+        assert_eq!(harness.uploads.queue.active_user_count(), 2);
+        assert!(!harness.uploads.is_new_upload_accepted());
     }
 
     #[tokio::test]
     async fn a_capped_file_is_refused_while_other_files_still_queue() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("capped");
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
-        users.deny_file(
+        let mut harness = Harness::new("capped", 999);
+        harness.users.deny_file(
             "peer".into(),
             TRACKS[0].into(),
             Instant::now() + Duration::from_secs(60),
         );
 
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
-        assert!(!accepted);
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "peer", TRACKS[1], Some(&shares), &users);
-        assert!(accepted);
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "other", TRACKS[0], Some(&shares), &users);
-        assert!(accepted);
+        assert!(!harness.request("peer", TRACKS[0]).1);
+        harness.queue("peer", TRACKS[1]);
+        harness.queue("other", TRACKS[0]);
     }
 
     #[tokio::test]
-    async fn a_peer_resuming_at_the_end_of_the_file_is_not_a_delivery() {
-        let (mut uploads, users, token, conn_id, size) = transferring("resume-end");
-        uploads.handle_upload_progress("peer", token, size, 0);
-        let work = uploads.handle_file_connection_closed("peer", token, conn_id, &users);
-        assert_eq!(delivered_of(&work), Some(0));
-        let key = ("peer".to_owned(), TRACKS[0].to_owned());
-        assert_eq!(
-            uploads.transfers.get(&key).unwrap().phase,
-            TransferPhase::Finished
-        );
-    }
-
-    #[tokio::test]
-    async fn a_peer_resuming_mid_file_is_a_delivery() {
-        let (mut uploads, users, token, conn_id, size) = transferring("resume-mid");
-        uploads.handle_upload_progress("peer", token, size / 2, size - size / 2);
-        let work = uploads.handle_file_connection_closed("peer", token, conn_id, &users);
-        assert_eq!(delivered_of(&work), Some(size - size / 2));
-    }
-
-    #[tokio::test]
-    async fn an_offset_past_the_end_of_the_file_is_not_a_delivery() {
-        let (mut uploads, users, token, conn_id, size) = transferring("resume-past");
-        uploads.handle_upload_progress("peer", token, size + 1, 0);
-        let work = uploads.handle_file_connection_closed("peer", token, conn_id, &users);
-        assert_eq!(delivered_of(&work), Some(0));
-        assert_eq!(uploads.upload_speed, 0);
+    async fn only_bytes_sent_past_the_resume_offset_are_a_delivery() {
+        for tag in ["resume-end", "resume-mid", "resume-past"] {
+            let (mut harness, token, size) = Harness::transferring(tag);
+            let (offset, sent) = match tag {
+                "resume-end" => (size, 0),
+                "resume-mid" => (size / 2, size - size / 2),
+                _ => (size + 1, 0),
+            };
+            harness
+                .uploads
+                .handle_upload_progress("peer", token, offset, sent);
+            let delivered = harness
+                .close(token, CONN)
+                .iter()
+                .find_map(|item| match item {
+                    TransferWork::Finished {
+                        delivered_bytes, ..
+                    } => Some(*delivered_bytes),
+                    _ => None,
+                });
+            assert_eq!(delivered, Some(sent), "{tag}");
+            assert_eq!(harness.phase("peer", TRACKS[0]), TransferPhase::Finished);
+            assert_eq!(harness.uploads.upload_speed, 0);
+        }
     }
 
     #[tokio::test]
     async fn a_duplicate_file_connection_does_not_finish_the_primary_transfer() {
-        let (mut uploads, users, token, conn_id, size) = transferring("dup-conn");
-        uploads.handle_upload_progress("peer", token, 0, size);
-        let work = uploads.handle_file_connection_closed("peer", token, conn_id + 1, &users);
-        assert!(work.is_empty());
-        let key = ("peer".to_owned(), TRACKS[0].to_owned());
-        assert_eq!(uploads.transfers.conn_of(&key), Some(conn_id));
-    }
-
-    fn users() -> Users {
-        Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
-    }
-
-    fn phase_of(uploads: &Uploads, username: &str, path: &str) -> TransferPhase {
-        uploads
-            .transfers
-            .get(&(username.to_owned(), path.to_owned()))
-            .unwrap()
-            .phase
-            .clone()
+        let (mut harness, token, size) = Harness::transferring("dup-conn");
+        harness
+            .uploads
+            .handle_upload_progress("peer", token, 0, size);
+        assert!(harness.close(token, CONN + 1).is_empty());
+        assert_eq!(harness.conn("peer", TRACKS[0]), Some(CONN));
     }
 
     #[tokio::test]
     async fn banning_denies_queued_and_active_uploads() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 1, 500, 0, "Go away".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("ban");
-        let mut users = users();
+        let mut harness = Harness::new("ban", 1);
+        harness.uploads.banned_message = "Go away".into();
         for path in [TRACKS[0], TRACKS[1]] {
-            let (_, accepted) =
-                uploads.handle_queue_upload(&mut ids, "peer", path, Some(&shares), &users);
-            assert!(accepted);
+            harness.queue("peer", path);
         }
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "other", TRACKS[0], Some(&shares), &users);
-        assert!(accepted);
-        assert!(uploads.queue.is_active("peer"));
+        harness.queue("other", TRACKS[0]);
+        assert!(harness.uploads.queue.is_active("peer"));
 
-        users.banned.insert("peer".into());
-        let updates = uploads.ban("peer", &users);
+        harness.users.banned.insert("peer".into());
+        let updates = harness.uploads.ban("peer", &harness.users);
         assert!(updates.len() >= 2);
         for path in [TRACKS[0], TRACKS[1]] {
             assert_eq!(
-                phase_of(&uploads, "peer", path),
+                harness.phase("peer", path),
                 TransferPhase::Failed("Go away".into())
             );
         }
-        assert!(!uploads.queue.is_active("peer"));
-        assert!(uploads.queue.is_active("other"));
-        assert_eq!(uploads.queue.queued_for("peer"), 0);
+        assert!(!harness.uploads.queue.is_active("peer"));
+        assert!(harness.uploads.queue.is_active("other"));
+        assert_eq!(harness.uploads.queue.queued_for("peer"), 0);
     }
 
     #[tokio::test]
     async fn activation_advertises_the_current_file_size() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("restat");
-        let users = users();
+        let mut harness = Harness::new("restat", 0);
         for path in [TRACKS[0], TRACKS[1]] {
-            let (_, accepted) =
-                uploads.handle_queue_upload(&mut ids, "peer", path, Some(&shares), &users);
-            assert!(accepted);
+            harness.queue("peer", path);
         }
-        let grown = ("peer".to_owned(), TRACKS[0].to_owned());
-        let gone = ("peer".to_owned(), TRACKS[1].to_owned());
-        let grown_path = uploads
-            .transfers
-            .get(&grown)
-            .unwrap()
-            .real_path
-            .clone()
-            .unwrap();
-        let gone_path = uploads
-            .transfers
-            .get(&gone)
-            .unwrap()
-            .real_path
-            .clone()
-            .unwrap();
-        std::fs::write(&grown_path, b"a longer payload").unwrap();
-        std::fs::remove_file(&gone_path).unwrap();
+        let real_path = |path| harness.transfer("peer", path).real_path.clone().unwrap();
+        std::fs::write(real_path(TRACKS[0]), b"a longer payload").unwrap();
+        std::fs::remove_file(real_path(TRACKS[1])).unwrap();
 
-        uploads.set_limits(1, 500, 0, "Banned".into());
-        let updates = uploads.check_queue(&users);
-        assert!(!updates.is_empty());
-        assert_eq!(uploads.transfers.get(&grown).unwrap().size, 16);
+        assert!(!harness.set_slots(1).is_empty());
+        assert_eq!(harness.transfer("peer", TRACKS[0]).size, 16);
         assert_eq!(
-            phase_of(&uploads, "peer", TRACKS[0]),
+            harness.phase("peer", TRACKS[0]),
             TransferPhase::GettingStatus
         );
 
-        let id = uploads.transfers.get(&grown).unwrap().id;
-        let _ = uploads.abort(id, &users);
+        harness.abort("peer", TRACKS[0]);
         assert!(matches!(
-            phase_of(&uploads, "peer", TRACKS[1]),
-            TransferPhase::Failed(reason) if reason.starts_with("local file error")
+            harness.phase("peer", TRACKS[1]),
+            TransferPhase::Failed(reason) if reason.starts_with(LOCAL_FILE_ERROR)
         ));
     }
 
     #[tokio::test]
     async fn a_file_changed_after_the_request_is_not_streamed() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("changed");
-        let users = users();
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
-        assert!(accepted);
-        let key = ("peer".to_owned(), TRACKS[0].to_owned());
-        let path = uploads
-            .transfers
-            .get(&key)
-            .unwrap()
+        let mut harness = Harness::new("changed", 999);
+        harness.queue("peer", TRACKS[0]);
+        let path = harness
+            .transfer("peer", TRACKS[0])
             .real_path
             .clone()
             .unwrap();
         std::fs::write(&path, b"x").unwrap();
-        let token = uploads.token;
-        uploads.handle_file_transfer_init("peer", token, 7, &users);
+        let token = harness.uploads.token;
+        harness
+            .uploads
+            .handle_file_transfer_init("peer", token, CONN, &harness.users);
         assert!(matches!(
-            phase_of(&uploads, "peer", TRACKS[0]),
+            harness.phase("peer", TRACKS[0]),
             TransferPhase::Failed(reason) if reason.contains("changed size")
         ));
-        assert_eq!(uploads.transfers.conn_of(&key), None);
+        assert_eq!(harness.conn("peer", TRACKS[0]), None);
     }
 
     #[tokio::test]
     async fn a_transfer_response_after_the_file_connection_is_ignored() {
-        let (mut uploads, users, token, conn_id, _) = transferring("late-response");
-        let work = uploads.handle_transfer_response(
+        let (mut harness, token, _) = Harness::transferring("late-response");
+        let work = harness.uploads.handle_transfer_response(
             "peer",
             token,
             Some(TransferRejectReason::CANCELLED),
-            &users,
+            &harness.users,
         );
         assert!(work.is_empty());
         assert_eq!(
-            phase_of(&uploads, "peer", TRACKS[0]),
+            harness.phase("peer", TRACKS[0]),
             TransferPhase::Transferring
         );
-        assert!(uploads.queue.is_active("peer"));
-        let key = ("peer".to_owned(), TRACKS[0].to_owned());
-        assert_eq!(uploads.transfers.conn_of(&key), Some(conn_id));
+        assert!(harness.uploads.queue.is_active("peer"));
+        assert_eq!(harness.conn("peer", TRACKS[0]), Some(CONN));
     }
 
     #[tokio::test]
     async fn a_duplicate_request_at_the_queue_limit_is_silently_accepted() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 1, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("dup-request");
-        let users = users();
-        let (updates, accepted) =
-            uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
+        let mut harness = Harness::new("dup-request", 0);
+        harness.uploads.queue_file_limit = 1;
+        let (updates, accepted) = harness.request("peer", TRACKS[0]);
         assert!(accepted);
         assert_eq!(updates.len(), 1);
-        let (updates, accepted) =
-            uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
+        let (updates, accepted) = harness.request("peer", TRACKS[0]);
         assert!(accepted);
         assert!(updates.is_empty());
         assert!(matches!(
-            uploads.admit("peer", TRACKS[1], Some(&shares), &users),
+            harness
+                .uploads
+                .admit("peer", TRACKS[1], Some(&harness.shares), &harness.users),
             Err(reason) if reason == TransferRejectReason::TOO_MANY_FILES
         ));
     }
 
     #[tokio::test]
     async fn queueing_more_files_keeps_a_users_turn() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("fairness");
-        let users = users();
-        let _ = uploads.handle_queue_upload(&mut ids, "first", TRACKS[0], Some(&shares), &users);
-        let _ = uploads.handle_queue_upload(&mut ids, "second", TRACKS[0], Some(&shares), &users);
-        let _ = uploads.handle_queue_upload(&mut ids, "first", TRACKS[1], Some(&shares), &users);
+        let mut harness = Harness::new("fairness", 0);
+        harness.queue("first", TRACKS[0]);
+        harness.queue("second", TRACKS[0]);
+        harness.queue("first", TRACKS[1]);
         assert_eq!(
-            uploads.queue.select_next(&users).map(|key| key.0),
+            harness
+                .uploads
+                .queue
+                .select_next(&harness.users)
+                .map(|key| key.0),
             Some("first".to_owned())
         );
 
-        uploads.set_limits(1, 500, 0, "Banned".into());
-        let _ = uploads.check_queue(&users);
-        assert!(uploads.queue.is_active("first"));
-        let id = uploads
-            .transfers
-            .get(&("first".to_owned(), TRACKS[0].to_owned()))
-            .unwrap()
-            .id;
-        let _ = uploads.abort(id, &users);
-        assert!(uploads.queue.is_active("second"));
+        harness.set_slots(1);
+        assert!(harness.uploads.queue.is_active("first"));
+        harness.abort("first", TRACKS[0]);
+        assert!(harness.uploads.queue.is_active("second"));
     }
 
     #[tokio::test]
     async fn queue_place_follows_round_robin_order() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("place");
-        let mut users = users();
+        let mut harness = Harness::new("place", 0);
         for path in TRACKS {
-            let _ = uploads.handle_queue_upload(&mut ids, "many", path, Some(&shares), &users);
+            harness.queue("many", path);
         }
-        let _ = uploads.handle_queue_upload(&mut ids, "late", TRACKS[0], Some(&shares), &users);
-        assert_eq!(uploads.queue.place_of("late", TRACKS[0], &users), Some(3));
-        assert_eq!(uploads.queue.place_of("many", TRACKS[2], &users), Some(5));
-        assert_eq!(uploads.queue.place_of("late", TRACKS[1], &users), None);
+        harness.queue("late", TRACKS[0]);
+        let place = |harness: &Harness, username, path| {
+            harness
+                .uploads
+                .queue
+                .place_of(username, path, &harness.users)
+        };
+        assert_eq!(place(&harness, "late", TRACKS[0]), Some(3));
+        assert_eq!(place(&harness, "many", TRACKS[2]), Some(5));
+        assert_eq!(place(&harness, "late", TRACKS[1]), None);
 
-        users.handle_privileged_users(vec!["late".into()]);
-        assert_eq!(uploads.queue.place_of("late", TRACKS[0], &users), Some(2));
-        assert_eq!(uploads.queue.place_of("many", TRACKS[0], &users), Some(4));
+        harness.users.handle_privileged_users(vec!["late".into()]);
+        assert_eq!(place(&harness, "late", TRACKS[0]), Some(2));
+        assert_eq!(place(&harness, "many", TRACKS[0]), Some(4));
     }
 
     #[tokio::test]
     async fn timed_out_uploads_are_requeued_periodically() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("retry");
-        let users = users();
-        let _ = uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
-        let _ = uploads.handle_queue_upload(&mut ids, "gone", TRACKS[0], Some(&shares), &users);
-        let request = |file: &str| PeerMessage::TransferRequest {
-            direction: TransferDirection::Upload,
-            token: 0,
-            file: file.to_owned(),
-            filesize: None,
-        };
-        let _ = uploads.handle_peer_connection_error("peer", &[request(TRACKS[0])], false, &users);
-        let _ = uploads.handle_peer_connection_error("gone", &[request(TRACKS[0])], true, &users);
+        let mut harness = Harness::new("retry", 999);
+        harness.queue("peer", TRACKS[0]);
+        harness.queue("gone", TRACKS[0]);
+        harness.drop_request("peer", false);
+        harness.drop_request("gone", true);
         assert_eq!(
-            phase_of(&uploads, "peer", TRACKS[0]),
+            harness.phase("peer", TRACKS[0]),
             TransferPhase::Failed(CONNECTION_TIMEOUT.into())
         );
 
-        assert!(
-            uploads
-                .sweep_queue(&mut ids, Some(&shares), &users)
-                .is_empty()
-        );
-        uploads.retried_at -= TIMED_OUT_RETRY_INTERVAL;
-        let updates = uploads.sweep_queue(&mut ids, Some(&shares), &users);
-        assert!(!updates.is_empty());
+        assert!(harness.sweep().is_empty());
+        assert!(!harness.retry_due().is_empty());
         assert_eq!(
-            phase_of(&uploads, "peer", TRACKS[0]),
+            harness.phase("peer", TRACKS[0]),
             TransferPhase::GettingStatus
         );
         assert_eq!(
-            phase_of(&uploads, "gone", TRACKS[0]),
-            TransferPhase::Failed("user is offline".into())
+            harness.phase("gone", TRACKS[0]),
+            TransferPhase::Failed(USER_OFFLINE.into())
         );
 
-        let _ = uploads.handle_peer_connection_error("peer", &[request(TRACKS[0])], false, &users);
-        let id = uploads
-            .transfers
-            .get(&("peer".to_owned(), TRACKS[0].to_owned()))
-            .unwrap()
-            .id;
-        let (_, updates) = uploads.abort(id, &users);
-        assert_eq!(updates.len(), 1);
-        uploads.retried_at -= TIMED_OUT_RETRY_INTERVAL;
-        let _ = uploads.sweep_queue(&mut ids, Some(&shares), &users);
-        assert_eq!(
-            phase_of(&uploads, "peer", TRACKS[0]),
-            TransferPhase::Aborted
-        );
+        harness.drop_request("peer", false);
+        assert_eq!(harness.abort("peer", TRACKS[0]).len(), 1);
+        harness.retry_due();
+        assert_eq!(harness.phase("peer", TRACKS[0]), TransferPhase::Aborted);
     }
 
     #[tokio::test]
     async fn only_local_timeouts_are_retried_and_a_ban_retires_them() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 999, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let shares = three_track_shares("retry-ban");
-        let mut users = users();
-        let _ = uploads.handle_queue_upload(&mut ids, "peer", TRACKS[0], Some(&shares), &users);
-        let _ = uploads.handle_queue_upload(&mut ids, "liar", TRACKS[0], Some(&shares), &users);
-        let token = uploads.token;
-        let _ = uploads.handle_transfer_response("liar", token, Some(CONNECTION_TIMEOUT), &users);
-        assert_eq!(
-            phase_of(&uploads, "liar", TRACKS[0]),
-            TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
+        let mut harness = Harness::new("retry-ban", 999);
+        harness.queue("peer", TRACKS[0]);
+        harness.queue("liar", TRACKS[0]);
+        let token = harness.uploads.token;
+        let _ = harness.uploads.handle_transfer_response(
+            "liar",
+            token,
+            Some(CONNECTION_TIMEOUT),
+            &harness.users,
         );
-        let request = PeerMessage::TransferRequest {
-            direction: TransferDirection::Upload,
-            token: 0,
-            file: TRACKS[0].to_owned(),
-            filesize: None,
-        };
-        let _ = uploads.handle_peer_connection_error("peer", &[request], false, &users);
+        let cancelled = TransferPhase::Failed(TransferRejectReason::CANCELLED.into());
+        assert_eq!(harness.phase("liar", TRACKS[0]), cancelled);
+        harness.drop_request("peer", false);
 
-        users.banned.insert("peer".into());
-        let updates = uploads.ban("peer", &users);
+        harness.users.banned.insert("peer".into());
+        let updates = harness.uploads.ban("peer", &harness.users);
         assert_eq!(updates.len(), 1);
-        users.banned.remove("peer");
-        uploads.retried_at -= TIMED_OUT_RETRY_INTERVAL;
-        let _ = uploads.sweep_queue(&mut ids, Some(&shares), &users);
+        harness.users.banned.remove("peer");
+        harness.retry_due();
         assert_eq!(
-            phase_of(&uploads, "peer", TRACKS[0]),
+            harness.phase("peer", TRACKS[0]),
             TransferPhase::Failed("Banned".into())
         );
-        assert_eq!(
-            phase_of(&uploads, "liar", TRACKS[0]),
-            TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
-        );
+        assert_eq!(harness.phase("liar", TRACKS[0]), cancelled);
     }
 
     #[tokio::test]
     async fn a_new_index_denies_uploads_whose_path_now_resolves_elsewhere() {
-        let (net, _events) = spawn_network();
-        let mut uploads = Uploads::new(net, 0, 500, 0, "Banned".into());
-        uploads.suspended = false;
-        let mut ids = TransferIds::new(&[]);
-        let users = users();
+        let mut harness = Harness::new("case", 0);
         let path = "Music\\foo.mp3";
-        let shares = shares_of("case", &["foo.mp3", "FOO.mp3"]);
-        let (_, accepted) =
-            uploads.handle_queue_upload(&mut ids, "peer", path, Some(&shares), &users);
-        assert!(accepted);
-        assert!(uploads.revalidate(&shares, &users).is_empty());
+        harness.shares = shares_of("case", &["foo.mp3", "FOO.mp3"]);
+        harness.queue("peer", path);
+        assert!(
+            harness
+                .uploads
+                .revalidate(&harness.shares, &harness.users)
+                .is_empty()
+        );
 
         let filtered = shares_of("case", &["FOO.mp3"]);
         assert!(filtered.resolve(path, false).is_some());
-        let updates = uploads.revalidate(&filtered, &users);
+        let updates = harness.uploads.revalidate(&filtered, &harness.users);
         assert_eq!(updates.len(), 1);
-        assert_eq!(
-            phase_of(&uploads, "peer", path),
-            TransferPhase::Failed(TransferRejectReason::FILE_NOT_SHARED.into())
-        );
+        assert_eq!(harness.phase("peer", path), not_shared());
     }
 }

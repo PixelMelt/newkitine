@@ -4,17 +4,16 @@
     searches, wishlist, rooms, downloadIndex, transferKey, queueDownloads, startSearch, scopeOf,
     report,
   } from '../lib/stores.js';
-  import { route, go, remember, forget, openBrowse, noAutofill } from '../lib/ui.js';
+  import { route, go, remember, openBrowse, noAutofill } from '../lib/ui.js';
   import { post, del } from '../lib/api.js';
   import { act, copy } from '../lib/act.js';
-  import {
-    formatSize, formatSpeed, formatQuality, formatDuration, formatCount, effectiveBitrate, plural,
-  } from '../lib/format.js';
+  import { formatSize, formatSpeed, formatCount, plural } from '../lib/format.js';
   import { emptyFilters, compileFilters, activeFilterCount } from '../lib/filters.js';
   import { shortState } from '../lib/transferStatus.js';
   import { onEnter } from '../lib/keys.js';
-  import { openMenu, openMenuAt } from '../lib/menu.js';
+  import { openMenu, openMenuAt, copyPaths } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { numeric, quality, length } from '../lib/columns.js';
   import X from '@lucide/svelte/icons/x';
   import Subtabs from '../lib/Subtabs.svelte';
   import DataTable from '../lib/DataTable.svelte';
@@ -37,10 +36,7 @@
 
   const makeColumns = (index) => [
     { key: 'username', label: 'User', width: 140, text: (r) => r.response.username },
-    {
-      key: 'speed', label: 'Speed', width: 88, align: 'end', desc: true,
-      text: (r) => formatSpeed(r.response.upload_speed), sortValue: (r) => r.response.upload_speed,
-    },
+    numeric('speed', 'Speed', 88, (r) => r.response.upload_speed, formatSpeed),
     {
       key: 'queue', label: 'Queue', width: 64, align: 'end',
       text: (r) => (r.response.free_upload_slots ? 'Free' : formatCount(r.response.queue_size)),
@@ -49,20 +45,9 @@
     },
     { key: 'folder', label: 'Folder', grow: 2, min: 160, tail: 20, text: (r) => r.folder },
     { key: 'filename', label: 'Filename', grow: 3, min: 200, tail: 12, text: (r) => r.filename },
-    {
-      key: 'size', label: 'Size', width: 84, align: 'end', desc: true,
-      text: (r) => formatSize(r.file.size), sortValue: (r) => r.file.size,
-    },
-    {
-      key: 'quality', label: 'Quality', width: 124, desc: true,
-      text: (r) => formatQuality(r.file.attributes),
-      sortValue: (r) => effectiveBitrate(r.file.attributes),
-    },
-    {
-      key: 'length', label: 'Length', width: 64, align: 'end', desc: true,
-      text: (r) => (r.file.attributes.length ? formatDuration(r.file.attributes.length) : ''),
-      sortValue: (r) => r.file.attributes.length ?? 0,
-    },
+    numeric('size', 'Size', 84, (r) => r.file.size, formatSize),
+    quality((r) => r.file.attributes),
+    length((r) => r.file.attributes),
     {
       key: 'state', label: 'Download', width: 80,
       text: (r) => (stateOf(index, r) ? shortState(stateOf(index, r)) : ''),
@@ -122,11 +107,7 @@
   function closeSearch(id) {
     const search = $searches.find((s) => String(s.token) === id);
     const scope = scopeOf(search);
-    const next = strip.neighbour(id);
-    if (wanted === id) {
-      if (next) go('search', next);
-      else forget('search', id);
-    }
+    strip.leave(id, wanted);
     act(() => del(`/searches/${id}`), {
       failed: `Search "${search.query}" not closed`,
       done: `Closed search "${search.query}" (${plural(search.rows.length, 'result')})`,
@@ -170,10 +151,7 @@
         label: 'Browse Folder', disabled: many,
         action: () => openBrowse(first.response.username, first.folder),
       },
-      {
-        label: many ? `Copy ${picked.length} File Paths` : 'Copy File Path',
-        action: () => copy(picked.map((r) => r.file.name).join('\n'), many ? 'file paths' : 'file path'),
-      },
+      copyPaths(picked.map((r) => r.file.name)),
       { sep: true },
       { label: 'User Actions', disabled: !sameUser, submenu: userMenu(first.response.username) },
     ]);
@@ -216,7 +194,7 @@
     table.focusFirst();
   }
 
-  export function focusQuery() {
+  function focusQuery() {
     queryInput.focus();
     queryInput.select();
   }

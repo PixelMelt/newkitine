@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::client::{ClientEvent, Observation};
-use crate::types::USERNAME_LIMIT;
+use crate::types::{SimilarUser, USERNAME_LIMIT};
 
 use super::contract::AppEvent;
 use super::state::{App, now};
@@ -125,10 +125,10 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::RoomJoined { room, users } => chat::room_joined(app, room, users).await,
         ClientEvent::RoomLeft { room } => chat::room_left(app, room).await,
         ClientEvent::RoomUserJoined { room, username } => {
-            chat::room_user_joined(app, room, username);
+            chat::room_user(app, room, username, true);
         }
         ClientEvent::RoomUserLeft { room, username } => {
-            chat::room_user_left(app, room, username);
+            chat::room_user(app, room, username, false);
         }
         ClientEvent::Recommendations {
             recommendations,
@@ -137,17 +137,28 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::GlobalRecommendations {
             recommendations,
             unrecommendations,
-        } => interests::global_recommendations(app, recommendations, unrecommendations),
+        } => interests::set_recommendations(app, recommendations, unrecommendations, None, true),
         ClientEvent::ItemRecommendations {
             thing,
             recommendations,
             unrecommendations,
-        } => {
-            interests::item_recommendations_received(app, thing, recommendations, unrecommendations)
-        }
-        ClientEvent::SimilarUsers(users) => interests::similar_users(app, users),
+        } => interests::set_recommendations(
+            app,
+            recommendations,
+            unrecommendations,
+            Some(thing),
+            false,
+        ),
+        ClientEvent::SimilarUsers(users) => interests::similar_users(app, users, None),
         ClientEvent::ItemSimilarUsers { thing, usernames } => {
-            interests::item_similar_users(app, thing, usernames);
+            let users = usernames
+                .into_iter()
+                .map(|username| SimilarUser {
+                    username,
+                    rating: 0,
+                })
+                .collect();
+            interests::similar_users(app, users, Some(thing));
         }
         ClientEvent::PeerAddress { ip, .. } if ip.is_unspecified() => {}
         ClientEvent::PeerAddress { username, ip } => {

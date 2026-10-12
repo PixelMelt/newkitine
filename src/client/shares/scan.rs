@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -14,27 +14,29 @@ use super::{ShareCatalog, ShareCatalogFile};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
-    #[error("cannot resolve shared folder {path}: {error}")]
-    Root {
+    #[error("cannot {action} {path}: {error}")]
+    Io {
+        action: &'static str,
         path: PathBuf,
         error: std::io::Error,
     },
     #[error("duplicate virtual folder name {name}")]
     DuplicateVirtualName { name: String },
-    #[error("cannot scan folder {path}: {error}")]
-    Folder {
-        path: PathBuf,
-        error: std::io::Error,
-    },
-    #[error("cannot stat {path}: {error}")]
-    Metadata {
-        path: PathBuf,
-        error: std::io::Error,
-    },
     #[error("scan superseded by a newer scan")]
     Superseded,
     #[error("scan task panicked: {reason}")]
     Panicked { reason: String },
+}
+
+fn io_error<P: Into<PathBuf>>(
+    action: &'static str,
+    path: impl FnOnce() -> P,
+) -> impl FnOnce(std::io::Error) -> ScanError {
+    move |error| ScanError::Io {
+        action,
+        path: path().into(),
+        error,
+    }
 }
 
 const BACKSLASH_SENTINEL: &str = "@@BACKSLASH@@";
@@ -43,28 +45,14 @@ const PROGRESS_INTERVAL: u64 = 1000;
 
 type AttributeCache<'a> = HashMap<&'a Path, HashMap<&'a OsStr, &'a ShareCatalogFile>>;
 
-struct RawFile {
-    name: String,
-    real_name: OsString,
-    size: u64,
-    mtime: u64,
-    attributes: Option<FileAttributes>,
-}
-
-struct RawFolder {
-    virtual_path: String,
-    real_path: PathBuf,
-    files: Vec<RawFile>,
-}
-
-struct Miss {
-    file_index: u32,
-    path: PathBuf,
-}
-
-struct Merger {
+struct Walk<'a> {
+    share_filters: HashSet<&'a str>,
+    cache: AttributeCache<'a>,
+    cancelled: &'a AtomicBool,
+    progress: Progress<'a>,
+    virtual_paths: HashSet<String>,
     catalog: ShareCatalog,
-    misses: Vec<Miss>,
+    misses: Vec<(u32, PathBuf)>,
 }
 
 struct Progress<'a> {
@@ -127,8 +115,7 @@ pub fn walk(
             });
         }
     }
-    let share_filters: HashSet<&str> = share_filters.iter().map(String::as_str).collect();
-    let cache: AttributeCache = cached
+    let cache = cached
         .folders
         .iter()
         .map(|folder| {
@@ -140,31 +127,27 @@ pub fn walk(
             (folder.real_path.as_path(), files)
         })
         .collect();
-
-    let progress = Progress {
-        count: AtomicU64::new(0),
-        notify: progress,
-    };
-    let mut merger = Merger {
+    let mut walk = Walk {
+        share_filters: share_filters.iter().map(String::as_str).collect(),
+        cache,
+        cancelled,
+        progress: Progress {
+            count: AtomicU64::new(0),
+            notify: progress,
+        },
+        virtual_paths: HashSet::new(),
         catalog: ShareCatalog::empty(),
         misses: Vec::new(),
     };
-    let mut virtual_paths = HashSet::new();
     for shared in shared_folders {
-        walk_root(
-            shared,
-            &share_filters,
-            &cache,
-            &mut virtual_paths,
-            cancelled,
-            &progress,
-            |folder| merger.add_folder(shared.buddy_only, folder),
-        )?;
+        walk.root(shared)?;
     }
-    let Merger {
+    let Walk {
         mut catalog,
         misses,
-    } = merger;
+        progress,
+        ..
+    } = walk;
 
     let attribute_reads = misses.len();
     read_missing_attributes(&mut catalog, misses, cancelled, &progress);
@@ -181,166 +164,118 @@ pub fn walk(
     Ok(catalog)
 }
 
-fn walk_root(
-    shared: &SharedFolder,
-    share_filters: &HashSet<&str>,
-    cache: &AttributeCache,
-    virtual_paths: &mut HashSet<String>,
-    cancelled: &AtomicBool,
-    progress: &Progress,
-    mut add_folder: impl FnMut(RawFolder),
-) -> Result<(), ScanError> {
-    let root = fs::canonicalize(&shared.path).map_err(|error| ScanError::Root {
-        path: shared.path.clone(),
-        error,
-    })?;
-    let mut visited = HashSet::new();
-    let mut stack = vec![(root.clone(), root, shared.virtual_name.clone())];
-    while let Some((real_dir, canonical_dir, virtual_dir)) = stack.pop() {
-        if cancelled.load(Ordering::Relaxed) {
-            return Err(ScanError::Superseded);
-        }
-        if visited.contains(&canonical_dir) {
-            warn!(path = %real_dir.display(), target = %canonical_dir.display(), "skipping folder already shared under this share");
-            continue;
-        }
-        if !virtual_paths.insert(virtual_dir.clone()) {
-            warn!(path = %real_dir.display(), virtual_path = %virtual_dir, "skipping folder with a duplicate virtual path");
-            continue;
-        }
-        visited.insert(canonical_dir.clone());
-        let entries = fs::read_dir(&real_dir).map_err(|error| ScanError::Folder {
-            path: real_dir.clone(),
-            error,
-        })?;
-        let cached_files = cache.get(real_dir.as_path());
-        let mut names = HashSet::new();
-        let mut files = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| ScanError::Folder {
-                path: real_dir.clone(),
-                error,
-            })?;
-            let real_name = entry.file_name();
-            let name = real_name.to_string_lossy().into_owned();
-            if name.starts_with('.') || share_filters.contains(name.as_str()) {
+impl Walk<'_> {
+    fn root(&mut self, shared: &SharedFolder) -> Result<(), ScanError> {
+        let root = fs::canonicalize(&shared.path)
+            .map_err(io_error("resolve shared folder", || &shared.path))?;
+        let mut visited = HashSet::new();
+        let mut stack = vec![(root.clone(), root, shared.virtual_name.clone())];
+        while let Some((real_dir, canonical_dir, virtual_dir)) = stack.pop() {
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(ScanError::Superseded);
+            }
+            if visited.contains(&canonical_dir) {
+                warn!(path = %real_dir.display(), target = %canonical_dir.display(), "skipping folder already shared under this share");
                 continue;
             }
-            let entry_type = entry.file_type().map_err(|error| ScanError::Metadata {
-                path: entry.path(),
-                error,
-            })?;
-            let target = if entry_type.is_symlink() {
-                match fs::metadata(entry.path()) {
-                    Ok(metadata) => Some(metadata),
-                    Err(error) => {
-                        warn!(path = %entry.path().display(), %error, "skipping unresolvable symlink in shared folder");
-                        continue;
-                    }
+            if !self.virtual_paths.insert(virtual_dir.clone()) {
+                warn!(path = %real_dir.display(), virtual_path = %virtual_dir, "skipping folder with a duplicate virtual path");
+                continue;
+            }
+            visited.insert(canonical_dir.clone());
+            let entries = fs::read_dir(&real_dir).map_err(io_error("scan folder", || &real_dir))?;
+            let cached_files = self.cache.get(real_dir.as_path());
+            let mut names = HashSet::new();
+            let mut files = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(io_error("scan folder", || &real_dir))?;
+                let real_name = entry.file_name();
+                let name = real_name.to_string_lossy().into_owned();
+                if name.starts_with('.') || self.share_filters.contains(name.as_str()) {
+                    continue;
                 }
-            } else {
-                None
-            };
-            let file_type = target.as_ref().map_or(entry_type, fs::Metadata::file_type);
-            let name = name.replace('\\', BACKSLASH_SENTINEL);
-            if file_type.is_dir() {
-                let canonical = if target.is_some() {
-                    fs::canonicalize(entry.path()).map_err(|error| ScanError::Metadata {
-                        path: entry.path(),
-                        error,
-                    })?
+                let entry_type = entry
+                    .file_type()
+                    .map_err(io_error("stat", || entry.path()))?;
+                let target = if entry_type.is_symlink() {
+                    match fs::metadata(entry.path()) {
+                        Ok(metadata) => Some(metadata),
+                        Err(error) => {
+                            warn!(path = %entry.path().display(), %error, "skipping unresolvable symlink in shared folder");
+                            continue;
+                        }
+                    }
                 } else {
-                    canonical_dir.join(&real_name)
+                    None
                 };
-                stack.push((entry.path(), canonical, format!("{virtual_dir}\\{name}")));
-                continue;
+                let file_type = target.as_ref().map_or(entry_type, fs::Metadata::file_type);
+                let name = name.replace('\\', BACKSLASH_SENTINEL);
+                if file_type.is_dir() {
+                    let canonical = if target.is_some() {
+                        fs::canonicalize(entry.path()).map_err(io_error("stat", || entry.path()))?
+                    } else {
+                        canonical_dir.join(&real_name)
+                    };
+                    stack.push((entry.path(), canonical, format!("{virtual_dir}\\{name}")));
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue;
+                }
+                if !names.insert(name.clone()) {
+                    warn!(path = %entry.path().display(), folder = %virtual_dir, name, "skipping file with a duplicate virtual path");
+                    continue;
+                }
+                let metadata = match target {
+                    Some(metadata) => metadata,
+                    None => entry
+                        .metadata()
+                        .map_err(io_error("stat", || entry.path()))?,
+                };
+                let size = metadata.len();
+                let mtime = unix_mtime(&metadata);
+                let attributes = if size <= 128 || !has_audio_extension(&name) {
+                    Some(FileAttributes::default())
+                } else {
+                    cached_files
+                        .and_then(|files| files.get(real_name.as_os_str()))
+                        .filter(|cached| {
+                            cached.size == size
+                                && cached.mtime == mtime
+                                && cached.attributes != FileAttributes::default()
+                                && !is_missing_vbr(&cached.attributes)
+                        })
+                        .map(|cached| cached.attributes.clone())
+                };
+                let known = attributes.is_some();
+                if known {
+                    self.progress.add();
+                }
+                let attributes = attributes.unwrap_or_default();
+                files.push((
+                    ShareCatalogFile::new(name, real_name, size, mtime, attributes),
+                    known,
+                ));
             }
-            if !file_type.is_file() {
-                continue;
+            files.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+            let first_index = self.catalog.files.len();
+            for (offset, (file, known)) in files.iter().enumerate() {
+                if !known {
+                    let path = real_dir.join(&file.real_name);
+                    self.misses.push(((first_index + offset) as u32, path));
+                }
             }
-            if !names.insert(name.clone()) {
-                warn!(path = %entry.path().display(), folder = %virtual_dir, name, "skipping file with a duplicate virtual path");
-                continue;
-            }
-            let metadata = match target {
-                Some(metadata) => metadata,
-                None => entry.metadata().map_err(|error| ScanError::Metadata {
-                    path: entry.path(),
-                    error,
-                })?,
-            };
-            let size = metadata.len();
-            let mtime = unix_mtime(&metadata);
-            let attributes = if size <= 128 || !has_audio_extension(&name) {
-                Some(FileAttributes::default())
-            } else {
-                cached_files
-                    .and_then(|files| files.get(real_name.as_os_str()))
-                    .filter(|cached| {
-                        cached.size == size
-                            && cached.mtime == mtime
-                            && cached.attributes != FileAttributes::default()
-                            && !is_missing_vbr(&cached.attributes)
-                    })
-                    .map(|cached| cached.attributes.clone())
-            };
-            if attributes.is_some() {
-                progress.add();
-            }
-            files.push(RawFile {
-                name,
-                real_name,
-                size,
-                mtime,
-                attributes,
-            });
+            let files = files.into_iter().map(|(file, _)| file);
+            self.catalog
+                .push_folder(virtual_dir, real_dir, shared.buddy_only, files);
         }
-        add_folder(RawFolder {
-            virtual_path: virtual_dir,
-            real_path: real_dir,
-            files,
-        });
-    }
-    Ok(())
-}
-
-impl Merger {
-    fn add_folder(&mut self, buddy_only: bool, folder: RawFolder) {
-        let RawFolder {
-            virtual_path,
-            real_path,
-            mut files,
-        } = folder;
-        files.sort_by(|a, b| a.name.cmp(&b.name));
-        let first_index = self.catalog.files.len() as u32;
-        for (offset, file) in files.iter().enumerate() {
-            if file.attributes.is_none() {
-                self.misses.push(Miss {
-                    file_index: first_index + offset as u32,
-                    path: real_path.join(&file.real_name),
-                });
-            }
-        }
-        self.catalog.push_folder(
-            virtual_path,
-            real_path,
-            buddy_only,
-            files.into_iter().map(|file| {
-                ShareCatalogFile::new(
-                    file.name,
-                    file.real_name,
-                    file.size,
-                    file.mtime,
-                    file.attributes.unwrap_or_default(),
-                )
-            }),
-        );
+        Ok(())
     }
 }
 
 fn read_missing_attributes(
     catalog: &mut ShareCatalog,
-    misses: Vec<Miss>,
+    misses: Vec<(u32, PathBuf)>,
     cancelled: &AtomicBool,
     progress: &Progress,
 ) {
@@ -361,18 +296,18 @@ fn read_missing_attributes(
             scope.spawn(move || {
                 while !cancelled.load(Ordering::Relaxed) {
                     let position = cursor.fetch_add(1, Ordering::Relaxed);
-                    let Some(miss) = misses.get(position) else {
+                    let Some((file_index, path)) = misses.get(position) else {
                         break;
                     };
-                    let attributes = read_attributes(&miss.path);
+                    let attributes = read_attributes(path);
                     progress.add();
-                    results.send((position, attributes)).unwrap();
+                    results.send((*file_index, attributes)).unwrap();
                 }
             });
         }
         drop(results);
-        for (position, attributes) in received {
-            catalog.files[misses[position].file_index as usize].attributes = attributes;
+        for (file_index, attributes) in received {
+            catalog.files[file_index as usize].attributes = attributes;
         }
     });
 }
@@ -408,6 +343,18 @@ mod tests {
         Ok(SharesIndex::from_catalog(catalog))
     }
 
+    fn music_share(path: PathBuf) -> Vec<SharedFolder> {
+        vec![SharedFolder {
+            virtual_name: "Music".into(),
+            path,
+            buddy_only: false,
+        }]
+    }
+
+    fn scan_music(path: PathBuf, cache_path: &Path) -> SharesIndex {
+        scan(&music_share(path), &[], cache_path, &AtomicBool::new(false)).unwrap()
+    }
+
     fn search(
         index: &SharesIndex,
         term: &str,
@@ -423,8 +370,11 @@ mod tests {
         )
     }
 
+    fn names(results: Vec<FileInfo>) -> Vec<String> {
+        results.into_iter().map(|file| file.name).collect()
+    }
+
     fn temp_base() -> PathBuf {
-        use std::sync::atomic::AtomicU64;
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let base = std::env::temp_dir().join(format!(
             "newkitine-shares-{}-{}",
@@ -475,15 +425,33 @@ mod tests {
             .clone()
     }
 
-    fn cache_with(cache_path: &Path, real_dir: &Path, file: ShareCatalogFile) {
+    fn cached_song(name: &str, mtime_offset: u64, vbr: Option<u32>) -> (PathBuf, PathBuf) {
+        let base = temp_base();
+        let dir = base.join("music");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(name), b"g".repeat(300)).unwrap();
+        let mtime = unix_mtime(&fs::metadata(dir.join(name)).unwrap()) + mtime_offset;
+        let attributes = FileAttributes {
+            bitrate: Some(320),
+            vbr,
+            ..Default::default()
+        };
         let mut catalog = ShareCatalog::empty();
         catalog.push_folder(
             "Music".into(),
-            fs::canonicalize(real_dir).unwrap(),
+            fs::canonicalize(&dir).unwrap(),
             false,
-            [file],
+            [ShareCatalogFile::new(
+                name.into(),
+                name.into(),
+                300,
+                mtime,
+                attributes,
+            )],
         );
-        cache::save(cache_path, &catalog);
+        let cache_path = cache_path(&base);
+        cache::save(&cache_path, &catalog);
+        (dir, cache_path)
     }
 
     fn test_shares(base: &Path) -> Vec<SharedFolder> {
@@ -563,17 +531,7 @@ mod tests {
         fs::write(lower.join("Crush.mp3"), b"a".repeat(200)).unwrap();
         fs::write(upper.join("Crush.mp3"), b"b".repeat(300)).unwrap();
 
-        let index = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: base.join("music"),
-                buddy_only: false,
-            }],
-            &[],
-            &cache_path(&base),
-            &AtomicBool::new(false),
-        )
-        .expect("case collision must not fail the scan");
+        let index = scan_music(base.join("music"), &cache_path(&base));
 
         let (folders, files) = index.counts();
         assert_eq!(folders, 3);
@@ -651,17 +609,7 @@ mod tests {
         write_wav(&dir.join("tone.wav"));
         let cache_path = cache_path(&base);
 
-        let index = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir.clone(),
-                buddy_only: false,
-            }],
-            &[],
-            &cache_path,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let index = scan_music(dir.clone(), &cache_path);
 
         let (_, _, attributes) = index.resolve("Music\\tone.wav", false).unwrap();
         assert_eq!(attributes.sample_rate, Some(44100));
@@ -679,40 +627,9 @@ mod tests {
 
     #[test]
     fn cache_hit_skips_reading_attributes() {
-        let base = temp_base();
-        let dir = base.join("music");
-        fs::create_dir_all(&dir).unwrap();
-        let song = dir.join("song.flac");
-        fs::write(&song, b"g".repeat(300)).unwrap();
-        let metadata = fs::metadata(&song).unwrap();
-        let cache_path = cache_path(&base);
-        cache_with(
-            &cache_path,
-            &dir,
-            ShareCatalogFile::new(
-                "song.flac".into(),
-                "song.flac".into(),
-                300,
-                unix_mtime(&metadata),
-                FileAttributes {
-                    bitrate: Some(320),
-                    vbr: Some(0),
-                    ..Default::default()
-                },
-            ),
-        );
+        let (dir, cache_path) = cached_song("song.flac", 0, Some(0));
 
-        let index = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir,
-                buddy_only: false,
-            }],
-            &[],
-            &cache_path,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let index = scan_music(dir, &cache_path);
 
         let (_, _, attributes) = index.resolve("Music\\song.flac", false).unwrap();
         assert_eq!(attributes.bitrate, Some(320));
@@ -720,39 +637,9 @@ mod tests {
 
     #[test]
     fn changed_file_invalidates_cache_entry() {
-        let base = temp_base();
-        let dir = base.join("music");
-        fs::create_dir_all(&dir).unwrap();
-        let song = dir.join("song.flac");
-        fs::write(&song, b"g".repeat(300)).unwrap();
-        let metadata = fs::metadata(&song).unwrap();
-        let cache_path = cache_path(&base);
-        cache_with(
-            &cache_path,
-            &dir,
-            ShareCatalogFile::new(
-                "song.flac".into(),
-                "song.flac".into(),
-                300,
-                unix_mtime(&metadata) + 1,
-                FileAttributes {
-                    bitrate: Some(320),
-                    ..Default::default()
-                },
-            ),
-        );
+        let (dir, cache_path) = cached_song("song.flac", 1, None);
 
-        let index = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir.clone(),
-                buddy_only: false,
-            }],
-            &[],
-            &cache_path,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let index = scan_music(dir.clone(), &cache_path);
 
         let (_, _, attributes) = index.resolve("Music\\song.flac", false).unwrap();
         assert_eq!(*attributes, FileAttributes::default());
@@ -844,11 +731,7 @@ mod tests {
         fs::write(covers.join("front.mp3"), b"y".repeat(300)).unwrap();
 
         let index = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir,
-                buddy_only: false,
-            }],
+            &music_share(dir),
             &["Thumbs.db".into(), "Covers".into()],
             &cache_path(&base),
             &AtomicBool::new(false),
@@ -869,17 +752,7 @@ mod tests {
         fs::create_dir_all(&weird).unwrap();
         fs::write(weird.join("song.mp3"), b"g".repeat(300)).unwrap();
 
-        let index = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir,
-                buddy_only: false,
-            }],
-            &[],
-            &cache_path(&base),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let index = scan_music(dir, &cache_path(&base));
 
         assert_eq!(
             index.folder_contents("Music\\a@@BACKSLASH@@b", false).len(),
@@ -900,11 +773,7 @@ mod tests {
         fs::write(dir.join("song.mp3"), b"g".repeat(300)).unwrap();
 
         let result = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: dir,
-                buddy_only: false,
-            }],
+            &music_share(dir),
             &[],
             &cache_path(&base),
             &AtomicBool::new(true),
@@ -935,12 +804,8 @@ mod tests {
         );
         let index = SharesIndex::from_catalog(catalog);
 
-        let results = search(&index, "music", false, &[]);
         assert_eq!(
-            results
-                .into_iter()
-                .map(|file| file.name)
-                .collect::<Vec<_>>(),
+            names(search(&index, "music", false, &[])),
             vec!["Music\\song.flac"]
         );
     }
@@ -954,24 +819,8 @@ mod tests {
         fs::write(dir.join("Other.flac"), b"b".repeat(300)).unwrap();
         fs::write(base.join("music/Sample Loose.mp3"), b"c".repeat(300)).unwrap();
 
-        let index = scan(
-            &[SharedFolder {
-                virtual_name: "Music".into(),
-                path: base.join("music"),
-                buddy_only: false,
-            }],
-            &[],
-            &cache_path(&base),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let index = scan_music(base.join("music"), &cache_path(&base));
 
-        let names = |results: Vec<FileInfo>| {
-            results
-                .into_iter()
-                .map(|file| file.name)
-                .collect::<Vec<_>>()
-        };
         assert_eq!(
             names(search(&index, "sample", false, &[])),
             vec![
@@ -1001,39 +850,11 @@ mod tests {
         assert_eq!(capped.len(), 2);
     }
 
-    fn music_share(path: PathBuf) -> Vec<SharedFolder> {
-        vec![SharedFolder {
-            virtual_name: "Music".into(),
-            path,
-            buddy_only: false,
-        }]
-    }
-
     #[test]
     fn cached_lossy_attributes_without_vbr_are_reread() {
-        let base = temp_base();
-        let dir = base.join("music");
-        fs::create_dir_all(&dir).unwrap();
-        let song = dir.join("song.mp3");
-        fs::write(&song, b"g".repeat(300)).unwrap();
-        let metadata = fs::metadata(&song).unwrap();
-        let cache_path = cache_path(&base);
-        cache_with(
-            &cache_path,
-            &dir,
-            ShareCatalogFile::new(
-                "song.mp3".into(),
-                "song.mp3".into(),
-                300,
-                unix_mtime(&metadata),
-                FileAttributes {
-                    bitrate: Some(320),
-                    ..Default::default()
-                },
-            ),
-        );
+        let (dir, cache_path) = cached_song("song.mp3", 0, None);
 
-        let index = scan(&music_share(dir), &[], &cache_path, &AtomicBool::new(false)).unwrap();
+        let index = scan_music(dir, &cache_path);
 
         let (_, _, attributes) = index.resolve("Music\\song.mp3", false).unwrap();
         assert_eq!(*attributes, FileAttributes::default());
@@ -1050,13 +871,7 @@ mod tests {
             fs::write(dir.join("track.flac"), b"t".repeat(10)).unwrap();
         }
 
-        let index = scan(
-            &music_share(music),
-            &[],
-            &cache_path(&base),
-            &AtomicBool::new(false),
-        )
-        .expect("duplicate virtual folder must not fail the scan");
+        let index = scan_music(music, &cache_path(&base));
 
         assert_eq!(index.counts(), (2, 1));
         assert!(
@@ -1083,13 +898,7 @@ mod tests {
         )
         .unwrap();
 
-        let index = scan(
-            &music_share(music),
-            &[],
-            &cache_path(&base),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let index = scan_music(music, &cache_path(&base));
 
         assert_eq!(index.counts(), (1, 1));
         let contents = index.folder_contents("Music", false);
@@ -1111,13 +920,7 @@ mod tests {
         symlink(&music, music.join("real/loop")).unwrap();
         symlink(base.join("missing"), music.join("dangling")).unwrap();
 
-        let index = scan(
-            &music_share(music.clone()),
-            &[],
-            &cache_path(&base),
-            &AtomicBool::new(false),
-        )
-        .expect("symlinks must not fail the scan");
+        let index = scan_music(music.clone(), &cache_path(&base));
 
         let (path, size, _) = index
             .resolve("Music\\linked dir\\linked.flac", false)

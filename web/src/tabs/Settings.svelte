@@ -18,33 +18,81 @@
     ['profile', 'My Profile'],
     ['ui', 'Appearance'],
   ];
-  const pageFields = {
-    network: ['username', 'password', 'server', 'listen_port', 'auto_reconnect'],
-    shares: ['shares', 'share_filters', 'scan_on_startup', 'rescan_daily', 'rescan_hour_utc'],
+  const NO_LIMIT = '0 means no limit.';
+  const fields = {
+    network: [
+      { h: 'Network' },
+      { text: 'username', label: 'Username' },
+      { custom: 'password', keys: ['password'] },
+      { text: 'server', label: 'Server address' },
+      { number: 'listen_port', label: 'Listen port', min: 1024, max: 65535 },
+      { check: 'auto_reconnect', label: 'Reconnect automatically when the connection is lost' },
+      { note: 'Saving a changed username, password or server reconnects to the Soulseek network.' },
+    ],
+    shares: [
+      { h: 'Shared Folders' },
+      { custom: 'shares', keys: ['shares', 'share_filters'] },
+      {
+        check: 'scan_on_startup', label: 'Rescan shares on startup',
+        hint: 'The last scan is loaded from cache at startup either way. Turn this on to also walk the shared folders on every start.',
+      },
+      { check: 'rescan_daily', label: 'Rescan shares every day' },
+      { number: 'rescan_hour_utc', label: 'Daily rescan hour', min: 0, max: 23, unit: ':00 UTC' },
+    ],
     downloads: [
-      'download_dir', 'incomplete_dir', 'download_limit_kbps', 'download_username_subfolders',
-      'autoclear_downloads',
+      { h: 'Downloads' },
+      { text: 'download_dir', label: 'Download folder', long: true },
+      {
+        text: 'incomplete_dir', label: 'Unfinished files folder', long: true,
+        placeholder: (d) => `${d.download_dir}/incomplete`,
+      },
+      { number: 'download_limit_kbps', label: 'Download speed limit', min: 0, unit: 'KiB/s', hint: NO_LIMIT },
+      { check: 'download_username_subfolders', label: 'Put finished downloads in a subfolder named after the uploader' },
+      { check: 'autoclear_downloads', label: 'Clear finished downloads from the list automatically' },
     ],
     uploads: [
-      'upload_slots', 'queue_file_limit', 'upload_limit_kbps', 'queue_size_limit_mb',
-      'autoclear_uploads',
+      { h: 'Uploads' },
+      {
+        number: 'upload_slots', label: 'Upload slots', min: 1, unit: 'users at once',
+        hint: 'Each user gets one file at a time.',
+      },
+      { number: 'upload_limit_kbps', label: 'Upload speed limit', min: 0, unit: 'KiB/s', hint: NO_LIMIT },
+      { h: 'Queue Limits per User' },
+      { number: 'queue_file_limit', label: 'Files', min: 1, unit: 'files' },
+      { number: 'queue_size_limit_mb', label: 'Total size', min: 0, unit: 'MiB', hint: NO_LIMIT },
+      { check: 'autoclear_uploads', label: 'Clear finished uploads from the list automatically' },
     ],
-    searches: ['respond_to_searches', 'max_search_results', 'min_search_chars', 'max_search_responses'],
+    searches: [
+      { h: "Answering Other Users' Searches" },
+      { check: 'respond_to_searches', label: 'Answer searches from other users' },
+      { number: 'max_search_results', label: 'Send at most', min: 1, max: 300, unit: 'results per search' },
+      { number: 'min_search_chars', label: 'Ignore searches shorter than', min: 1, unit: 'characters' },
+      { h: 'Your Searches' },
+      { number: 'max_search_responses', label: 'Keep at most', min: 1, max: 2000, unit: 'responses per search' },
+    ],
     filtering: [
-      'filter_level', 'banned_message', 'abusive_message', 'leech_message',
-      'clear_verdict_on_message',
+      { h: 'Client Filtering' },
+      { custom: 'levels', keys: ['filter_level'] },
+      { note: 'At every level a peer who has already received the same file three times within two weeks is refused that file, and only that file, until the window passes or they message you.' },
+      { h: 'Denial Messages' },
+      { note: 'Sent to a peer when they try to queue a download. A peer matching more than one gets the first that applies, in this order.' },
+      { text: 'banned_message', label: 'Banned', long: true },
+      { text: 'abusive_message', label: 'Abusive', long: true },
+      { text: 'leech_message', label: 'Leech', long: true },
+      { check: 'clear_verdict_on_message', label: "Clear a peer's verdict when they send a private message" },
     ],
-    notifications: ['pushover_token', 'pushover_user_key', 'pushover_private_messages'],
-    profile: ['description'],
-    ui: ['theme'],
+    notifications: [
+      { h: 'Pushover' },
+      { note: 'Sends push notifications through pushover.net. Register an application there to get the API token and user key.' },
+      { text: 'pushover_token', label: 'API token', long: true },
+      { text: 'pushover_user_key', label: 'User key', long: true },
+      { check: 'pushover_private_messages', label: 'Notify me when a private message arrives' },
+      { custom: 'pushover_test' },
+    ],
+    profile: [{ h: 'My Profile' }, { custom: 'profile', keys: ['description'] }],
+    ui: [{ h: 'Appearance' }, { custom: 'theme', keys: ['theme'] }],
   };
-  const lockedBy = {
-    server: 'NEWKITINE_SERVER',
-    username: 'NEWKITINE_USERNAME',
-    password: 'NEWKITINE_PASSWORD',
-    listen_port: 'NEWKITINE_LISTEN_PORT',
-    download_dir: 'NEWKITINE_DOWNLOAD_DIR',
-  };
+  const keysOf = (id) => fields[id].flatMap((f) => f.keys ?? f.text ?? f.number ?? f.check ?? []);
   const filterLevels = [
     ['open', 'Open', 'Never restricts anyone.'],
     ['guarded', 'Guarded', 'Blocks search flooding.'],
@@ -114,24 +162,19 @@
 
   $: page = pages.some(([id]) => id === $route.items.settings) ? $route.items.settings : 'network';
   $: locked = new Set($settings.locked);
-  $: portManaged = $settings.gluetun || locked.has('listen_port');
+  $: lockNote = (key) =>
+    key === 'listen_port' && $settings.gluetun
+      ? 'Managed by Gluetun port forwarding.'
+      : locked.has(key) ? `Set by NEWKITINE_${key.toUpperCase()}.` : '';
   $: current = draft ? payloadOf(draft, shareFiltersText, removed) : null;
   $: pendingShare = Boolean(newShare.virtual_name.trim() || newShare.path.trim());
   $: dirty = draft ? pendingShare || JSON.stringify(current) !== JSON.stringify(baseline) : false;
-  $: changedPages = new Set(
-    draft
-      ? pages
-          .filter(([id]) =>
-            pageFields[id].some((key) => JSON.stringify(current[key]) !== JSON.stringify(baseline[key])),
-          )
-          .map(([id]) => id)
-      : [],
-  );
   $: if (dirty) {
     savedAt = null;
     discarded = null;
   }
-  $: pushoverChanged = changedPages.has('notifications');
+  $: pushoverChanged =
+    draft && keysOf('notifications').some((key) => current[key] !== baseline[key]);
   function addShare() {
     if (!newShare.virtual_name.trim() || !newShare.path.trim()) return false;
     draft.shares = [...draft.shares, { ...newShare }];
@@ -173,7 +216,7 @@
     addShare();
     const badField = Object.keys(invalid).find((key) => invalid[key]);
     if (badField) {
-      go('settings', pages.find(([id]) => pageFields[id].includes(badField))[0]);
+      go('settings', pages.find(([id]) => keysOf(id).includes(badField))[0]);
       saveError = 'Not saved: fix the outlined number first.';
       return false;
     }
@@ -188,7 +231,7 @@
         saveError = text;
         if (error.status !== 400 && error.status !== 422) return;
         const owner = pages.find(([id]) =>
-          pageFields[id].some((key) => new RegExp(`\\b${key}\\b`).test(error.message)),
+          keysOf(id).some((key) => new RegExp(`\\b${key}\\b`).test(error.message)),
         );
         if (owner) go('settings', owner[0]);
         else if (/\bshare (name|filter)\b/.test(error.message)) go('settings', 'shares');
@@ -267,338 +310,143 @@
     <div class="main">
       <div class="scroll settings-page">
         {#key version}
-        {#if page === 'network'}
-          <h3>Network</h3>
-          <div class="form-row">
-            <label for="set-username">Username</label>
-            <div class="control">
-              <input {...noAutofill} id="set-username" type="text" bind:value={draft.username}
-                readonly={locked.has('username')} />
-              {#if locked.has('username')}<span class="hint">Set by {lockedBy.username}.</span>{/if}
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-password">Password</label>
-            <div class="control">
-              <input {...noAutofill} autocomplete="new-password" id="set-password" type="password"
-                bind:value={draft.password} placeholder={draft.password_set ? 'unchanged' : ''}
-                readonly={locked.has('password')} />
-              {#if locked.has('password')}<span class="hint">Set by {lockedBy.password}.</span>{/if}
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-server">Server address</label>
-            <div class="control">
-              <input {...noAutofill} id="set-server" type="text" bind:value={draft.server}
-                readonly={locked.has('server')} />
-              {#if locked.has('server')}<span class="hint">Set by {lockedBy.server}.</span>{/if}
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-port">Listen port</label>
-            <div class="control">
-              <NumberField id="set-port" min={1024} max={65535} locked={portManaged}
-                bind:value={draft.listen_port} bind:invalid={invalid.listen_port} />
-              {#if $settings.gluetun}<span class="hint">Managed by Gluetun port forwarding.</span>
-              {:else if locked.has('listen_port')}<span class="hint">Set by {lockedBy.listen_port}.</span>{/if}
-            </div>
-          </div>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.auto_reconnect} />
-              Reconnect automatically when the connection is lost
-            </label>
-          </div>
-          <p class="hint">
-            Saving a changed username, password or server reconnects to the Soulseek network.
-          </p>
-
-        {:else if page === 'shares'}
-          <h3>Shared Folders</h3>
-          <table class="editor">
-            <thead>
-              <tr><th>Name shown to others</th><th class="grow">Folder on the server</th><th>Buddies only</th><th></th></tr>
-            </thead>
-            <tbody>
-              {#each draft.shares as share}
-                <tr class:removed={removed.has(share)}>
-                  <td><input type="text" {...noAutofill} bind:value={share.virtual_name} /></td>
-                  <td class="grow"><input type="text" {...noAutofill} bind:value={share.path} /></td>
-                  <td><input type="checkbox" aria-label="Buddies only" bind:checked={share.buddy_only} /></td>
-                  <td>
-                    <button type="button" on:click={() => toggleRemoved(share)}>
-                      {removed.has(share) ? 'Restore' : 'Remove'}
-                    </button>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td><input type="text" {...noAutofill} placeholder="Music"
-                  bind:value={newShare.virtual_name} on:keydown={onEnter(addShare)} /></td>
-                <td class="grow"><input type="text" {...noAutofill} placeholder="/data/shared/music" bind:value={newShare.path} on:keydown={onEnter(addShare)} /></td>
-                <td><input type="checkbox" aria-label="New share is buddies only" bind:checked={newShare.buddy_only} /></td>
-                <td><button type="button" on:click={addShare}>Add</button></td>
-              </tr>
-            </tfoot>
-          </table>
-          <div class="form-row">
-            <span></span>
-            <div class="control">
-              <button type="button" disabled={$status.scanning}
-                on:click={() => act(() => post('/shares/rescan'), { failed: 'Rescan not started' })}>
-                {$status.scanning ? 'Scanning…' : 'Rescan Shares Now'}
-              </button>
-              <span class="hint">Saving share or exclusion changes starts a full rescan.</span>
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-share-filters">Excluded names</label>
-            <div class="control">
-              <textarea {...noAutofill} id="set-share-filters" rows="4" bind:value={shareFiltersText}
-                placeholder="Thumbs.db&#10;desktop.ini"></textarea>
-              <span class="hint">One exact file or folder name per line.</span>
-            </div>
-          </div>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.scan_on_startup} />
-              Rescan shares on startup
-            </label>
-            <span class="hint">
-              The last scan is loaded from cache at startup either way. Turn this on to also walk
-              the shared folders on every start.
-            </span>
-          </div>
-          <div class="form-row check">
-            <label for="set-rescan-daily">
-              <input id="set-rescan-daily" type="checkbox" bind:checked={draft.rescan_daily} />
-              Rescan shares every day
-            </label>
-          </div>
-          <div class="form-row">
-            <label for="set-rescan-hour">Daily rescan hour</label>
-            <div class="control">
-              <NumberField id="set-rescan-hour" min={0} max={23} unit=":00 UTC"
-                bind:value={draft.rescan_hour_utc} bind:invalid={invalid.rescan_hour_utc} />
-            </div>
-          </div>
-
-        {:else if page === 'downloads'}
-          <h3>Downloads</h3>
-          <div class="form-row">
-            <label for="set-downdir">Download folder</label>
-            <div class="control">
-              <input {...noAutofill} id="set-downdir" class="long" type="text" bind:value={draft.download_dir}
-                readonly={locked.has('download_dir')} />
-              {#if locked.has('download_dir')}<span class="hint">Set by {lockedBy.download_dir}.</span>{/if}
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-incompletedir">Unfinished files folder</label>
-            <div class="control">
-              <input {...noAutofill} id="set-incompletedir" class="long" type="text" bind:value={draft.incomplete_dir}
-                placeholder="{draft.download_dir}/incomplete" />
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-downlimit">Download speed limit</label>
-            <div class="control">
-              <NumberField id="set-downlimit" min={0} unit="KiB/s"
-                bind:value={draft.download_limit_kbps} bind:invalid={invalid.download_limit_kbps} />
-              <span class="hint">0 means no limit.</span>
-            </div>
-          </div>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.download_username_subfolders} />
-              Put finished downloads in a subfolder named after the uploader
-            </label>
-          </div>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.autoclear_downloads} />
-              Clear finished downloads from the list automatically
-            </label>
-          </div>
-
-        {:else if page === 'uploads'}
-          <h3>Uploads</h3>
-          <div class="form-row">
-            <label for="set-slots">Upload slots</label>
-            <div class="control">
-              <NumberField id="set-slots" min={1} unit="users at once"
-                bind:value={draft.upload_slots} bind:invalid={invalid.upload_slots} />
-              <span class="hint">Each user gets one file at a time.</span>
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-uplimit">Upload speed limit</label>
-            <div class="control">
-              <NumberField id="set-uplimit" min={0} unit="KiB/s"
-                bind:value={draft.upload_limit_kbps} bind:invalid={invalid.upload_limit_kbps} />
-              <span class="hint">0 means no limit.</span>
-            </div>
-          </div>
-          <h3>Queue Limits per User</h3>
-          <div class="form-row">
-            <label for="set-queuelimit">Files</label>
-            <div class="control">
-              <NumberField id="set-queuelimit" min={1} unit="files"
-                bind:value={draft.queue_file_limit} bind:invalid={invalid.queue_file_limit} />
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-queuemb">Total size</label>
-            <div class="control">
-              <NumberField id="set-queuemb" min={0} unit="MiB"
-                bind:value={draft.queue_size_limit_mb} bind:invalid={invalid.queue_size_limit_mb} />
-              <span class="hint">0 means no limit.</span>
-            </div>
-          </div>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.autoclear_uploads} />
-              Clear finished uploads from the list automatically
-            </label>
-          </div>
-
-        {:else if page === 'searches'}
-          <h3>Answering Other Users' Searches</h3>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.respond_to_searches} />
-              Answer searches from other users
-            </label>
-          </div>
-          <div class="form-row">
-            <label for="set-maxresults">Send at most</label>
-            <div class="control">
-              <NumberField id="set-maxresults" min={1} max={300} unit="results per search"
-                bind:value={draft.max_search_results} bind:invalid={invalid.max_search_results} />
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="set-minchars">Ignore searches shorter than</label>
-            <div class="control">
-              <NumberField id="set-minchars" min={1} unit="characters"
-                bind:value={draft.min_search_chars} bind:invalid={invalid.min_search_chars} />
-            </div>
-          </div>
-          <h3>Your Searches</h3>
-          <div class="form-row">
-            <label for="set-maxresponses">Keep at most</label>
-            <div class="control">
-              <NumberField id="set-maxresponses" min={1} max={2000} unit="responses per search"
-                bind:value={draft.max_search_responses} bind:invalid={invalid.max_search_responses} />
-            </div>
-          </div>
-
-        {:else if page === 'filtering'}
-          <h3>Client Filtering</h3>
-          {#each filterLevels as [id, label, description]}
+        {#each fields[page] as f (f)}
+          {#if f.h}
+            <h3>{f.h}</h3>
+          {:else if f.note}
+            <p class="hint">{f.note}</p>
+          {:else if f.check}
             <div class="form-row check">
               <label>
-                <input type="radio" name="filter-level" value={id} bind:group={draft.filter_level} />
-                {label}
-                <span class="hint">{description}</span>
+                <input type="checkbox" bind:checked={draft[f.check]} />
+                {f.label}
               </label>
+              {#if f.hint}<span class="hint">{f.hint}</span>{/if}
             </div>
-          {/each}
-          <p class="hint">
-            At every level a peer who has already received the same file three times within two
-            weeks is refused that file, and only that file, until the window passes or they
-            message you.
-          </p>
-          <h3>Denial Messages</h3>
-          <p class="hint">
-            Sent to a peer when they try to queue a download. A peer matching more than one gets
-            the first that applies, in this order.
-          </p>
-          <div class="form-row">
-            <label for="set-banned">Banned</label>
-            <div class="control"><input {...noAutofill} id="set-banned" class="long" type="text" bind:value={draft.banned_message} /></div>
-          </div>
-          <div class="form-row">
-            <label for="set-abusive">Abusive</label>
-            <div class="control"><input {...noAutofill} id="set-abusive" class="long" type="text" bind:value={draft.abusive_message} /></div>
-          </div>
-          <div class="form-row">
-            <label for="set-leech">Leech</label>
-            <div class="control"><input {...noAutofill} id="set-leech" class="long" type="text" bind:value={draft.leech_message} /></div>
-          </div>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.clear_verdict_on_message} />
-              Clear a peer's verdict when they send a private message
-            </label>
-          </div>
-
-        {:else if page === 'notifications'}
-          <h3>Pushover</h3>
-          <p class="hint">
-            Sends push notifications through pushover.net. Register an application there to get
-            the API token and user key.
-          </p>
-          <div class="form-row">
-            <label for="set-pushover-token">API token</label>
-            <div class="control"><input {...noAutofill} id="set-pushover-token" class="long" type="text" bind:value={draft.pushover_token} /></div>
-          </div>
-          <div class="form-row">
-            <label for="set-pushover-user">User key</label>
-            <div class="control"><input {...noAutofill} id="set-pushover-user" class="long" type="text" bind:value={draft.pushover_user_key} /></div>
-          </div>
-          <div class="form-row check">
-            <label>
-              <input type="checkbox" bind:checked={draft.pushover_private_messages} />
-              Notify me when a private message arrives
-            </label>
-          </div>
-          <div class="form-row">
-            <span></span>
-            <div class="control">
-              <button type="button" on:click={sendTestNotification}>
-                {pushoverChanged ? 'Save and Send Test Notification' : 'Send Test Notification'}
-              </button>
-              {#if testStatus}
-                <span class={testStatus.failed ? 'notice' : 'hint'}>{testStatus.message}</span>
-              {/if}
+          {:else if f.text || f.number}
+            {@const key = f.text ?? f.number}
+            <div class="form-row">
+              <label for="set-{key}">{f.label}</label>
+              <div class="control">
+                {#if f.number}
+                  <NumberField id="set-{key}" min={f.min} max={f.max ?? null} unit={f.unit ?? ''}
+                    locked={Boolean(lockNote(key))} bind:value={draft[key]} bind:invalid={invalid[key]} />
+                {:else}
+                  <input {...noAutofill} id="set-{key}" class:long={f.long} type="text" bind:value={draft[key]}
+                    placeholder={f.placeholder?.(draft)} readonly={Boolean(lockNote(key))} />
+                {/if}
+                {#if lockNote(key)}<span class="hint">{lockNote(key)}</span>{/if}
+                {#if f.hint}<span class="hint">{f.hint}</span>{/if}
+              </div>
             </div>
-          </div>
-
-        {:else if page === 'profile'}
-          <h3>My Profile</h3>
-          <textarea {...noAutofill} rows="10"
-            bind:value={draft.description}></textarea>
-          <p class="hint">
-            $&#123;user.name&#125; inserts a value, $&#123;user.is_buddy?Hey buddy:Hi&#125; picks
-            text from a yes/no flag, $$ writes a literal dollar sign. Values and flags are
-            resolved for whoever asked, at the moment they ask.
-          </p>
-          <p class="hint">
-            Values: user.name, user.restriction, user.queued_files, user.active_uploads, me.name,
-            me.shared_files, me.shared_folders, me.queue_size, me.slots, me.free_slots,
-            me.upload_speed.
-          </p>
-          <p class="hint">
-            Flags: user.is_buddy, user.is_ignored, user.is_banned, user.is_privileged.
-          </p>
-
-        {:else if page === 'ui'}
-          <h3>Appearance</h3>
-          <div class="form-row">
-            <label for="set-theme">Theme</label>
-            <div class="control">
-              <select id="set-theme" bind:value={draft.theme} on:change={() => previewTheme(draft.theme)}>
-                {#each themes as [id, label]}
-                  <option value={id}>{label}</option>
+          {:else if f.custom === 'password'}
+            <div class="form-row">
+              <label for="set-password">Password</label>
+              <div class="control">
+                <input {...noAutofill} autocomplete="new-password" id="set-password" type="password"
+                  bind:value={draft.password} placeholder={draft.password_set ? 'unchanged' : ''}
+                  readonly={Boolean(lockNote('password'))} />
+                {#if lockNote('password')}<span class="hint">{lockNote('password')}</span>{/if}
+              </div>
+            </div>
+          {:else if f.custom === 'shares'}
+            <table class="editor">
+              <thead>
+                <tr><th>Name shown to others</th><th class="grow">Folder on the server</th><th>Buddies only</th><th></th></tr>
+              </thead>
+              <tbody>
+                {#each draft.shares as share}
+                  <tr class:removed={removed.has(share)}>
+                    <td><input type="text" {...noAutofill} bind:value={share.virtual_name} /></td>
+                    <td class="grow"><input type="text" {...noAutofill} bind:value={share.path} /></td>
+                    <td><input type="checkbox" aria-label="Buddies only" bind:checked={share.buddy_only} /></td>
+                    <td>
+                      <button type="button" on:click={() => toggleRemoved(share)}>
+                        {removed.has(share) ? 'Restore' : 'Remove'}
+                      </button>
+                    </td>
+                  </tr>
                 {/each}
-              </select>
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td><input type="text" {...noAutofill} placeholder="Music"
+                    bind:value={newShare.virtual_name} on:keydown={onEnter(addShare)} /></td>
+                  <td class="grow"><input type="text" {...noAutofill} placeholder="/data/shared/music" bind:value={newShare.path} on:keydown={onEnter(addShare)} /></td>
+                  <td><input type="checkbox" aria-label="New share is buddies only" bind:checked={newShare.buddy_only} /></td>
+                  <td><button type="button" on:click={addShare}>Add</button></td>
+                </tr>
+              </tfoot>
+            </table>
+            <div class="form-row">
+              <span></span>
+              <div class="control">
+                <button type="button" disabled={$status.scanning}
+                  on:click={() => act(() => post('/shares/rescan'), { failed: 'Rescan not started' })}>
+                  {$status.scanning ? 'Scanning…' : 'Rescan Shares Now'}
+                </button>
+                <span class="hint">Saving share or exclusion changes starts a full rescan.</span>
+              </div>
             </div>
-          </div>
-
-        {/if}
+            <div class="form-row">
+              <label for="set-share-filters">Excluded names</label>
+              <div class="control">
+                <textarea {...noAutofill} id="set-share-filters" rows="4" bind:value={shareFiltersText}
+                  placeholder="Thumbs.db&#10;desktop.ini"></textarea>
+                <span class="hint">One exact file or folder name per line.</span>
+              </div>
+            </div>
+          {:else if f.custom === 'levels'}
+            {#each filterLevels as [id, label, description]}
+              <div class="form-row check">
+                <label>
+                  <input type="radio" name="filter-level" value={id} bind:group={draft.filter_level} />
+                  {label}
+                  <span class="hint">{description}</span>
+                </label>
+              </div>
+            {/each}
+          {:else if f.custom === 'pushover_test'}
+            <div class="form-row">
+              <span></span>
+              <div class="control">
+                <button type="button" on:click={sendTestNotification}>
+                  {pushoverChanged ? 'Save and Send Test Notification' : 'Send Test Notification'}
+                </button>
+                {#if testStatus}
+                  <span class={testStatus.failed ? 'notice' : 'hint'}>{testStatus.message}</span>
+                {/if}
+              </div>
+            </div>
+          {:else if f.custom === 'profile'}
+            <textarea {...noAutofill} rows="10"
+              bind:value={draft.description}></textarea>
+            <p class="hint">
+              $&#123;user.name&#125; inserts a value, $&#123;user.is_buddy?Hey buddy:Hi&#125; picks
+              text from a yes/no flag, $$ writes a literal dollar sign. Values and flags are
+              resolved for whoever asked, at the moment they ask.
+            </p>
+            <p class="hint">
+              Values: user.name, user.restriction, user.queued_files, user.active_uploads, me.name,
+              me.shared_files, me.shared_folders, me.queue_size, me.slots, me.free_slots,
+              me.upload_speed.
+            </p>
+            <p class="hint">
+              Flags: user.is_buddy, user.is_ignored, user.is_banned, user.is_privileged.
+            </p>
+          {:else}
+            <div class="form-row">
+              <label for="set-theme">Theme</label>
+              <div class="control">
+                <select id="set-theme" bind:value={draft.theme} on:change={() => previewTheme(draft.theme)}>
+                  {#each themes as [id, label]}
+                    <option value={id}>{label}</option>
+                  {/each}
+                </select>
+              </div>
+            </div>
+          {/if}
+        {/each}
         {/key}
       </div>
 

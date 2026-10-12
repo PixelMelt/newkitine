@@ -14,11 +14,11 @@ use axum::routing::post;
 use tokio::time::Instant;
 use tracing::info;
 
-use crate::types::{DenialMessages, FilterLevel, Restriction};
+use crate::types::{FilterLevel, Restriction};
 
 use db::{
-    downloaded_from_any, forgive_user, has_downloaded_from, load_verdicts, repeat_deliveries,
-    repeat_delivery, search_scrape_users, set_user_verdict,
+    downloaded_from_any, forgive_user, load_verdicts, repeat_deliveries, search_scrape_users,
+    set_user_verdict,
 };
 use policy::{
     CHECK_TIMEOUT_SECS, CONTRADICTION_MIN_FILES, PRESET_STATS, REPEAT_WINDOW_DAYS, SECS_PER_DAY,
@@ -29,23 +29,21 @@ use state::{Check, Peer, touch};
 use super::db::fatal;
 use super::state::{App, now};
 
-fn policy(app: &App) -> (FilterLevel, DenialMessages) {
-    app.settings.behavior_policy()
-}
-
 fn is_self(app: &App, username: &str) -> bool {
-    app.projection.read().session.status().username == username
+    app.projection.read().session.username == username
 }
 
 async fn exempt(app: &Arc<App>, username: &str) -> bool {
     if app.projection.read().users.is_buddy(username) {
         return true;
     }
-    has_downloaded_from(&app.db, username).await
+    !downloaded_from_any(&app.db, &[username.to_owned()])
+        .await
+        .is_empty()
 }
 
 async fn sync(app: &Arc<App>, username: &str) {
-    let (level, messages) = policy(app);
+    let (level, messages) = app.settings.behavior_policy();
     let (verdict, evidence, checking) = {
         let peers = app.behavior.peers.lock().unwrap();
         let peer = &peers[username];
@@ -161,7 +159,7 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
     if is_self(app, username) {
         return;
     }
-    let (level, _) = policy(app);
+    let (level, _) = app.settings.behavior_policy();
     let deadline = check_deadline();
     let probe = {
         let mut peers = app.behavior.peers.lock().unwrap();
@@ -179,10 +177,7 @@ pub async fn queue_request(app: &Arc<App>, username: &str) {
         return;
     }
     if exempt(app, username).await {
-        let mut peers = app.behavior.peers.lock().unwrap();
-        let peer = touch(&mut peers, username, now());
-        peer.check = Check::Idle;
-        peer.verdict = Verdict::Verified;
+        mark_verified(app, username);
         return;
     }
     app.client
@@ -367,8 +362,9 @@ fn release(app: &App, username: &str) -> bool {
 pub async fn upload_delivered(app: &Arc<App>, username: &str, virtual_path: &str) {
     let _transition = app.behavior.transition.lock().await;
     let timestamp = now();
-    if let Some(last_at) = repeat_delivery(&app.db, username, virtual_path, timestamp).await {
-        deny_file(app, username, virtual_path, last_at, timestamp).await;
+    let only = Some((username, virtual_path));
+    if let Some(repeat) = repeat_deliveries(&app.db, timestamp, only).await.pop() {
+        deny_file(app, username, virtual_path, repeat.last_at, timestamp).await;
     }
 }
 
@@ -381,7 +377,7 @@ async fn deny_file(app: &Arc<App>, username: &str, virtual_path: &str, last_at: 
 
 pub async fn load(app: &Arc<App>) {
     let _transition = app.behavior.transition.lock().await;
-    let (level, messages) = policy(app);
+    let (level, messages) = app.settings.behavior_policy();
     for (username, stored, evidence) in load_verdicts(&app.db).await {
         let mut verdict = Verdict::from_str(&stored);
         if verdict >= Verdict::Leech && exempt(app, &username).await {
@@ -422,17 +418,11 @@ pub async fn load(app: &Arc<App>) {
         }
     }
     let timestamp = now();
-    let repeats = repeat_deliveries(&app.db, timestamp).await;
+    let repeats = repeat_deliveries(&app.db, timestamp, None).await;
     info!(files = repeats.len(), "repeat download caps loaded");
     for repeat in repeats {
-        deny_file(
-            app,
-            &repeat.username,
-            &repeat.virtual_path,
-            repeat.last_at,
-            timestamp,
-        )
-        .await;
+        let (username, virtual_path) = (&repeat.username, &repeat.virtual_path);
+        deny_file(app, username, virtual_path, repeat.last_at, timestamp).await;
     }
 }
 

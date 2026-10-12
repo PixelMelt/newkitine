@@ -133,4 +133,15 @@ impl<T> Registry<T> {
     pub(super) fn values(&self) -> impl Iterator<Item = &T> {
         self.entries.values().map(|entry| &entry.transfer)
     }
+
+    pub(super) fn keys_where(&self, predicate: impl Fn(&T) -> bool) -> Vec<TransferKey> {
+        let mut matching: Vec<(TransferId, &TransferKey)> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| predicate(&entry.transfer))
+            .map(|(key, entry)| (entry.id, key))
+            .collect();
+        matching.sort_unstable_by_key(|(id, _)| id.0);
+        matching.into_iter().map(|(_, key)| key.clone()).collect()
+    }
 }

@@ -45,7 +45,7 @@ impl Session {
 
 impl ClientActor {
     pub(super) fn connect(&mut self) {
-        if self.sharing.is_loading_cached() {
+        if self.sharing.cached_loading {
             info!("waiting for the cached share index before connecting");
             self.session.connect_deferred = true;
             self.session.reconnect_at = None;
@@ -55,7 +55,7 @@ impl ClientActor {
     }
 
     pub(super) fn connect_if_deferred(&mut self) {
-        if self.session.connect_deferred && !self.sharing.is_loading_cached() {
+        if self.session.connect_deferred && !self.sharing.cached_loading {
             self.connect_now();
         }
     }
@@ -138,46 +138,23 @@ impl ClientActor {
         info!("runtime configuration applied");
     }
 
-    pub(super) fn add_interest(&mut self, thing: String, hated: bool) {
-        let (list, request) = if hated {
-            (
-                &mut self.hated_interests,
-                ServerRequest::AddThingIHate {
-                    thing: thing.clone(),
-                },
-            )
+    pub(super) fn set_interest(&mut self, thing: String, hated: bool, present: bool) {
+        let list = if hated {
+            &mut self.hated_interests
         } else {
-            (
-                &mut self.liked_interests,
-                ServerRequest::AddThingILike {
-                    thing: thing.clone(),
-                },
-            )
+            &mut self.liked_interests
         };
-        if !list.contains(&thing) {
-            list.push(thing);
+        if !present {
+            list.retain(|entry| *entry != thing);
+        } else if !list.contains(&thing) {
+            list.push(thing.clone());
         }
-        self.net.server(request);
-    }
-
-    pub(super) fn remove_interest(&mut self, thing: &str, hated: bool) {
-        let (list, request) = if hated {
-            (
-                &mut self.hated_interests,
-                ServerRequest::RemoveThingIHate {
-                    thing: thing.to_owned(),
-                },
-            )
-        } else {
-            (
-                &mut self.liked_interests,
-                ServerRequest::RemoveThingILike {
-                    thing: thing.to_owned(),
-                },
-            )
-        };
-        list.retain(|entry| entry != thing);
-        self.net.server(request);
+        self.net.server(match (hated, present) {
+            (false, true) => ServerRequest::AddThingILike { thing },
+            (true, true) => ServerRequest::AddThingIHate { thing },
+            (false, false) => ServerRequest::RemoveThingILike { thing },
+            (true, false) => ServerRequest::RemoveThingIHate { thing },
+        });
     }
 
     pub(super) fn handle_logged_in(&mut self, username: String, banner: String) {

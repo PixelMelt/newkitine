@@ -10,10 +10,11 @@ use serde_json::json;
 use sqlx::MySqlPool;
 
 use crate::client::{SearchResult, SearchScope};
-use crate::types::{FileAttributes, USERNAME_LIMIT};
+use crate::types::{FileInfo, USERNAME_LIMIT};
 
 use super::api;
 use super::contract::AppEvent;
+use super::projection::set_member;
 use super::state::App;
 
 #[derive(Clone, serde::Serialize)]
@@ -39,14 +40,7 @@ pub struct SearchResponseView {
     pub free_upload_slots: bool,
     pub upload_speed: u32,
     pub queue_size: u32,
-    pub files: Vec<SearchFileView>,
-}
-
-#[derive(Clone, serde::Serialize)]
-pub struct SearchFileView {
-    pub name: String,
-    pub size: u64,
-    pub attributes: FileAttributes,
+    pub files: Vec<FileInfo>,
 }
 
 #[derive(Default)]
@@ -107,27 +101,13 @@ pub async fn search_started(app: &App, token: u32, query: String) {
 }
 
 pub fn apply_results(app: &App, result: SearchResult) {
-    let SearchResult {
-        token,
-        username,
-        results,
-        free_upload_slots,
-        upload_speed,
-        queue_size,
-    } = result;
+    let token = result.token;
     let response = SearchResponseView {
-        username,
-        free_upload_slots,
-        upload_speed,
-        queue_size,
-        files: results
-            .into_iter()
-            .map(|file| SearchFileView {
-                name: file.name,
-                size: file.size,
-                attributes: file.attributes,
-            })
-            .collect(),
+        username: result.username,
+        free_upload_slots: result.free_upload_slots,
+        upload_speed: result.upload_speed,
+        queue_size: result.queue_size,
+        files: result.results,
     };
     let max_search_responses = app.settings.max_search_responses();
     let mut data = app.projection.write();
@@ -145,22 +125,6 @@ pub fn apply_results(app: &App, result: SearchResult) {
         search.results.push(response.clone());
         data.broadcast(AppEvent::SearchResults { token, response });
     }
-}
-
-async fn insert_wish(pool: &MySqlPool, term: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO wishlist (term) VALUES (?) ON DUPLICATE KEY UPDATE term = term")
-        .bind(term)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-async fn delete_wish(pool: &MySqlPool, term: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM wishlist WHERE term = ?")
-        .bind(term)
-        .execute(pool)
-        .await?;
-    Ok(())
 }
 
 pub async fn load_wishlist(pool: &MySqlPool) -> Vec<String> {
@@ -181,8 +145,14 @@ pub(super) fn router() -> Router<Arc<App>> {
             "/api/searches/{token}",
             get(search_results).delete(remove_search),
         )
-        .route("/api/wishlist", get(list_wishlist).post(add_wish))
-        .route("/api/wishlist/remove", post(remove_wish))
+        .route(
+            "/api/wishlist",
+            get(list_wishlist).post(|app, body| set_wish(app, body, true)),
+        )
+        .route(
+            "/api/wishlist/remove",
+            post(|app, body| set_wish(app, body, false)),
+        )
 }
 
 #[derive(Deserialize)]
@@ -218,27 +188,18 @@ async fn list_searches(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
 async fn start_search(
     State(app): State<Arc<App>>,
     Json(body): Json<SearchBody>,
-) -> impl IntoResponse {
-    if let Err(status) = api::require_login(&app) {
-        return status.into_response();
-    }
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    api::require_login(&app)?;
     let scope = match body.mode.as_str() {
         "global" => SearchScope::Global,
         "buddies" => SearchScope::Buddies,
-        "rooms" => match body.room {
-            Some(room) => SearchScope::Room(room),
-            None => return StatusCode::BAD_REQUEST.into_response(),
-        },
-        "user" => match body.user {
-            Some(user) => SearchScope::User(user),
-            None => return StatusCode::BAD_REQUEST.into_response(),
-        },
-        _ => return StatusCode::BAD_REQUEST.into_response(),
+        "rooms" => SearchScope::Room(body.room.ok_or(StatusCode::BAD_REQUEST)?),
+        "user" => SearchScope::User(body.user.ok_or(StatusCode::BAD_REQUEST)?),
+        _ => return Err(StatusCode::BAD_REQUEST),
     };
-    match app.client.search(&body.query, scope).await {
-        Some(token) => Json(json!({ "token": token })).into_response(),
-        None => StatusCode::BAD_REQUEST.into_response(),
-    }
+    let token = app.client.search(&body.query, scope).await;
+    let token = token.ok_or(StatusCode::BAD_REQUEST)?;
+    Ok(Json(json!({ "token": token })))
 }
 
 async fn search_results(State(app): State<Arc<App>>, Path(token): Path<u32>) -> impl IntoResponse {
@@ -272,40 +233,33 @@ async fn list_wishlist(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     Json(json!({ "wishlist": data.search.wishlist() }))
 }
 
-async fn add_wish(State(app): State<Arc<App>>, Json(body): Json<WishBody>) -> StatusCode {
-    if body.term.trim().is_empty() || body.term.len() > USERNAME_LIMIT {
-        return StatusCode::BAD_REQUEST;
+async fn set_wish(
+    State(app): State<Arc<App>>,
+    Json(body): Json<WishBody>,
+    wanted: bool,
+) -> Result<StatusCode, StatusCode> {
+    if wanted && (body.term.trim().is_empty() || body.term.len() > USERNAME_LIMIT) {
+        return Err(StatusCode::BAD_REQUEST);
     }
     let _mutation = app.list_mutation.lock().await;
-    if let Err(error) = insert_wish(&app.db, &body.term).await {
-        return api::db_failed(error);
-    }
-    app.client.add_wish(&body.term).await;
+    let statement = if wanted {
+        "INSERT INTO wishlist (term) VALUES (?) ON DUPLICATE KEY UPDATE term = term"
+    } else {
+        "DELETE FROM wishlist WHERE term = ?"
+    };
+    sqlx::query(statement)
+        .bind(&body.term)
+        .execute(&app.db)
+        .await
+        .map_err(api::db_failed)?;
+    app.client.set_wish(&body.term, wanted).await;
     let mut data = app.projection.write();
-    if !data.search.wishlist.contains(&body.term) {
-        data.search.wishlist.push(body.term);
-        data.search.wishlist.sort();
-    }
+    set_member(&mut data.search.wishlist, &body.term, wanted);
     let event = AppEvent::Wishlist {
         wishlist: data.search.wishlist.clone(),
     };
     data.broadcast(event);
-    StatusCode::ACCEPTED
-}
-
-async fn remove_wish(State(app): State<Arc<App>>, Json(body): Json<WishBody>) -> StatusCode {
-    let _mutation = app.list_mutation.lock().await;
-    if let Err(error) = delete_wish(&app.db, &body.term).await {
-        return api::db_failed(error);
-    }
-    app.client.remove_wish(&body.term).await;
-    let mut data = app.projection.write();
-    data.search.wishlist.retain(|term| term != &body.term);
-    let event = AppEvent::Wishlist {
-        wishlist: data.search.wishlist.clone(),
-    };
-    data.broadcast(event);
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[cfg(test)]

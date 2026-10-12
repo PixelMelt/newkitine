@@ -27,12 +27,10 @@ export const settings = writable({ settings: null, locked: [], gluetun: false })
 export const loginFailure = writable(null);
 export const shownReport = writable(null);
 
-let nextReportId = 1;
 let expiry = null;
 
 function push(kind, text, action) {
-	const entry = { id: nextReportId++, kind, text, at: Date.now(), action };
-	shownReport.set(entry);
+	shownReport.set({ kind, text, action });
 	clearTimeout(expiry);
 	expiry = setTimeout(dismissReport, action ? ACTION_EXPIRY_MS : EXPIRY_MS[kind]);
 }
@@ -52,22 +50,22 @@ export function previewTheme(theme) {
 	document.documentElement.dataset.theme = theme;
 }
 
-function applyTheme(theme) {
-	previewTheme(theme);
-	localStorage.setItem('theme', theme);
-}
-
 function applyStatus(next) {
 	status.set(next);
 	if (next.connected) loginFailure.set(null);
 }
 
+function applySettings(payload) {
+	settings.set({ settings: payload.settings, locked: payload.locked, gluetun: payload.gluetun });
+	if (localStorage.getItem('theme') !== payload.settings.theme) {
+		previewTheme(payload.settings.theme);
+		localStorage.setItem('theme', payload.settings.theme);
+	}
+}
+
 export function applySnapshot(msg) {
 	applyStatus(msg.status);
-	settings.set(msg.settings);
-	if (localStorage.getItem('theme') !== msg.settings.settings.theme) {
-		applyTheme(msg.settings.settings.theme);
-	}
+	applySettings(msg.settings);
 }
 
 export const handlers = {
@@ -80,8 +78,5 @@ export const handlers = {
 	server_message: (msg) => report.info(`Soulseek server: ${msg.message}`),
 	relogged: () =>
 		report.error('Signed out: this Soulseek account logged in from somewhere else'),
-	settings: (msg) => {
-		settings.set({ settings: msg.settings, locked: msg.locked, gluetun: msg.gluetun });
-		if (localStorage.getItem('theme') !== msg.settings.theme) applyTheme(msg.settings.theme);
-	},
+	settings: applySettings,
 };

@@ -5,7 +5,7 @@ mod conn;
 
 use tokio::sync::mpsc;
 
-pub use api::{ConnId, NetworkCommand, NetworkEvent};
+pub use api::{AllowedResponse, ConnId, NetworkCommand, NetworkEvent};
 
 pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
 pub const EVENT_QUEUE_CAPACITY: usize = 4096;
@@ -24,6 +24,14 @@ impl NetworkHandle {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => panic!("network actor terminated"),
         }
+    }
+
+    pub fn allow(&self, response: AllowedResponse) {
+        self.send(NetworkCommand::Allow(response));
+    }
+
+    pub fn disallow(&self, response: AllowedResponse) {
+        self.send(NetworkCommand::Disallow(response));
     }
 
     pub fn server(&self, request: crate::protocol::ServerRequest) {

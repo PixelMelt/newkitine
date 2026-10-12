@@ -7,9 +7,9 @@ use crate::types::TransferDirection;
 
 use super::chat::Chat;
 use super::contract::{AppEvent, Envelope, Snapshot};
-use super::interests::Interests;
+use super::interests::InterestsView;
 use super::search::SearchState;
-use super::session::Session;
+use super::session::Status;
 use super::settings::SettingsState;
 use super::transfers::Transfers;
 use super::users::UsersState;
@@ -50,7 +50,7 @@ impl Projection {
         serde_json::to_string(&Snapshot {
             kind: "snapshot",
             rev: data.revision,
-            status: data.session.status(),
+            status: &data.session,
             downloads: data.transfers.list(TransferDirection::Download),
             uploads: data.transfers.list(TransferDirection::Upload),
             searches: data.search.searches(),
@@ -58,7 +58,7 @@ impl Projection {
             banned: data.users.banned(),
             ignored: data.users.ignored(),
             wishlist: data.search.wishlist(),
-            interests: data.interests.view(),
+            interests: &data.interests,
             rooms: data.chat.rooms(),
             chat_partners: data.chat.partners(),
             browses: data.users.browse_timestamps().collect(),
@@ -102,33 +102,20 @@ impl ProjectionWriter<'_> {
     }
 }
 
+pub fn set_member(list: &mut Vec<String>, item: &str, member: bool) {
+    list.retain(|entry| entry != item);
+    if member {
+        list.push(item.to_owned());
+        list.sort();
+    }
+}
+
 pub struct AppData {
-    revision: u64,
-    pub session: Session,
+    pub(super) revision: u64,
+    pub session: Status,
     pub transfers: Transfers,
     pub search: SearchState,
     pub users: UsersState,
     pub chat: Chat,
-    pub interests: Interests,
-}
-
-impl AppData {
-    pub fn new(
-        session: Session,
-        transfers: Transfers,
-        search: SearchState,
-        users: UsersState,
-        chat: Chat,
-        interests: Interests,
-    ) -> Self {
-        Self {
-            revision: 0,
-            session,
-            transfers,
-            search,
-            users,
-            chat,
-            interests,
-        }
-    }
+    pub interests: InterestsView,
 }

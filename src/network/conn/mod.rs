@@ -21,7 +21,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 
-use crate::network::ConnId;
+use crate::network::{AllowedResponse, ConnId};
 use crate::protocol::{DistributedMessage, PeerInitMessage, PeerMessage, ServerResponse};
 use crate::types::ConnectionType;
 
@@ -30,15 +30,7 @@ const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAME_QUEUE_CAPACITY: usize = 256;
 const OUTGOING_QUEUE_CAPACITY: usize = 1024;
 
-#[derive(Default)]
-pub struct AllowedResponses {
-    pub search_tokens: HashSet<u32>,
-    pub shared_list_users: HashSet<String>,
-    pub user_info_users: HashSet<String>,
-    pub folder_contents: HashSet<(String, String)>,
-}
-
-pub type SharedAllowed = Arc<RwLock<AllowedResponses>>;
+pub type SharedAllowed = Arc<RwLock<HashSet<AllowedResponse>>>;
 
 #[derive(Default)]
 pub struct TransferLimits {
@@ -183,34 +175,22 @@ pub enum ConnEvent {
         conn_id: ConnId,
         message: DistributedMessage,
     },
-    FileInit {
+    File {
         conn_id: ConnId,
-        token: u32,
-    },
-    FileOffsetReceived {
-        conn_id: ConnId,
-        offset: u64,
-    },
-    DownloadProgress {
-        conn_id: ConnId,
-        bytes_left: u64,
-    },
-    UploadProgress {
-        conn_id: ConnId,
-        offset: u64,
-        bytes_sent: u64,
-    },
-    FileDone {
-        conn_id: ConnId,
-    },
-    FileError {
-        conn_id: ConnId,
-        error: String,
+        event: FileEvent,
     },
     Closed {
         conn_id: ConnId,
         error: Option<String>,
     },
+}
+
+#[derive(Debug)]
+pub enum FileEvent {
+    Init { token: u32 },
+    DownloadProgress { bytes_left: u64 },
+    UploadProgress { offset: u64, bytes_sent: u64 },
+    Error(String),
 }
 
 pub struct PeerTask {

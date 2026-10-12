@@ -195,59 +195,11 @@ impl Actor {
                 self.limits.upload.set_limit(upload_bps);
                 self.limits.download.set_limit(download_bps);
             }
-            NetworkCommand::AllowSearchToken(token) => {
-                self.allowed.write().unwrap().search_tokens.insert(token);
+            NetworkCommand::Allow(response) => {
+                self.allowed.write().unwrap().insert(response);
             }
-            NetworkCommand::DisallowSearchToken(token) => {
-                self.allowed.write().unwrap().search_tokens.remove(&token);
-            }
-            NetworkCommand::AllowSharedListUser(username) => {
-                self.allowed
-                    .write()
-                    .unwrap()
-                    .shared_list_users
-                    .insert(username);
-            }
-            NetworkCommand::DisallowSharedListUser(username) => {
-                self.allowed
-                    .write()
-                    .unwrap()
-                    .shared_list_users
-                    .remove(&username);
-            }
-            NetworkCommand::AllowUserInfoUser(username) => {
-                self.allowed
-                    .write()
-                    .unwrap()
-                    .user_info_users
-                    .insert(username);
-            }
-            NetworkCommand::DisallowUserInfoUser(username) => {
-                self.allowed
-                    .write()
-                    .unwrap()
-                    .user_info_users
-                    .remove(&username);
-            }
-            NetworkCommand::AllowFolderContents {
-                username,
-                directory,
-            } => {
-                self.allowed
-                    .write()
-                    .unwrap()
-                    .folder_contents
-                    .insert((username, directory));
-            }
-            NetworkCommand::DisallowFolderContents {
-                username,
-                directory,
-            } => {
-                self.allowed
-                    .write()
-                    .unwrap()
-                    .folder_contents
-                    .remove(&(username, directory));
+            NetworkCommand::Disallow(response) => {
+                self.allowed.write().unwrap().remove(&response);
             }
             NetworkCommand::CloseConnection(conn_id) => {
                 self.close_conn(conn_id);
@@ -283,12 +235,7 @@ impl Actor {
             ConnEvent::Distrib { conn_id, message } => {
                 self.handle_distrib_message(conn_id, message);
             }
-            ConnEvent::FileInit { .. }
-            | ConnEvent::FileOffsetReceived { .. }
-            | ConnEvent::DownloadProgress { .. }
-            | ConnEvent::UploadProgress { .. }
-            | ConnEvent::FileDone { .. }
-            | ConnEvent::FileError { .. } => self.handle_file_event(event),
+            ConnEvent::File { conn_id, event } => self.handle_file_event(conn_id, event),
             ConnEvent::Closed { conn_id, error } => self.handle_conn_closed(conn_id, error),
         }
     }

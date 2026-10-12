@@ -20,7 +20,7 @@ export function addBuddy(username, note = '') {
 	});
 }
 
-export function removeBuddy(username) {
+function removeBuddy(username) {
 	const note = get(buddies).get(username)?.note ?? '';
 	return act(() => del(`/buddies/${encoded(username)}`), {
 		failed: `${username} not removed from buddies`,
@@ -40,7 +40,7 @@ export function ban(username) {
 	});
 }
 
-export function unban(username) {
+function unban(username) {
 	return act(() => del(`/banned/${encoded(username)}`), {
 		failed: `${username} still banned`,
 		done: `Unbanned ${username}`,
@@ -56,7 +56,7 @@ export function ignore(username) {
 	});
 }
 
-export function unignore(username) {
+function unignore(username) {
 	return act(() => del(`/ignored/${encoded(username)}`), {
 		failed: `${username} still ignored`,
 		done: `Stopped ignoring ${username}`,

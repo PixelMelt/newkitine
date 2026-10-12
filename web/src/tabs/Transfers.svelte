@@ -3,14 +3,14 @@
   import { downloads, uploads, isCleared, report } from '../lib/stores.js';
   import { openBrowse, openUserInfo, focusPane } from '../lib/ui.js';
   import { post } from '../lib/api.js';
-  import { act, actEach, copy } from '../lib/act.js';
+  import { act, actEach } from '../lib/act.js';
   import {
-    formatSize, formatSpeed, formatDuration, formatQuality, formatCount,
-    effectiveBitrate, baseName, folderName, plural,
+    formatSize, formatSpeed, formatDuration, formatCount, baseName, folderName, plural,
   } from '../lib/format.js';
   import { describe, toneRank, retriesByItself } from '../lib/transferStatus.js';
-  import { openMenuAt } from '../lib/menu.js';
+  import { openMenuAt, copyPaths } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { numeric, quality } from '../lib/columns.js';
   import DataTable from '../lib/DataTable.svelte';
 
   export let direction;
@@ -44,18 +44,9 @@
         }]
       : []),
     { key: 'progress', label: 'Progress', width: 130, progress, sortValue: progress, desc: true },
-    {
-      key: 'size', label: 'Size', width: 84, align: 'end', desc: true,
-      text: (t) => formatSize(t.size), sortValue: (t) => t.size,
-    },
-    {
-      key: 'quality', label: 'Quality', width: 124, desc: true,
-      text: (t) => formatQuality(t.attributes), sortValue: (t) => effectiveBitrate(t.attributes),
-    },
-    {
-      key: 'speed', label: 'Speed', width: 92, align: 'end', desc: true,
-      text: (t) => (t.speed_bps ? formatSpeed(t.speed_bps) : ''), sortValue: (t) => t.speed_bps,
-    },
+    numeric('size', 'Size', 84, (t) => t.size, formatSize),
+    quality((t) => t.attributes),
+    numeric('speed', 'Speed', 92, (t) => t.speed_bps, (n) => (n ? formatSpeed(n) : '')),
     ...(isDownload
       ? [{
           key: 'time_left', label: 'Time Left', width: 82, align: 'end',
@@ -144,11 +135,7 @@
             action: () => abort(uploadsTo(rows[0].username)),
           }]),
       { sep: true },
-      {
-        label: many ? `Copy ${rows.length} File Paths` : 'Copy File Path',
-        action: () =>
-          copy(rows.map((t) => t.virtual_path).join('\n'), many ? 'file paths' : 'file path'),
-      },
+      copyPaths(rows.map((t) => t.virtual_path)),
       { sep: true },
       { label: 'User Actions', disabled: !sameUser, submenu: userMenu(rows[0].username) },
     );

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-fn env_var(name: &str) -> Option<String> {
+pub(super) fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 

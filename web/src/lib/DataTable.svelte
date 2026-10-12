@@ -15,11 +15,11 @@
   export let viewKey = null;
   export let primary = false;
   export let headless = false;
-  export let empty = '';
+  export let empty;
   export let loading = false;
   export let selection = new Set();
   export let typeahead = null;
-  export let copyText = null;
+  export let copyText;
   export let onpick = null;
   export let onactivate = null;
   export let onmenu = null;
@@ -53,7 +53,7 @@
     .map((c) => (c.width ? `${c.width}px` : `minmax(${c.min}px, ${c.grow}fr)`))
     .join(' ');
   $: minWidth = columns.reduce((sum, c) => sum + (c.width ?? c.min), 0);
-  $: sorted = resort(rows, sort, columns);
+  $: sorted = sortRows(rows, sort, columns);
   $: if (height) scrollTop = container.scrollTop;
   $: indexOf = new Map(sorted.map((row, index) => [key(row), index]));
   $: if ([...selection].some((k) => !indexOf.has(k))) {
@@ -63,10 +63,6 @@
   $: end = Math.min(sorted.length, Math.ceil((scrollTop + height) / ROW) + OVERSCAN);
   $: visible = sorted.slice(start, end);
   $: if (viewKey !== currentView) switchView(viewKey);
-
-  function resort(list, order, shown) {
-    return sortRows(list, order, shown);
-  }
 
   $: if (indexOf.has(cursor)) cursorAt = indexOf.get(cursor);
   $: followCursor(indexOf);
@@ -225,7 +221,7 @@
     };
     if (event.key in targets && !command && !event.altKey) {
       event.preventDefault();
-      if (event.key === 'ArrowUp' && at <= 0 && onedge) onedge('top');
+      if (event.key === 'ArrowUp' && at <= 0 && onedge) onedge();
       else if (count) moveTo(targets[event.key], event.shiftKey);
     } else if (event.key === 'Enter' && selection.size && onactivate) {
       event.preventDefault();
@@ -233,7 +229,7 @@
     } else if (command && event.key.toLowerCase() === 'a') {
       event.preventDefault();
       selection = new Set(sorted.map(key));
-    } else if (command && event.key.toLowerCase() === 'c' && selection.size && copyText) {
+    } else if (command && event.key.toLowerCase() === 'c' && selection.size) {
       event.preventDefault();
       copy(selectedRows().map(copyText).join('\n'), selection.size > 1 ? 'selected rows' : 'selected row');
     } else if (event.key === 'Delete' && selection.size && ondelete) {

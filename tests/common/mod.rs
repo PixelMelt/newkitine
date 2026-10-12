@@ -17,13 +17,6 @@ pub struct FakeClient {
 
 pub type Registry = Arc<Mutex<HashMap<String, FakeClient>>>;
 
-pub async fn run_fake_server(listener: TcpListener, registry: Registry) {
-    loop {
-        let (stream, _) = listener.accept().await.unwrap();
-        tokio::spawn(handle_fake_client(stream, registry.clone()));
-    }
-}
-
 pub fn frame(code: u32, payload: Vec<u8>) -> Vec<u8> {
     let mut framed = MessageWriter::new();
     framed.write_u32(payload.len() as u32 + 4);
@@ -167,49 +160,46 @@ pub async fn start_fake_server() -> (SocketAddr, Registry) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let server_addr = listener.local_addr().unwrap();
     let registry: Registry = Arc::default();
-    tokio::spawn(run_fake_server(listener, registry.clone()));
+    let clients = registry.clone();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(handle_fake_client(stream, clients.clone()));
+        }
+    });
     (server_addr, registry)
 }
 
-pub fn tempfile() -> std::fs::File {
-    use std::io::{Seek, SeekFrom};
-    let mut file = tempfile_named().1;
-    file.seek(SeekFrom::Start(0)).unwrap();
-    file
-}
-
-pub fn tempfile_named() -> (std::path::PathBuf, std::fs::File) {
+fn temp_path() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let path = std::env::temp_dir().join(format!(
+    std::env::temp_dir().join(format!(
         "newkitine-test-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let file = std::fs::OpenOptions::new()
+    ))
+}
+
+pub fn tempfile() -> std::fs::File {
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
         .read(true)
         .write(true)
-        .open(&path)
-        .unwrap();
-    (path, file)
+        .open(temp_path())
+        .unwrap()
 }
 
 #[allow(dead_code)]
-pub fn temp_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("newkitine-test-{}-{}", std::process::id(), label));
+pub fn temp_dir() -> std::path::PathBuf {
+    let dir = temp_path();
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
 #[allow(dead_code)]
-pub fn client_config(
-    server: SocketAddr,
-    username: &str,
-    listen_port: u16,
-    download_dir: std::path::PathBuf,
-) -> newkitine::client::ClientBootstrap {
+pub fn client_config(server: SocketAddr, username: &str) -> newkitine::client::ClientBootstrap {
+    let download_dir = temp_dir();
     newkitine::client::ClientBootstrap {
         scan_cache: download_dir.join("share-catalog.gz"),
         scan_on_startup: true,
@@ -219,7 +209,7 @@ pub fn client_config(
                 server,
                 username: username.into(),
                 password: "secret".into(),
-                listen_port,
+                listen_port: free_port(),
             },
             description: newkitine::types::DescriptionTemplate::default(),
             auto_reconnect: true,

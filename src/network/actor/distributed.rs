@@ -13,6 +13,7 @@ use crate::types::{ConnectionType, USERNAME_LIMIT};
 const MAX_DISTRIB_CHILDREN_LIMIT: u32 = 10;
 const SEARCH_IDENTIFIER: u32 = 49;
 
+#[derive(Default)]
 pub(super) struct PotentialParent {
     conn_id: Option<ConnId>,
     branch_level: Option<i32>,
@@ -82,14 +83,9 @@ impl Actor {
                 continue;
             };
             let addr = SocketAddrV4::new(parent.ip_address, port);
-            self.distributed.potential_parents.insert(
-                parent.username.clone(),
-                PotentialParent {
-                    conn_id: None,
-                    branch_level: None,
-                    branch_root: None,
-                },
-            );
+            self.distributed
+                .potential_parents
+                .insert(parent.username.clone(), PotentialParent::default());
             self.initiate_peer_connection(
                 parent.username.clone(),
                 ConnectionType::Distributed,
@@ -146,15 +142,7 @@ impl Actor {
         let Some(conn) = self.peers.get(conn_id) else {
             return;
         };
-        let Some(identity) = &conn.identity else {
-            tracing::warn!(
-                conn_id,
-                "distributed message on unidentified connection, closing"
-            );
-            self.close_conn(conn_id);
-            return;
-        };
-        let username = identity.username.clone();
+        let username = conn.username().to_owned();
         match message {
             DistributedMessage::Search(search) => {
                 if search.identifier != SEARCH_IDENTIFIER {
@@ -435,14 +423,10 @@ mod tests {
         }
 
         fn candidate(&mut self, username: &str) {
-            self.actor.distributed.potential_parents.insert(
-                username.to_owned(),
-                PotentialParent {
-                    conn_id: None,
-                    branch_level: None,
-                    branch_root: None,
-                },
-            );
+            self.actor
+                .distributed
+                .potential_parents
+                .insert(username.to_owned(), PotentialParent::default());
         }
 
         fn adopt(&mut self, username: &str) -> (ConnId, mpsc::Receiver<ConnControl>) {

@@ -48,6 +48,14 @@ impl Conn {
         }
     }
 
+    pub(super) fn username(&self) -> &str {
+        &self
+            .identity
+            .as_ref()
+            .expect("connection used before it was identified")
+            .username
+    }
+
     fn is_quiescent(&self, received_through: u64) -> bool {
         self.traffic.received() == received_through
             && self.traffic.sends_written() == self.sends_pushed
@@ -130,12 +138,7 @@ impl Actor {
             Err(mpsc::error::TrySendError::Closed(rejected)) => (rejected, false),
         };
         if let ConnControl::SendPeer(messages) = rejected {
-            let username = conn
-                .identity
-                .as_ref()
-                .expect("peer message pushed to an unidentified connection")
-                .username
-                .clone();
+            let username = conn.username().to_owned();
             self.emit_unsent(username, messages);
         }
         if overflowed {
@@ -174,8 +177,39 @@ impl Actor {
         self.handle_conn_closed(conn_id, None);
     }
 
+    fn open_conn(
+        &mut self,
+        identity: Option<PeerIdentity>,
+        init_id: Option<InitId>,
+        pierce_token: Option<u32>,
+        ip: Option<Ipv4Addr>,
+        established: bool,
+    ) -> PeerTask {
+        let (control_tx, control) = mpsc::channel(CONN_CONTROL_QUEUE_CAPACITY);
+        let traffic = SharedTraffic::default();
+        let conn_id = self.peers.add(Conn {
+            control: control_tx,
+            identity,
+            init_id,
+            established,
+            file_transfer: None,
+            pierce_token,
+            ip,
+            traffic: traffic.clone(),
+            sends_pushed: 0,
+        });
+        self.emit(NetworkEvent::ConnectionCount(self.peers.count()));
+        PeerTask {
+            conn_id,
+            events: self.conn_events_tx.clone(),
+            control,
+            allowed: self.allowed.clone(),
+            limits: self.limits.clone(),
+            traffic,
+        }
+    }
+
     pub(super) fn handle_accepted(&mut self, stream: tokio::net::TcpStream, addr: SocketAddr) {
-        let (control_tx, control_rx) = mpsc::channel(CONN_CONTROL_QUEUE_CAPACITY);
         let ip = match addr {
             SocketAddr::V4(addr) => Some(*addr.ip()),
             SocketAddr::V6(_) => None,
@@ -187,28 +221,8 @@ impl Actor {
         }) {
             return;
         }
-        let traffic = SharedTraffic::default();
-        let conn_id = self.peers.add(Conn {
-            control: control_tx,
-            identity: None,
-            init_id: None,
-            established: true,
-            file_transfer: None,
-            pierce_token: None,
-            ip,
-            traffic: traffic.clone(),
-            sends_pushed: 0,
-        });
-        let task = PeerTask {
-            conn_id,
-            events: self.conn_events_tx.clone(),
-            control: control_rx,
-            allowed: self.allowed.clone(),
-            limits: self.limits.clone(),
-            traffic,
-        };
+        let task = self.open_conn(None, None, None, ip, true);
         super::spawn_conn_task("incoming peer", run_incoming_peer(task, stream, addr));
-        self.emit(NetworkEvent::ConnectionCount(self.peers.count()));
     }
 
     pub(super) fn spawn_outgoing_peer(
@@ -223,30 +237,18 @@ impl Actor {
             PeerInitMessage::PierceFireWall { token } => Some(token),
             _ => None,
         };
-        let (control_tx, control_rx) = mpsc::channel(CONN_CONTROL_QUEUE_CAPACITY);
-        let traffic = SharedTraffic::default();
-        let conn_id = self.peers.add(Conn {
-            control: control_tx,
-            identity: Some(PeerIdentity {
-                username: username.clone(),
-                conn_type,
-            }),
-            init_id,
-            established: false,
-            file_transfer: None,
-            pierce_token,
-            ip: Some(*addr.ip()),
-            traffic: traffic.clone(),
-            sends_pushed: 0,
-        });
-        let task = PeerTask {
-            conn_id,
-            events: self.conn_events_tx.clone(),
-            control: control_rx,
-            allowed: self.allowed.clone(),
-            limits: self.limits.clone(),
-            traffic,
+        let identity = PeerIdentity {
+            username: username.clone(),
+            conn_type,
         };
+        let task = self.open_conn(
+            Some(identity),
+            init_id,
+            pierce_token,
+            Some(*addr.ip()),
+            false,
+        );
+        let conn_id = task.conn_id;
         super::spawn_conn_task(
             "outgoing peer",
             run_outgoing_peer(
@@ -257,7 +259,6 @@ impl Actor {
                 conn_type,
             ),
         );
-        self.emit(NetworkEvent::ConnectionCount(self.peers.count()));
         conn_id
     }
 
@@ -304,12 +305,7 @@ impl Actor {
         let Some(conn) = self.peers.get(conn_id) else {
             return;
         };
-        let Some(identity) = &conn.identity else {
-            warn!(conn_id, "peer message on unidentified connection, closing");
-            self.close_conn(conn_id);
-            return;
-        };
-        let username = identity.username.clone();
+        let username = conn.username().to_owned();
         let close_after = matches!(message, PeerMessage::FileSearchResponse { .. })
             && self.server.username() != Some(username.as_str())
             && conn.is_quiescent(received_through);

@@ -5,17 +5,16 @@ use tracing::{info, warn};
 
 use crate::client::Client;
 use crate::client::ClientBootstrap;
-use crate::types::TransferSnapshot;
 
 use super::behavior::{self, Behavior};
 use super::chat::Chat;
 use super::config::{Bootstrap, GluetunConfig};
-use super::interests::{self, Interests};
+use super::interests::{self, InterestsView};
 use super::projection::{AppData, Projection};
 use super::search::{self, SearchState};
-use super::session::Session;
+use super::session::Status;
 use super::settings::{self, Settings, SettingsState};
-use super::state::App;
+use super::state::{App, now};
 use super::stats::{self, StatsSink};
 use super::transfers::{self, Transfers};
 use super::users::{self, UsersState};
@@ -63,7 +62,7 @@ pub async fn run(config_path: PathBuf) {
     db::init_schema(&pool).await;
 
     let stored_settings: Settings = match settings::load_settings(&pool).await {
-        Some(data) => serde_json::from_str(&data)
+        Some(data) => Settings::from_stored(&data)
             .unwrap_or_else(|error| panic!("corrupt settings row: {error}")),
         None => {
             let defaults = Settings::default();
@@ -102,29 +101,35 @@ pub async fn run(config_path: PathBuf) {
         wishlist: search::load_wishlist(&pool).await,
         liked_interests: interests::load_interests(&pool, "liked").await,
         hated_interests: interests::load_interests(&pool, "hated").await,
-        transfers: transfer_views.iter().map(TransferSnapshot::from).collect(),
+        transfers: transfer_views
+            .iter()
+            .map(|view| view.snapshot.clone())
+            .collect(),
     };
 
-    let data = AppData::new(
-        Session::new(
-            settings.server.clone(),
-            settings.username.clone(),
-            settings.listen_port,
-        ),
-        Transfers::load(transfer_views),
-        SearchState::load(client_config.wishlist.clone()),
-        UsersState::load(
+    let data = AppData {
+        revision: 0,
+        session: Status {
+            server: settings.server.clone(),
+            username: settings.username.clone(),
+            listen_port: settings.listen_port,
+            ..Default::default()
+        },
+        transfers: Transfers::load(transfer_views),
+        search: SearchState::load(client_config.wishlist.clone()),
+        users: UsersState::load(
             &client_config.buddies,
             users::load_notes(&pool).await,
             client_config.banned.clone(),
             client_config.ignored.clone(),
         ),
-        Chat::load(db::load_list(&pool, "chat").await),
-        Interests::load(
-            client_config.liked_interests.clone(),
-            client_config.hated_interests.clone(),
-        ),
-    );
+        chat: Chat::load(db::load_list(&pool, "chat").await),
+        interests: InterestsView {
+            liked: client_config.liked_interests.clone(),
+            hated: client_config.hated_interests.clone(),
+            ..Default::default()
+        },
+    };
 
     let (client, client_events, transfer_events) = Client::spawn(client_config);
 
@@ -211,10 +216,7 @@ async fn daily_rescan(app: Arc<App>) {
         if !settings.rescan_daily {
             continue;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = now() as u64;
         let day = now / 86_400;
         if (now / 3600) % 24 == settings.rescan_hour_utc as u64 && last_fired_day != Some(day) {
             last_fired_day = Some(day);

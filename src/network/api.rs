@@ -6,6 +6,14 @@ use crate::types::{ConnectionType, TransferDirection};
 
 pub type ConnId = u64;
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum AllowedResponse {
+    Search(u32),
+    SharedList(String),
+    UserInfo(String),
+    FolderContents { username: String, directory: String },
+}
+
 #[derive(Debug)]
 pub enum NetworkCommand {
     ServerConnect {
@@ -47,20 +55,8 @@ pub enum NetworkCommand {
         upload_bps: u64,
         download_bps: u64,
     },
-    AllowSearchToken(u32),
-    DisallowSearchToken(u32),
-    AllowSharedListUser(String),
-    DisallowSharedListUser(String),
-    AllowUserInfoUser(String),
-    DisallowUserInfoUser(String),
-    AllowFolderContents {
-        username: String,
-        directory: String,
-    },
-    DisallowFolderContents {
-        username: String,
-        directory: String,
-    },
+    Allow(AllowedResponse),
+    Disallow(AllowedResponse),
     CloseConnection(ConnId),
     BanAddresses(Vec<String>),
     Quit,

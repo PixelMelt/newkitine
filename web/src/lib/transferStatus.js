@@ -98,9 +98,6 @@ export const retriesByItself = (transfer) =>
 		(transfer.failure_reason ?? '').startsWith('local file error') ||
 		(transfer.failure_reason ?? '').startsWith('cannot place finished download'));
 
-export const isActive = (transfer) =>
-	transfer.status === 'queued' || transfer.status === 'transferring';
-
 const TONE_RANK = { failed: 0, active: 1, waiting: 2, stopped: 3, done: 4 };
 
 export const toneRank = (tone) => TONE_RANK[tone];

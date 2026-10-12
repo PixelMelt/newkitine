@@ -1,9 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tracing::{error, info, warn};
 
 use super::config::GluetunConfig;
@@ -11,7 +8,26 @@ use super::settings;
 use super::state::App;
 
 pub async fn fetch_forwarded_port(config: &GluetunConfig) -> Result<u16, String> {
-    let body = http_get(config, "/v1/portforward").await?;
+    let url = format!("http://{}:{}/v1/portforward", config.host, config.port);
+    let mut request = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(url);
+    if !config.api_key.is_empty() {
+        request = request.header("X-API-Key", &config.api_key);
+    } else if !config.username.is_empty() {
+        request = request.basic_auth(&config.username, Some(&config.password));
+    }
+    let body = request
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| format!("request failed: {error}"))?
+        .text()
+        .await
+        .map_err(|error| format!("read failed: {error}"))?;
     let value: serde_json::Value =
         serde_json::from_str(&body).map_err(|error| format!("invalid json: {error}"))?;
     let port = value
@@ -22,45 +38,6 @@ pub async fn fetch_forwarded_port(config: &GluetunConfig) -> Result<u16, String>
         return Err(format!("forwarded port out of range: {port}"));
     }
     Ok(port as u16)
-}
-
-async fn http_get(config: &GluetunConfig, path: &str) -> Result<String, String> {
-    let address = (config.host.as_str(), config.port);
-    let mut stream = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(address))
-        .await
-        .map_err(|_| "connect timeout".to_owned())?
-        .map_err(|error| format!("connect failed: {error}"))?;
-
-    let mut request = format!("GET {path} HTTP/1.0\r\nHost: {}\r\n", config.host);
-    if !config.api_key.is_empty() {
-        request.push_str(&format!("X-API-Key: {}\r\n", config.api_key));
-    } else if !config.username.is_empty() {
-        let credentials = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", config.username, config.password));
-        request.push_str(&format!("Authorization: Basic {credentials}\r\n"));
-    }
-    request.push_str("\r\n");
-
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|error| format!("write failed: {error}"))?;
-
-    let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut response))
-        .await
-        .map_err(|_| "read timeout".to_owned())?
-        .map_err(|error| format!("read failed: {error}"))?;
-    let response = String::from_utf8_lossy(&response);
-
-    let (head, body) = response
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "malformed http response".to_owned())?;
-    let status_line = head.lines().next().unwrap_or_default();
-    if !status_line.contains("200") {
-        return Err(format!("gluetun returned: {status_line}"));
-    }
-    Ok(body.to_owned())
 }
 
 const MAX_CONSECUTIVE_POLL_FAILURES: u32 = 30;
@@ -94,5 +71,65 @@ pub async fn watch(app: Arc<App>, config: GluetunConfig, mut current: u16) {
                 warn!(%error, failures, "cannot fetch forwarded port from gluetun");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    async fn fetch_from(
+        response: &'static str,
+        config: GluetunConfig,
+    ) -> (Result<u16, String>, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = GluetunConfig {
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            ..config
+        };
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            stream.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&request[..read]).to_lowercase()
+        });
+        (fetch_forwarded_port(&config).await, server.await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_forwarded_port_is_read_with_the_configured_credentials() {
+        const OK: &str =
+            "HTTP/1.1 200 OK\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"port\":51234}";
+        let mut config = GluetunConfig {
+            api_key: "secret".into(),
+            ..GluetunConfig::default()
+        };
+        let (port, request) = fetch_from(OK, config.clone()).await;
+        assert_eq!(port, Ok(51234));
+        assert!(request.starts_with("get /v1/portforward http/1.1"));
+        assert!(request.contains("x-api-key: secret"));
+
+        config = GluetunConfig {
+            username: "user".into(),
+            password: "pass".into(),
+            ..GluetunConfig::default()
+        };
+        let (port, request) = fetch_from(OK, config).await;
+        assert_eq!(port, Ok(51234));
+        assert!(request.contains("authorization: basic dxnlcjpwyxnz"));
+
+        const DENIED: &str =
+            "HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+        let (port, _) = fetch_from(DENIED, GluetunConfig::default()).await;
+        assert!(port.unwrap_err().contains("401"));
+
+        const LOW: &str =
+            "HTTP/1.1 200 OK\r\ncontent-length: 10\r\nconnection: close\r\n\r\n{\"port\":0}";
+        let (port, _) = fetch_from(LOW, GluetunConfig::default()).await;
+        assert_eq!(port, Err("forwarded port out of range: 0".into()));
     }
 }

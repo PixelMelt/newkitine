@@ -1,7 +1,5 @@
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::protocol::ProtocolError;
-
 pub const MAX_SERVER_MESSAGE_SIZE: usize = 16777216;
 pub const MAX_PEER_MESSAGE_SIZE: usize = 16777216;
 pub const MAX_LARGE_RESPONSE_SIZE: usize = 469762048;
@@ -17,8 +15,6 @@ pub enum FrameError {
     TooLarge { size: usize, limit: usize },
     #[error("frame too short for message code")]
     Truncated,
-    #[error(transparent)]
-    Protocol(#[from] ProtocolError),
 }
 
 pub async fn read_payload<R: AsyncRead + Unpin>(

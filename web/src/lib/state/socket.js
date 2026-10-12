@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 
 import * as chat from './chat.js';
 import { validate } from './contract.js';
@@ -17,17 +17,11 @@ const handlers = Object.assign({}, ...domains.map((domain) => domain.handlers));
 
 export const link = writable({ state: 'connecting', known: false, error: null });
 
-let current = { state: 'connecting', known: false, error: null };
 let lastRev = 0;
 let retryTimer = null;
 let lostTimer = null;
 let violationAt = 0;
 let socket = null;
-
-function setLink(next) {
-	current = next;
-	link.set(next);
-}
 
 function dispatch(msg) {
 	validate(msg);
@@ -38,7 +32,7 @@ function dispatch(msg) {
 		}
 		clearTimeout(lostTimer);
 		lostTimer = null;
-		setLink({ state: 'live', known: true, error: null });
+		link.set({ state: 'live', known: true, error: null });
 		return;
 	}
 	const handler = handlers[msg.type];
@@ -69,17 +63,18 @@ export function connectWebSocket() {
 			console.error('websocket contract violation, resnapshotting', error);
 			const repeated = Date.now() - violationAt < STABLE_MS;
 			violationAt = Date.now();
-			if (repeated) setLink({ state: 'broken', known: current.known, error: error.message });
+			if (repeated) link.set({ state: 'broken', known: get(link).known, error: error.message });
 			socket.close();
 			throw error;
 		}
 	};
 	socket.onclose = () => {
-		if (current.state === 'broken') return;
-		if (current.state !== 'lost' && lostTimer === null) {
+		const { state } = get(link);
+		if (state === 'broken') return;
+		if (state !== 'lost' && lostTimer === null) {
 			lostTimer = setTimeout(() => {
 				lostTimer = null;
-				setLink({ state: 'lost', known: current.known, error: null });
+				link.set({ state: 'lost', known: get(link).known, error: null });
 			}, LOST_AFTER_MS);
 		}
 		retryTimer = setTimeout(connectWebSocket, RETRY_MS);

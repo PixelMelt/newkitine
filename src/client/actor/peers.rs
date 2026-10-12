@@ -1,6 +1,6 @@
 use super::ClientActor;
 use crate::client::{ClientEvent, Observation, SearchResult, UserInfoReceived};
-use crate::network::NetworkCommand;
+use crate::network::AllowedResponse;
 use crate::protocol::PeerMessage;
 use crate::types::TransferDirection;
 
@@ -39,10 +39,10 @@ impl ClientActor {
                     self.emit_transfers(updates);
                 }
                 TransferDirection::Download => {
-                    let (updates, accepted) = self.uploads.handle_legacy_transfer_request(
+                    let (updates, accepted) = self.uploads.handle_queue_upload(
                         &mut self.transfer_ids,
                         &username,
-                        token,
+                        Some(token),
                         &file,
                         self.sharing.index.as_ref(),
                         &self.users,
@@ -89,7 +89,7 @@ impl ClientActor {
                 ..
             } => {
                 self.net
-                    .send(NetworkCommand::DisallowSharedListUser(username.clone()));
+                    .disallow(AllowedResponse::SharedList(username.clone()));
                 self.emit(ClientEvent::SharedFileList {
                     username,
                     shares,
@@ -105,7 +105,7 @@ impl ClientActor {
                 ..
             } => {
                 self.net
-                    .send(NetworkCommand::DisallowUserInfoUser(username.clone()));
+                    .disallow(AllowedResponse::UserInfo(username.clone()));
                 self.emit(ClientEvent::UserInfo(UserInfoReceived {
                     username,
                     description,
@@ -121,6 +121,7 @@ impl ClientActor {
                 let (updates, accepted) = self.uploads.handle_queue_upload(
                     &mut self.transfer_ids,
                     &username,
+                    None,
                     &file,
                     self.sharing.index.as_ref(),
                     &self.users,

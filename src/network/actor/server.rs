@@ -250,7 +250,7 @@ impl Actor {
                 (_, None) => debug!(user, port, "skipping indirect connection, invalid port"),
             },
             ServerResponse::CantConnectToPeer { token } => {
-                self.handle_cant_connect(*token);
+                self.indirect_request_failed(*token);
             }
             ServerResponse::GetUserStatus { user, status, .. } => {
                 if *status == UserStatus::Offline.as_u32() {
@@ -324,13 +324,7 @@ impl Actor {
         self.peers.close_all();
         self.indirect.reset();
         self.distributed.reset();
-        {
-            let mut allowed = self.allowed.write().unwrap();
-            allowed.search_tokens.clear();
-            allowed.shared_list_users.clear();
-            allowed.user_info_users.clear();
-            allowed.folder_contents.clear();
-        }
+        self.allowed.write().unwrap().clear();
         self.emit(NetworkEvent::ServerDisconnected {
             manual: state.manual_disconnect,
         });

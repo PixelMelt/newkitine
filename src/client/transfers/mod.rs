@@ -10,7 +10,15 @@ pub(super) use downloads::Downloads;
 pub(super) use folders::{FolderRequests, destination_root};
 pub(super) use uploads::Uploads;
 
+use std::time::Duration;
+
 use crate::types::{TransferDirection, TransferId, TransferSnapshot, TransferStatus};
+
+const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+const USER_OFFLINE: &str = "user is offline";
+const CONNECTION_TIMEOUT: &str = "connection timeout";
+const CONNECTION_CLOSED: &str = "connection closed";
+const LOCAL_FILE_ERROR: &str = "local file error";
 
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

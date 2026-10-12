@@ -9,7 +9,10 @@ use tracing::{debug, info, warn};
 use super::files;
 use super::registry::{Registry, TransferKey};
 use super::speed::SpeedMeter;
-use super::{TransferIds, TransferPhase, TransferRejectReason, VIRTUAL_PATH_LIMIT, peer_reason};
+use super::{
+    CONNECTION_CLOSED, CONNECTION_TIMEOUT, LOCAL_FILE_ERROR, TRANSFER_REQUEST_TIMEOUT, TransferIds,
+    TransferPhase, TransferRejectReason, USER_OFFLINE, VIRTUAL_PATH_LIMIT, peer_reason,
+};
 use crate::client::users::Users;
 use crate::client::{AbortResult, EnqueueResult, RetryResult, TransferWork};
 use crate::network::ConnId;
@@ -19,19 +22,14 @@ use crate::types::{
     FileAttributes, FileInfo, TransferDirection, TransferId, TransferSnapshot, TransferStatus,
 };
 
-const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const QUEUE_POSITION_INTERVAL: Duration = Duration::from_secs(300);
 const CONNECTION_RETRY_INTERVAL: Duration = Duration::from_secs(180);
 const IO_RETRY_INTERVAL: Duration = Duration::from_secs(900);
 const MIN_LIMITED_BATCH: usize = 5;
 const RECOVERY_BATCH: usize = 200;
 
-const USER_OFFLINE: &str = "user is offline";
-const CONNECTION_TIMEOUT: &str = "connection timeout";
-const CONNECTION_CLOSED: &str = "connection closed";
 const REQUEST_TIMED_OUT: &str = "request timed out";
 const UPLOAD_FAILED: &str = "upload failed";
-const LOCAL_FILE_ERROR: &str = "local file error";
 const PLACEMENT_ERROR: &str = "cannot place finished download";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,24 +51,24 @@ fn recovery(phase: &TransferPhase) -> Option<Recovery> {
         | UPLOAD_FAILED
         | TransferRejectReason::PENDING_SHUTDOWN => Some(Recovery::Connection),
         TransferRejectReason::FILE_READ_ERROR => Some(Recovery::Io),
-        reason if reason.starts_with(LOCAL_FILE_ERROR) || reason.starts_with(PLACEMENT_ERROR) => {
-            Some(Recovery::Io)
-        }
+        reason if is_local_reason(reason) => Some(Recovery::Io),
         _ => None,
     }
 }
 
-fn is_local_error(phase: &TransferPhase) -> bool {
-    matches!(phase, TransferPhase::Failed(reason)
-        if reason.starts_with(LOCAL_FILE_ERROR) || reason.starts_with(PLACEMENT_ERROR))
+fn is_local_reason(reason: &str) -> bool {
+    reason.starts_with(LOCAL_FILE_ERROR) || reason.starts_with(PLACEMENT_ERROR)
 }
 
 fn is_internal_reason(reason: &str) -> bool {
     matches!(
         reason,
         USER_OFFLINE | CONNECTION_TIMEOUT | CONNECTION_CLOSED | REQUEST_TIMED_OUT | UPLOAD_FAILED
-    ) || reason.starts_with(LOCAL_FILE_ERROR)
-        || reason.starts_with(PLACEMENT_ERROR)
+    ) || is_local_reason(reason)
+}
+
+fn resumes_online(phase: &TransferPhase) -> bool {
+    matches!(phase, TransferPhase::Queued | TransferPhase::Limited) || recovery(phase).is_some()
 }
 
 fn parks_offline(phase: &TransferPhase) -> bool {
@@ -106,7 +104,6 @@ struct Transfer {
     bytes_done: u64,
     file_path: Option<String>,
     queue_place: u32,
-    speed_bps: u32,
     retry_attempt: bool,
     legacy_attempt: bool,
     size_changed: bool,
@@ -116,8 +113,32 @@ struct Transfer {
 }
 
 impl Transfer {
-    fn key(&self) -> TransferKey {
-        (self.username.clone(), self.virtual_path.clone())
+    fn new(
+        id: TransferId,
+        username: String,
+        virtual_path: String,
+        folder_path: PathBuf,
+        size: u64,
+        attributes: FileAttributes,
+    ) -> Self {
+        Self {
+            id,
+            username,
+            virtual_path,
+            folder_path,
+            size,
+            attributes,
+            phase: TransferPhase::Queued,
+            bytes_done: 0,
+            file_path: None,
+            queue_place: 0,
+            retry_attempt: false,
+            legacy_attempt: false,
+            size_changed: false,
+            incomplete_path: None,
+            activated_at: None,
+            speed: SpeedMeter::default(),
+        }
     }
 
     fn needs_watch(&self) -> bool {
@@ -141,18 +162,13 @@ impl Transfer {
             file_path: self.file_path.clone(),
             queue_place: self.queue_place,
             speed_bps: if self.phase == TransferPhase::Transferring {
-                self.speed_bps
+                self.speed.bps()
             } else {
                 0
             },
             attributes: self.attributes.clone(),
         }
     }
-}
-
-enum Admission {
-    Finished(TransferWork),
-    Queued(TransferWork),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,29 +264,18 @@ impl Downloads {
             || self.destination(&seed.username, &seed.virtual_path, None),
             PathBuf::from,
         );
-        self.transfers.insert(
+        let mut transfer = Transfer::new(
             seed.id,
-            key,
-            Transfer {
-                id: seed.id,
-                username: seed.username,
-                virtual_path: seed.virtual_path,
-                folder_path,
-                size: seed.size,
-                attributes: seed.attributes,
-                phase,
-                bytes_done: seed.bytes_done,
-                file_path: seed.file_path,
-                queue_place: 0,
-                speed_bps: 0,
-                retry_attempt: false,
-                legacy_attempt: false,
-                size_changed: false,
-                incomplete_path: None,
-                activated_at: None,
-                speed: SpeedMeter::default(),
-            },
+            seed.username,
+            seed.virtual_path,
+            folder_path,
+            seed.size,
+            seed.attributes,
         );
+        transfer.phase = phase;
+        transfer.bytes_done = seed.bytes_done;
+        transfer.file_path = seed.file_path;
+        self.transfers.insert(seed.id, key, transfer);
     }
 
     pub fn enqueue(
@@ -314,16 +319,14 @@ impl Downloads {
             };
             let folder_path = self.destination(&username, &file.name, Some(root));
             let virtual_path = file.name.clone();
-            match self.admit(id, username.clone(), file, folder_path) {
-                Admission::Finished(finished) => work.push(finished),
-                Admission::Queued(queued) => {
-                    work.push(queued);
-                    requests.push(PeerMessage::QueueUpload {
-                        file: virtual_path,
-                        legacy_client: false,
-                    });
-                }
+            let admitted = self.admit(id, username.clone(), file, folder_path);
+            if matches!(admitted, TransferWork::Update(_)) {
+                requests.push(PeerMessage::QueueUpload {
+                    file: virtual_path,
+                    legacy_client: false,
+                });
             }
+            work.push(admitted);
         }
         if !requests.is_empty() {
             users.watch(&username);
@@ -363,14 +366,12 @@ impl Downloads {
         folder_path: PathBuf,
     ) -> Vec<TransferWork> {
         let key = (username.clone(), file.name.clone());
-        match self.admit(id, username, file, folder_path) {
-            Admission::Finished(finished) => vec![finished],
-            Admission::Queued(queued) => {
-                users.watch(&key.0);
-                self.send_queue_request(key);
-                vec![queued]
-            }
+        let admitted = self.admit(id, username, file, folder_path);
+        if matches!(admitted, TransferWork::Update(_)) {
+            users.watch(&key.0);
+            self.send_queue_request(key);
         }
+        vec![admitted]
     }
 
     fn admit(
@@ -379,57 +380,41 @@ impl Downloads {
         username: String,
         file: FileInfo,
         folder_path: PathBuf,
-    ) -> Admission {
-        let FileInfo {
-            name: virtual_path,
-            size,
-            attributes,
-        } = file;
-        let key = (username.clone(), virtual_path.clone());
+    ) -> TransferWork {
+        let key = (username.clone(), file.name.clone());
         self.recovery_pending.remove(&key);
         let limit = self.basename_limit(&folder_path);
-        let basename = files::download_basename(&virtual_path, limit);
-        let downloaded = files::complete_file_path(&folder_path, &basename, size);
-        let mut transfer = Transfer {
+        let basename = files::download_basename(&file.name, limit);
+        let downloaded = files::complete_file_path(&folder_path, &basename, file.size);
+        let mut transfer = Transfer::new(
             id,
-            username: username.clone(),
-            virtual_path: virtual_path.clone(),
+            username,
+            file.name,
             folder_path,
-            size,
-            attributes,
-            phase: TransferPhase::Queued,
-            bytes_done: 0,
-            file_path: None,
-            queue_place: 0,
-            speed_bps: 0,
-            retry_attempt: false,
-            legacy_attempt: false,
-            size_changed: false,
-            incomplete_path: None,
-            activated_at: None,
-            speed: SpeedMeter::default(),
+            file.size,
+            file.attributes,
+        );
+        let admitted = match downloaded {
+            Some(destination) => {
+                info!(
+                    username = key.0,
+                    virtual_path = key.1,
+                    ?destination,
+                    "file is already downloaded"
+                );
+                transfer.phase = TransferPhase::Finished;
+                transfer.bytes_done = transfer.size;
+                transfer.file_path = Some(destination.display().to_string());
+                TransferWork::Finished {
+                    snapshot: transfer.snapshot(),
+                    avg_speed_bps: None,
+                    delivered_bytes: 0,
+                }
+            }
+            None => TransferWork::Update(transfer.snapshot()),
         };
-        if let Some(destination) = downloaded {
-            info!(
-                username,
-                virtual_path,
-                ?destination,
-                "file is already downloaded"
-            );
-            transfer.phase = TransferPhase::Finished;
-            transfer.bytes_done = size;
-            transfer.file_path = Some(destination.display().to_string());
-            let finished = TransferWork::Finished {
-                snapshot: transfer.snapshot(),
-                avg_speed_bps: None,
-                delivered_bytes: 0,
-            };
-            self.transfers.insert(id, key, transfer);
-            return Admission::Finished(finished);
-        }
-        let queued = TransferWork::Update(transfer.snapshot());
         self.transfers.insert(id, key, transfer);
-        Admission::Queued(queued)
+        admitted
     }
 
     fn requeue(&mut self, users: &mut Users, key: &TransferKey) -> Vec<TransferWork> {
@@ -477,26 +462,13 @@ impl Downloads {
         (AbortResult::Aborted, vec![aborted])
     }
 
-    pub fn clear(&mut self, statuses: &[TransferStatus]) -> Vec<TransferId> {
+    pub fn clear(&mut self, statuses: Option<&[TransferStatus]>) -> Vec<TransferId> {
         let removed: Vec<TransferId> = self
             .transfers
             .values()
-            .filter(|transfer| statuses.contains(&transfer.phase.status()))
-            .map(|transfer| transfer.id)
-            .collect();
-        for id in &removed {
-            let (_, detached) = self.transfers.remove(*id).unwrap();
-            if let Some(conn_id) = detached.conn_id {
-                self.net.send(NetworkCommand::CloseConnection(conn_id));
-            }
-        }
-        removed
-    }
-
-    pub fn clear_all(&mut self) -> Vec<TransferId> {
-        let removed: Vec<TransferId> = self
-            .transfers
-            .values()
+            .filter(|transfer| {
+                statuses.is_none_or(|statuses| statuses.contains(&transfer.phase.status()))
+            })
             .map(|transfer| transfer.id)
             .collect();
         for id in &removed {
@@ -518,7 +490,9 @@ impl Downloads {
                 users.watch(&transfer.username);
             }
         }
-        let queued = self.keys_where(|transfer| transfer.phase == TransferPhase::Queued);
+        let queued = self
+            .transfers
+            .keys_where(|transfer| transfer.phase == TransferPhase::Queued);
         self.schedule(queued, RecoveryStep::Request);
     }
 
@@ -551,10 +525,7 @@ impl Downloads {
             };
             match (step, &transfer.phase) {
                 (RecoveryStep::Request, TransferPhase::Queued) => self.send_queue_request(key),
-                (RecoveryStep::Request, TransferPhase::Limited) => {
-                    updates.extend(self.requeue(users, &key));
-                }
-                (RecoveryStep::Request, phase) if recovery(phase).is_some() => {
+                (RecoveryStep::Request, phase) if resumes_online(phase) => {
                     updates.extend(self.requeue(users, &key));
                 }
                 (RecoveryStep::Park, phase) if parks_offline(phase) => {
@@ -613,32 +584,18 @@ impl Downloads {
         }
     }
 
-    fn keys_where(&self, predicate: impl Fn(&Transfer) -> bool) -> Vec<TransferKey> {
-        let mut matching: Vec<(TransferId, TransferKey)> = self
-            .transfers
-            .values()
-            .filter(|transfer| predicate(transfer))
-            .map(|transfer| (transfer.id, transfer.key()))
-            .collect();
-        matching.sort_unstable_by_key(|(id, _)| id.0);
-        matching.into_iter().map(|(_, key)| key).collect()
-    }
-
     pub fn user_offline(&mut self, username: &str) {
         self.unschedule_user(username);
         let keys = self
+            .transfers
             .keys_where(|transfer| transfer.username == username && parks_offline(&transfer.phase));
         self.schedule(keys, RecoveryStep::Park);
     }
 
     pub fn user_online(&mut self, username: &str) {
         self.unschedule_user(username);
-        let keys = self.keys_where(|transfer| {
-            transfer.username == username
-                && (matches!(
-                    transfer.phase,
-                    TransferPhase::Queued | TransferPhase::Limited
-                ) || recovery(&transfer.phase).is_some())
+        let keys = self.transfers.keys_where(|transfer| {
+            transfer.username == username && resumes_online(&transfer.phase)
         });
         self.schedule(keys, RecoveryStep::Request);
     }
@@ -649,11 +606,13 @@ impl Downloads {
         if !connection && !io {
             return;
         }
-        let keys = self.keys_where(|transfer| match recovery(&transfer.phase) {
-            Some(Recovery::Connection) => connection,
-            Some(Recovery::Io) => io,
-            Some(Recovery::UserOnline) | None => false,
-        });
+        let keys = self
+            .transfers
+            .keys_where(|transfer| match recovery(&transfer.phase) {
+                Some(Recovery::Connection) => connection,
+                Some(Recovery::Io) => io,
+                Some(Recovery::UserOnline) | None => false,
+            });
         self.schedule(keys, RecoveryStep::Request);
     }
 
@@ -732,8 +691,7 @@ impl Downloads {
                 "transfer request reuses a token held by another download"
             );
         }
-        let mut updates = Vec::new();
-        let response = match self.transfers.get_mut(&key) {
+        let accepted = match self.transfers.get_mut(&key) {
             Some(transfer)
                 if !token_taken
                     && matches!(
@@ -755,34 +713,26 @@ impl Downloads {
                 transfer.phase = TransferPhase::GettingStatus;
                 transfer.activated_at = Some(Instant::now());
                 transfer.queue_place = 0;
-                updates.push(TransferWork::Update(transfer.snapshot()));
-                PeerMessage::TransferResponse {
-                    token,
-                    allowed: true,
-                    reason: None,
-                    filesize: None,
-                }
+                Ok(TransferWork::Update(transfer.snapshot()))
             }
             Some(transfer) if transfer.phase == TransferPhase::Finished => {
-                PeerMessage::TransferResponse {
-                    token,
-                    allowed: false,
-                    reason: Some(TransferRejectReason::COMPLETE.into()),
-                    filesize: None,
-                }
+                Err(TransferRejectReason::COMPLETE)
             }
-            _ => PeerMessage::TransferResponse {
-                token,
-                allowed: false,
-                reason: Some(TransferRejectReason::CANCELLED.into()),
-                filesize: None,
-            },
+            _ => Err(TransferRejectReason::CANCELLED),
         };
-        if !updates.is_empty() {
+        if accepted.is_ok() {
             self.transfers.attach_token(&key, token);
         }
-        self.net.peer(username, response);
-        updates
+        self.net.peer(
+            username,
+            PeerMessage::TransferResponse {
+                token,
+                allowed: accepted.is_ok(),
+                reason: accepted.as_ref().err().map(|reason| (*reason).to_owned()),
+                filesize: None,
+            },
+        );
+        accepted.into_iter().collect()
     }
 
     pub fn handle_file_transfer_init(
@@ -819,7 +769,6 @@ impl Downloads {
                     transfer.phase = TransferPhase::Transferring;
                     transfer.bytes_done = offset;
                     transfer.queue_place = 0;
-                    transfer.speed_bps = 0;
                     transfer.speed.reset();
                     let size = transfer.size;
                     let started = TransferWork::Update(transfer.snapshot());
@@ -859,7 +808,7 @@ impl Downloads {
         if bytes_left == 0 {
             return self.finish(&key);
         }
-        transfer.speed_bps = transfer.speed.sample(transfer.bytes_done);
+        transfer.speed.sample(transfer.bytes_done);
         vec![TransferWork::Progress(transfer.snapshot())]
     }
 
@@ -946,7 +895,7 @@ impl Downloads {
         if matches!(
             transfer.phase,
             TransferPhase::Placing | TransferPhase::Finished | TransferPhase::Aborted
-        ) || is_local_error(&transfer.phase)
+        ) || matches!(&transfer.phase, TransferPhase::Failed(reason) if is_local_reason(reason))
         {
             return Vec::new();
         }
@@ -998,39 +947,28 @@ impl Downloads {
     }
 
     pub fn sweep_request_timeouts(&mut self) -> Vec<TransferWork> {
-        let expired: Vec<TransferKey> = self
-            .transfers
-            .values()
-            .filter(|transfer| {
-                transfer.phase == TransferPhase::GettingStatus
-                    && transfer
-                        .activated_at
-                        .is_some_and(|at| at.elapsed() > TRANSFER_REQUEST_TIMEOUT)
-            })
-            .map(Transfer::key)
-            .collect();
-        let mut updates = Vec::new();
-        for key in expired {
-            updates.extend(self.fail(&key, REQUEST_TIMED_OUT.into()));
-        }
-        updates
+        let expired = self.transfers.keys_where(|transfer| {
+            transfer.phase == TransferPhase::GettingStatus
+                && transfer
+                    .activated_at
+                    .is_some_and(|at| at.elapsed() > TRANSFER_REQUEST_TIMEOUT)
+        });
+        expired
+            .iter()
+            .flat_map(|key| self.fail(key, REQUEST_TIMED_OUT.into()))
+            .collect()
     }
 
     pub fn reset(&mut self) -> Vec<TransferWork> {
         self.queue_limits.clear();
         self.recovery_queue.clear();
         self.recovery_pending.clear();
-        let active: Vec<TransferKey> = self
-            .transfers
-            .values()
-            .filter(|transfer| {
-                matches!(
-                    transfer.phase,
-                    TransferPhase::GettingStatus | TransferPhase::Transferring
-                )
-            })
-            .map(Transfer::key)
-            .collect();
+        let active = self.transfers.keys_where(|transfer| {
+            matches!(
+                transfer.phase,
+                TransferPhase::GettingStatus | TransferPhase::Transferring
+            )
+        });
         let mut updates = Vec::new();
         for key in active {
             self.transfers.detach(&key);
@@ -1054,7 +992,6 @@ impl Downloads {
         let transfer = self.transfers.get_mut(key).unwrap();
         transfer.phase = TransferPhase::Placing;
         transfer.bytes_done = transfer.size;
-        transfer.speed_bps = 0;
         let update = TransferWork::Update(transfer.snapshot());
         let incomplete_path = transfer
             .incomplete_path
@@ -1122,13 +1059,8 @@ impl Downloads {
     }
 
     fn fail(&mut self, key: &TransferKey, reason: String) -> Vec<TransferWork> {
-        let Some(transfer) = self.transfers.get(key) else {
-            return Vec::new();
-        };
-        if matches!(
-            transfer.phase,
-            TransferPhase::Finished | TransferPhase::Aborted | TransferPhase::Failed(_)
-        ) {
+        let active = |transfer: &Transfer| transfer.phase.is_active();
+        if !self.transfers.get(key).is_some_and(active) {
             return Vec::new();
         }
         self.release(key);
@@ -1143,166 +1075,7 @@ impl Downloads {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::spawn as spawn_network;
     use crate::protocol::ServerRequest;
-
-    fn no_users() -> Users {
-        Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
-    }
-
-    fn queued_download(downloads: &mut Downloads, ids: &mut TransferIds) -> TransferKey {
-        let (result, _) = downloads.enqueue(
-            ids,
-            &mut no_users(),
-            "uploader".into(),
-            FileInfo {
-                name: "Music\\song.mp3".into(),
-                size: 100,
-                attributes: FileAttributes::default(),
-            },
-            None,
-        );
-        assert_eq!(result, EnqueueResult::Enqueued);
-        ("uploader".into(), "Music\\song.mp3".into())
-    }
-
-    #[tokio::test]
-    async fn folder_downloads_keep_the_remote_hierarchy() {
-        let (net, _events) = spawn_network();
-        let mut downloads = Downloads::new(
-            net,
-            "/downloads".into(),
-            "/incomplete".into(),
-            true,
-            mpsc::unbounded_channel().0,
-        );
-        let mut ids = TransferIds::new(&[]);
-        let (result, _) = downloads.enqueue(
-            &mut ids,
-            &mut no_users(),
-            "uploader".into(),
-            FileInfo {
-                name: "share\\Soulseek\\folder1\\sub1\\file4.mp3".into(),
-                size: 100,
-                attributes: FileAttributes::default(),
-            },
-            Some("share\\Soulseek"),
-        );
-        assert_eq!(result, EnqueueResult::Enqueued);
-        let key = (
-            "uploader".to_owned(),
-            "share\\Soulseek\\folder1\\sub1\\file4.mp3".to_owned(),
-        );
-        assert_eq!(
-            downloads.transfers.get(&key).unwrap().folder_path,
-            PathBuf::from("/downloads/uploader/Soulseek/folder1/sub1")
-        );
-    }
-
-    #[tokio::test]
-    async fn an_already_downloaded_file_finishes_without_asking_the_peer() {
-        let dir = std::env::temp_dir().join(format!("newkitine-skip-{}", std::process::id()));
-        let destination = dir.join("Album");
-        std::fs::create_dir_all(&destination).unwrap();
-        std::fs::write(destination.join("song.mp3"), vec![0u8; 100]).unwrap();
-
-        let (net, mut commands) = crate::network::test_channel();
-        let mut downloads = Downloads::new(
-            net,
-            dir.clone(),
-            "/incomplete".into(),
-            false,
-            mpsc::unbounded_channel().0,
-        );
-        let mut ids = TransferIds::new(&[]);
-        let (result, work) = downloads.enqueue(
-            &mut ids,
-            &mut no_users(),
-            "uploader".into(),
-            FileInfo {
-                name: "share\\Album\\song.mp3".into(),
-                size: 100,
-                attributes: FileAttributes::default(),
-            },
-            Some("share\\Album"),
-        );
-        assert_eq!(result, EnqueueResult::Enqueued);
-        assert!(matches!(
-            work.as_slice(),
-            [TransferWork::Finished {
-                delivered_bytes: 0,
-                ..
-            }]
-        ));
-        let key = ("uploader".to_owned(), "share\\Album\\song.mp3".to_owned());
-        let transfer = downloads.transfers.get(&key).unwrap();
-        assert_eq!(transfer.phase, TransferPhase::Finished);
-        assert_eq!(
-            transfer.file_path.as_deref(),
-            Some(destination.join("song.mp3").to_str().unwrap())
-        );
-        assert!(commands.try_recv().is_err());
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_size_mismatch_still_downloads() {
-        let dir = std::env::temp_dir().join(format!("newkitine-mismatch-{}", std::process::id()));
-        let destination = dir.join("Album");
-        std::fs::create_dir_all(&destination).unwrap();
-        std::fs::write(destination.join("song.mp3"), vec![0u8; 64]).unwrap();
-
-        let (net, _events) = spawn_network();
-        let mut downloads = Downloads::new(
-            net,
-            dir.clone(),
-            "/incomplete".into(),
-            false,
-            mpsc::unbounded_channel().0,
-        );
-        let mut ids = TransferIds::new(&[]);
-        let (_, work) = downloads.enqueue(
-            &mut ids,
-            &mut no_users(),
-            "uploader".into(),
-            FileInfo {
-                name: "share\\Album\\song.mp3".into(),
-                size: 100,
-                attributes: FileAttributes::default(),
-            },
-            Some("share\\Album"),
-        );
-        assert!(matches!(work.as_slice(), [TransferWork::Update(_)]));
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn late_denial_does_not_revive_aborted_transfer() {
-        let (net, _events) = spawn_network();
-        let mut downloads = Downloads::new(
-            net,
-            "/tmp".into(),
-            "/tmp".into(),
-            false,
-            mpsc::unbounded_channel().0,
-        );
-        let mut ids = TransferIds::new(&[]);
-        let key = queued_download(&mut downloads, &mut ids);
-        let id = downloads.transfers.get(&key).unwrap().id;
-        let (aborted, _) = downloads.abort(id);
-        assert_eq!(aborted, AbortResult::Aborted);
-        let updates = downloads.handle_upload_denied(
-            "uploader",
-            "Music\\song.mp3",
-            TransferRejectReason::FILE_NOT_SHARED,
-        );
-        assert!(updates.is_empty());
-        let transfer = downloads.transfers.get(&key).unwrap();
-        assert_eq!(transfer.phase, TransferPhase::Aborted);
-        assert!(!transfer.legacy_attempt);
-    }
 
     struct Harness {
         downloads: Downloads,
@@ -1310,6 +1083,10 @@ mod tests {
         ids: TransferIds,
         users: Users,
         dir: PathBuf,
+    }
+
+    fn no_users() -> Users {
+        Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
     }
 
     impl Harness {
@@ -1332,8 +1109,13 @@ mod tests {
             }
         }
 
-        fn queue_from(&mut self, username: &str, file: &str) -> TransferKey {
-            let (result, _) = self.downloads.enqueue(
+        fn enqueue(
+            &mut self,
+            username: &str,
+            file: &str,
+            root: Option<&str>,
+        ) -> (EnqueueResult, Vec<TransferWork>) {
+            self.downloads.enqueue(
                 &mut self.ids,
                 &mut self.users,
                 username.into(),
@@ -1342,9 +1124,15 @@ mod tests {
                     size: 100,
                     attributes: FileAttributes::default(),
                 },
-                None,
+                root,
+            )
+        }
+
+        fn queue_from(&mut self, username: &str, file: &str) -> TransferKey {
+            assert_eq!(
+                self.enqueue(username, file, None).0,
+                EnqueueResult::Enqueued
             );
-            assert_eq!(result, EnqueueResult::Enqueued);
             (username.into(), file.into())
         }
 
@@ -1352,12 +1140,14 @@ mod tests {
             self.queue_from("uploader", file)
         }
 
+        fn request(&mut self, file: &str, token: u32, size: u64) -> Vec<TransferWork> {
+            self.downloads
+                .handle_transfer_request("uploader", token, file, Some(size))
+        }
+
         fn start(&mut self, file: &str, token: u32, conn_id: ConnId) -> TransferKey {
             let key = (String::from("uploader"), String::from(file));
-            let requested =
-                self.downloads
-                    .handle_transfer_request("uploader", token, file, Some(100));
-            assert_eq!(requested.len(), 1);
+            assert_eq!(self.request(file, token, 100).len(), 1);
             let started = self
                 .downloads
                 .handle_file_transfer_init("uploader", token, conn_id);
@@ -1366,8 +1156,16 @@ mod tests {
             key
         }
 
+        fn deny(&mut self, key: &TransferKey, reason: &str) -> Vec<TransferWork> {
+            self.downloads.handle_upload_denied(&key.0, &key.1, reason)
+        }
+
+        fn transfer(&self, key: &TransferKey) -> &Transfer {
+            self.downloads.transfers.get(key).unwrap()
+        }
+
         fn phase(&self, key: &TransferKey) -> TransferPhase {
-            self.downloads.transfers.get(key).unwrap().phase.clone()
+            self.transfer(key).phase.clone()
         }
 
         fn drain(&mut self) -> Vec<NetworkCommand> {
@@ -1410,6 +1208,16 @@ mod tests {
         }
     }
 
+    fn failed(reason: &str) -> TransferPhase {
+        TransferPhase::Failed(reason.into())
+    }
+
+    fn past(interval: Duration) -> Instant {
+        Instant::now()
+            .checked_sub(interval + Duration::from_secs(1))
+            .unwrap()
+    }
+
     fn statuses(work: &[TransferWork]) -> Vec<TransferStatus> {
         work.iter()
             .map(|item| match item {
@@ -1429,6 +1237,20 @@ mod tests {
             .collect()
     }
 
+    fn assert_watches_the_uploader_once(commands: &[NetworkCommand]) {
+        assert_eq!(
+            server_requests(commands),
+            vec![
+                &ServerRequest::WatchUser {
+                    user: "uploader".into()
+                },
+                &ServerRequest::GetUserStatus {
+                    user: "uploader".into()
+                },
+            ]
+        );
+    }
+
     fn queue_uploads(commands: &[NetworkCommand]) -> Vec<&str> {
         commands
             .iter()
@@ -1443,6 +1265,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_downloads_keep_the_remote_hierarchy() {
+        let mut harness = Harness::new("hierarchy");
+        harness
+            .downloads
+            .set_dirs("/downloads".into(), "/incomplete".into(), true);
+        let file = "share\\Soulseek\\folder1\\sub1\\file4.mp3";
+        let (result, _) = harness.enqueue("uploader", file, Some("share\\Soulseek"));
+        assert_eq!(result, EnqueueResult::Enqueued);
+        assert_eq!(
+            harness
+                .transfer(&("uploader".into(), file.into()))
+                .folder_path,
+            PathBuf::from("/downloads/uploader/Soulseek/folder1/sub1")
+        );
+    }
+
+    fn enqueue_beside_existing(name: &str, existing_len: usize) -> (Harness, Vec<TransferWork>) {
+        let mut harness = Harness::new(name);
+        let destination = harness.dir.join("complete/Album");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("song.mp3"), vec![0u8; existing_len]).unwrap();
+        let (result, work) =
+            harness.enqueue("uploader", "share\\Album\\song.mp3", Some("share\\Album"));
+        assert_eq!(result, EnqueueResult::Enqueued);
+        (harness, work)
+    }
+
+    #[tokio::test]
+    async fn an_already_downloaded_file_finishes_without_asking_the_peer() {
+        let (mut harness, work) = enqueue_beside_existing("skip", 100);
+        assert!(matches!(
+            work.as_slice(),
+            [TransferWork::Finished {
+                delivered_bytes: 0,
+                ..
+            }]
+        ));
+        let key = ("uploader".to_owned(), "share\\Album\\song.mp3".to_owned());
+        let transfer = harness.transfer(&key);
+        assert_eq!(transfer.phase, TransferPhase::Finished);
+        assert_eq!(
+            transfer.file_path.as_deref(),
+            harness.dir.join("complete/Album/song.mp3").to_str()
+        );
+        assert!(harness.drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_size_mismatch_still_downloads() {
+        let (_harness, work) = enqueue_beside_existing("mismatch", 64);
+        assert!(matches!(work.as_slice(), [TransferWork::Update(_)]));
+    }
+
+    #[tokio::test]
+    async fn late_denial_does_not_revive_aborted_transfer() {
+        let mut harness = Harness::new("late-denial");
+        let key = harness.queue("Music\\song.mp3");
+        let id = harness.transfer(&key).id;
+        let (aborted, _) = harness.downloads.abort(id);
+        assert_eq!(aborted, AbortResult::Aborted);
+        let updates = harness.deny(&key, TransferRejectReason::FILE_NOT_SHARED);
+        assert!(updates.is_empty());
+        let transfer = harness.transfer(&key);
+        assert_eq!(transfer.phase, TransferPhase::Aborted);
+        assert!(!transfer.legacy_attempt);
+    }
+
+    #[tokio::test]
     async fn a_token_held_by_another_download_is_refused() {
         let mut harness = Harness::new("token-reuse");
         let first = harness.queue("Music\\a.mp3");
@@ -1450,11 +1340,7 @@ mod tests {
         harness.start("Music\\a.mp3", 7, 1);
         harness.drain();
 
-        let work =
-            harness
-                .downloads
-                .handle_transfer_request("uploader", 7, "Music\\b.mp3", Some(100));
-        assert!(work.is_empty());
+        assert!(harness.request("Music\\b.mp3", 7, 100).is_empty());
         assert_eq!(harness.phase(&second), TransferPhase::Queued);
         assert!(harness.drain().iter().any(|command| matches!(
             command,
@@ -1485,19 +1371,10 @@ mod tests {
         assert!(harness.closed(1));
 
         harness.start("Music\\a.mp3", 7, 2);
-        assert!(harness.downloads.handle_download_progress(1, 0).is_empty());
-        assert!(
-            harness
-                .downloads
-                .handle_transfer_error(1, "stale")
-                .is_empty()
-        );
-        assert!(
-            harness
-                .downloads
-                .handle_file_connection_closed(1)
-                .is_empty()
-        );
+        let downloads = &mut harness.downloads;
+        assert!(downloads.handle_download_progress(1, 0).is_empty());
+        assert!(downloads.handle_transfer_error(1, "stale").is_empty());
+        assert!(downloads.handle_file_connection_closed(1).is_empty());
         assert_eq!(harness.phase(&key), TransferPhase::Transferring);
     }
 
@@ -1514,7 +1391,7 @@ mod tests {
         assert!(harness.downloads.transfers.key_by_conn(1).is_none());
         assert_eq!(
             harness.phase(&key),
-            TransferPhase::Failed(format!("{LOCAL_FILE_ERROR}: disk full"))
+            failed(&format!("{LOCAL_FILE_ERROR}: disk full"))
         );
     }
 
@@ -1522,17 +1399,10 @@ mod tests {
     async fn denials_and_connection_errors_only_touch_queued_downloads() {
         let mut harness = Harness::new("queued-only");
         let key = harness.queue("Music\\a.mp3");
-        let requested =
-            harness
-                .downloads
-                .handle_transfer_request("uploader", 7, "Music\\a.mp3", Some(100));
+        let requested = harness.request("Music\\a.mp3", 7, 100);
         assert_eq!(statuses(&requested), vec![TransferStatus::Queued]);
 
-        let denied = harness.downloads.handle_upload_denied(
-            "uploader",
-            "Music\\a.mp3",
-            TransferRejectReason::TOO_MANY_FILES,
-        );
+        let denied = harness.deny(&key, TransferRejectReason::TOO_MANY_FILES);
         assert!(denied.is_empty());
         let errored = harness.fail_connection(&key, true);
         assert!(errored.is_empty());
@@ -1554,21 +1424,17 @@ mod tests {
     async fn a_denial_reason_from_a_peer_is_bounded_and_cannot_name_an_internal_status() {
         let mut harness = Harness::new("denial-reason");
         let long = harness.queue("Music\\a.mp3");
-        let _ = harness
-            .downloads
-            .handle_upload_denied("uploader", &long.1, &"x".repeat(100_000));
+        let _ = harness.deny(&long, &"x".repeat(100_000));
         let TransferPhase::Failed(reason) = harness.phase(&long) else {
             panic!("expected a failed download");
         };
         assert_eq!(reason.len(), 255);
 
         let spoofed = harness.queue("Music\\b.mp3");
-        let _ = harness
-            .downloads
-            .handle_upload_denied("uploader", &spoofed.1, CONNECTION_TIMEOUT);
+        let _ = harness.deny(&spoofed, CONNECTION_TIMEOUT);
         assert_eq!(
             harness.phase(&spoofed),
-            TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
+            failed(TransferRejectReason::CANCELLED)
         );
     }
 
@@ -1577,11 +1443,8 @@ mod tests {
         let mut harness = Harness::new("abort-waiting");
         let key = harness.queue("Music\\a.mp3");
         let _ = harness.fail_connection(&key, false);
-        assert_eq!(
-            harness.phase(&key),
-            TransferPhase::Failed(CONNECTION_TIMEOUT.into())
-        );
-        let id = harness.downloads.transfers.get(&key).unwrap().id;
+        assert_eq!(harness.phase(&key), failed(CONNECTION_TIMEOUT));
+        let id = harness.transfer(&key).id;
         let (result, work) = harness.downloads.abort(id);
         assert_eq!(result, AbortResult::Aborted);
         assert_eq!(statuses(&work), vec![TransferStatus::Aborted]);
@@ -1593,17 +1456,7 @@ mod tests {
     #[tokio::test]
     async fn an_overlong_virtual_path_is_refused() {
         let mut harness = Harness::new("long-path");
-        let (result, work) = harness.downloads.enqueue(
-            &mut harness.ids,
-            &mut harness.users,
-            "uploader".into(),
-            FileInfo {
-                name: "a".repeat(VIRTUAL_PATH_LIMIT + 1),
-                size: 1,
-                attributes: FileAttributes::default(),
-            },
-            None,
-        );
+        let (result, work) = harness.enqueue("uploader", &"a".repeat(VIRTUAL_PATH_LIMIT + 1), None);
         assert_eq!(result, EnqueueResult::PathTooLong);
         assert!(work.is_empty());
     }
@@ -1614,61 +1467,38 @@ mod tests {
         let rejected = harness.queue("Music\\a.mp3");
         let dropped = harness.queue("Music\\b.mp3");
         for key in [&rejected, &dropped] {
-            let held = harness.downloads.handle_upload_denied(
-                "uploader",
-                &key.1,
-                TransferRejectReason::TOO_MANY_FILES,
-            );
+            let held = harness.deny(key, TransferRejectReason::TOO_MANY_FILES);
             assert_eq!(statuses(&held), vec![TransferStatus::Queued]);
         }
         assert!(
             harness
-                .downloads
-                .handle_upload_denied(
-                    "uploader",
-                    &rejected.1,
-                    TransferRejectReason::TOO_MANY_MEGABYTES,
-                )
+                .deny(&rejected, TransferRejectReason::TOO_MANY_MEGABYTES)
                 .is_empty()
         );
         assert_eq!(harness.phase(&rejected), TransferPhase::Limited);
         assert_eq!(harness.downloads.queue_limits["uploader"].held.len(), 2);
 
-        let failed = harness.downloads.handle_upload_denied(
-            "uploader",
-            &rejected.1,
-            TransferRejectReason::FILE_NOT_SHARED,
-        );
-        assert_eq!(statuses(&failed), vec![TransferStatus::Failed]);
-        let failed = harness.fail_connection(&dropped, false);
-        assert_eq!(statuses(&failed), vec![TransferStatus::Failed]);
-        assert_eq!(
-            harness.phase(&dropped),
-            TransferPhase::Failed(CONNECTION_TIMEOUT.into())
-        );
+        let failed_work = harness.deny(&rejected, TransferRejectReason::FILE_NOT_SHARED);
+        assert_eq!(statuses(&failed_work), vec![TransferStatus::Failed]);
+        let failed_work = harness.fail_connection(&dropped, false);
+        assert_eq!(statuses(&failed_work), vec![TransferStatus::Failed]);
+        assert_eq!(harness.phase(&dropped), failed(CONNECTION_TIMEOUT));
     }
 
     #[tokio::test]
     async fn every_requeue_is_published() {
         let mut harness = Harness::new("requeue-updates");
         let key = harness.queue("Music\\a.mp3");
-        let failed = harness.fail_connection(&key, true);
-        assert_eq!(statuses(&failed), vec![TransferStatus::Failed]);
+        let work = harness.fail_connection(&key, true);
+        assert_eq!(statuses(&work), vec![TransferStatus::Failed]);
 
         harness.downloads.user_online("uploader");
         let requeued = harness.recover();
         assert_eq!(statuses(&requeued), vec![TransferStatus::Queued]);
 
-        let failed = harness.downloads.handle_upload_denied(
-            "uploader",
-            "Music\\a.mp3",
-            TransferRejectReason::CANCELLED,
-        );
-        assert_eq!(statuses(&failed), vec![TransferStatus::Failed]);
-        let revived =
-            harness
-                .downloads
-                .handle_transfer_request("uploader", 9, "Music\\a.mp3", Some(100));
+        let work = harness.deny(&key, TransferRejectReason::CANCELLED);
+        assert_eq!(statuses(&work), vec![TransferStatus::Failed]);
+        let revived = harness.request("Music\\a.mp3", 9, 100);
         assert_eq!(statuses(&revived), vec![TransferStatus::Queued]);
         assert_eq!(harness.phase(&key), TransferPhase::GettingStatus);
     }
@@ -1677,37 +1507,31 @@ mod tests {
     async fn aborting_a_session_clears_size_changed_and_starting_clears_retry() {
         let mut harness = Harness::new("flag-resets");
         let key = harness.queue("Music\\a.mp3");
-        let _ = harness
-            .downloads
-            .handle_transfer_request("uploader", 7, "Music\\a.mp3", Some(250));
-        assert!(harness.downloads.transfers.get(&key).unwrap().size_changed);
+        let _ = harness.request("Music\\a.mp3", 7, 250);
+        assert!(harness.transfer(&key).size_changed);
         let _ = harness
             .downloads
             .handle_file_transfer_init("uploader", 7, 1);
         let _ = harness.downloads.handle_transfer_error(1, "reset by peer");
-        assert!(!harness.downloads.transfers.get(&key).unwrap().size_changed);
+        assert!(!harness.transfer(&key).size_changed);
 
-        let _ = harness
-            .downloads
-            .handle_transfer_request("uploader", 6, "Music\\a.mp3", Some(400));
-        assert!(harness.downloads.transfers.get(&key).unwrap().size_changed);
+        let _ = harness.request("Music\\a.mp3", 6, 400);
+        assert!(harness.transfer(&key).size_changed);
         let reset = harness.downloads.reset();
         assert_eq!(statuses(&reset), vec![TransferStatus::Queued]);
-        assert!(!harness.downloads.transfers.get(&key).unwrap().size_changed);
+        assert!(!harness.transfer(&key).size_changed);
 
         let _ = harness
             .downloads
             .handle_upload_failed("uploader", "Music\\a.mp3");
-        let transfer = harness.downloads.transfers.get(&key).unwrap();
+        let transfer = harness.transfer(&key);
         assert!(transfer.retry_attempt);
         assert_eq!(transfer.phase, TransferPhase::Queued);
-        let _ = harness
-            .downloads
-            .handle_transfer_request("uploader", 8, "Music\\a.mp3", Some(250));
+        let _ = harness.request("Music\\a.mp3", 8, 250);
         let _ = harness
             .downloads
             .handle_file_transfer_init("uploader", 8, 2);
-        assert!(!harness.downloads.transfers.get(&key).unwrap().retry_attempt);
+        assert!(!harness.transfer(&key).retry_attempt);
     }
 
     #[tokio::test]
@@ -1734,18 +1558,7 @@ mod tests {
             [NetworkCommand::SendPeerMessages { messages, .. }] if messages.len() == 900
         ));
         harness.send_watches();
-        let sent = harness.drain();
-        assert_eq!(
-            server_requests(&sent),
-            vec![
-                &ServerRequest::WatchUser {
-                    user: "uploader".into()
-                },
-                &ServerRequest::GetUserStatus {
-                    user: "uploader".into()
-                },
-            ]
-        );
+        assert_watches_the_uploader_once(&harness.drain());
     }
 
     #[tokio::test]
@@ -1758,17 +1571,7 @@ mod tests {
         harness.send_watches();
         harness.send_watches();
         let sent = harness.drain();
-        assert_eq!(
-            server_requests(&sent),
-            vec![
-                &ServerRequest::WatchUser {
-                    user: "uploader".into()
-                },
-                &ServerRequest::GetUserStatus {
-                    user: "uploader".into()
-                },
-            ]
-        );
+        assert_watches_the_uploader_once(&sent);
         assert!(queue_uploads(&sent).is_empty());
     }
 
@@ -1779,27 +1582,17 @@ mod tests {
         let dropped = harness.queue("a\\2.mp3");
         let denied = harness.queue("a\\3.mp3");
         let _ = harness.fail_connection(&dropped, false);
-        let _ = harness.downloads.handle_upload_denied(
-            "uploader",
-            &denied.1,
-            TransferRejectReason::CANCELLED,
-        );
+        let _ = harness.deny(&denied, TransferRejectReason::CANCELLED);
         harness.drain();
 
         harness.downloads.user_offline("uploader");
         let updates = harness.recover();
         assert_eq!(updates.len(), 2);
-        assert_eq!(
-            harness.phase(&queued),
-            TransferPhase::Failed(USER_OFFLINE.into())
-        );
-        assert_eq!(
-            harness.phase(&dropped),
-            TransferPhase::Failed(USER_OFFLINE.into())
-        );
+        assert_eq!(harness.phase(&queued), failed(USER_OFFLINE));
+        assert_eq!(harness.phase(&dropped), failed(USER_OFFLINE));
         assert_eq!(
             harness.phase(&denied),
-            TransferPhase::Failed(TransferRejectReason::CANCELLED.into())
+            failed(TransferRejectReason::CANCELLED)
         );
 
         harness.downloads.user_online("uploader");
@@ -1821,22 +1614,15 @@ mod tests {
     async fn parking_a_requested_download_forgets_its_token() {
         let mut harness = Harness::new("park-token");
         let key = harness.queue("a\\1.mp3");
-        let _ = harness
-            .downloads
-            .handle_transfer_request("uploader", 7, &key.1, Some(100));
+        let _ = harness.request(&key.1, 7, 100);
         harness.downloads.user_offline("uploader");
         assert_eq!(statuses(&harness.recover()), vec![TransferStatus::Failed]);
-        assert!(
-            harness
-                .downloads
-                .transfers
-                .key_by_token("uploader", 7)
-                .is_none()
-        );
+        let downloads = &mut harness.downloads;
+        assert!(downloads.transfers.key_by_token("uploader", 7).is_none());
         harness.drain();
+        let downloads = &mut harness.downloads;
         assert!(
-            harness
-                .downloads
+            downloads
                 .handle_file_transfer_init("uploader", 7, 3)
                 .is_empty()
         );
@@ -1850,11 +1636,7 @@ mod tests {
         let _ = harness.fail_connection(&offline, true);
         let rejected = harness.queue_from("rejecter", "b\\1.mp3");
         for _ in 0..2 {
-            let _ = harness.downloads.handle_upload_denied(
-                "rejecter",
-                &rejected.1,
-                TransferRejectReason::FILE_NOT_SHARED,
-            );
+            let _ = harness.deny(&rejected, TransferRejectReason::FILE_NOT_SHARED);
         }
         assert!(matches!(harness.phase(&rejected), TransferPhase::Failed(_)));
         harness.drain();
@@ -1888,11 +1670,7 @@ mod tests {
             .map(|index| harness.queue(&format!("a\\{index}.mp3")))
             .collect();
         for key in &keys[1..] {
-            let updates = harness.downloads.handle_upload_denied(
-                "uploader",
-                &key.1,
-                TransferRejectReason::TOO_MANY_FILES,
-            );
+            let updates = harness.deny(key, TransferRejectReason::TOO_MANY_FILES);
             assert_eq!(statuses(&updates), vec![TransferStatus::Queued]);
             assert_eq!(harness.phase(key), TransferPhase::Limited);
         }
@@ -1901,9 +1679,7 @@ mod tests {
         harness.downloads.release_limited();
         assert!(harness.recover().is_empty());
 
-        let _ = harness
-            .downloads
-            .handle_transfer_request("uploader", 7, &keys[0].1, Some(100));
+        let _ = harness.request(&keys[0].1, 7, 100);
         harness.drain();
         harness.downloads.release_limited();
         let released = harness.recover();
@@ -1918,11 +1694,7 @@ mod tests {
         assert!(harness.recover().is_empty());
 
         for key in &keys[1..=MIN_LIMITED_BATCH] {
-            let _ = harness.downloads.handle_upload_denied(
-                "uploader",
-                &key.1,
-                TransferRejectReason::TOO_MANY_MEGABYTES,
-            );
+            let _ = harness.deny(key, TransferRejectReason::TOO_MANY_MEGABYTES);
         }
         harness.downloads.release_limited();
         let released = harness.recover();
@@ -1945,18 +1717,12 @@ mod tests {
         let rejected = harness.queue("a\\4.mp3");
         let offline = harness.queue_from("gone", "b\\1.mp3");
         let _ = harness.fail_connection(&timed_out, false);
-        let _ = harness.downloads.handle_upload_denied(
-            "uploader",
-            &shutdown.1,
-            TransferRejectReason::PENDING_SHUTDOWN,
-        );
+        let _ = harness.deny(&shutdown, TransferRejectReason::PENDING_SHUTDOWN);
         harness.start(&io.1, 9, 1);
         let _ = harness
             .downloads
             .handle_transfer_error(1, "No space left on device");
-        let _ = harness
-            .downloads
-            .handle_upload_denied("uploader", &rejected.1, "Banned");
+        let _ = harness.deny(&rejected, "Banned");
         let _ = harness.fail_connection(&offline, true);
         harness.drain();
 
@@ -1965,11 +1731,6 @@ mod tests {
         harness.downloads.retry_failed();
         assert!(harness.recover().is_empty());
 
-        let past = |interval: Duration| {
-            Instant::now()
-                .checked_sub(interval + Duration::from_secs(1))
-                .unwrap()
-        };
         harness.downloads.connection_retry_at = past(CONNECTION_RETRY_INTERVAL);
         harness.downloads.retry_failed();
         assert_eq!(harness.recover().len(), 2);
@@ -1983,14 +1744,8 @@ mod tests {
         harness.downloads.retry_failed();
         assert_eq!(harness.recover().len(), 1);
         assert_eq!(queue_uploads(&harness.drain()), vec![io.1.as_str()]);
-        assert_eq!(
-            harness.phase(&rejected),
-            TransferPhase::Failed("Banned".into())
-        );
-        assert_eq!(
-            harness.phase(&offline),
-            TransferPhase::Failed(USER_OFFLINE.into())
-        );
+        assert_eq!(harness.phase(&rejected), failed("Banned"));
+        assert_eq!(harness.phase(&offline), failed(USER_OFFLINE));
     }
 
     #[tokio::test]
@@ -1999,17 +1754,12 @@ mod tests {
         let key = harness.queue("a\\1.mp3");
         let _ = harness.fail_connection(&key, false);
         harness.downloads.user_offline("uploader");
-        harness.downloads.connection_retry_at = Instant::now()
-            .checked_sub(CONNECTION_RETRY_INTERVAL + Duration::from_secs(1))
-            .unwrap();
+        harness.downloads.connection_retry_at = past(CONNECTION_RETRY_INTERVAL);
         harness.downloads.retry_failed();
         harness.drain();
         assert_eq!(statuses(&harness.recover()), vec![TransferStatus::Failed]);
         assert!(queue_uploads(&harness.drain()).is_empty());
-        assert_eq!(
-            harness.phase(&key),
-            TransferPhase::Failed(USER_OFFLINE.into())
-        );
+        assert_eq!(harness.phase(&key), failed(USER_OFFLINE));
     }
 
     #[tokio::test]
@@ -2020,9 +1770,7 @@ mod tests {
         }
         harness.queue_from("other", "b\\1.mp3");
         harness.drain();
-        harness.downloads.queue_positions_at = Instant::now()
-            .checked_sub(QUEUE_POSITION_INTERVAL + Duration::from_secs(1))
-            .unwrap();
+        harness.downloads.queue_positions_at = past(QUEUE_POSITION_INTERVAL);
         harness.downloads.request_queue_positions();
         let mut batches: Vec<(String, usize)> = harness
             .drain()
@@ -2068,14 +1816,10 @@ mod tests {
         let key = harness.queue("a\\1.mp3");
         let _ = harness.fail_connection(&key, true);
         harness.downloads.user_online("uploader");
-        let id = harness.downloads.transfers.get(&key).unwrap().id;
+        let id = harness.transfer(&key).id;
         let (result, _) = harness.downloads.retry(&mut harness.users, id);
         assert_eq!(result, RetryResult::Requeued);
-        let _ = harness.downloads.handle_upload_denied(
-            "uploader",
-            &key.1,
-            TransferRejectReason::TOO_MANY_FILES,
-        );
+        let _ = harness.deny(&key, TransferRejectReason::TOO_MANY_FILES);
         harness.drain();
         assert!(harness.recover().is_empty());
         assert!(queue_uploads(&harness.drain()).is_empty());

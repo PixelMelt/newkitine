@@ -11,7 +11,7 @@ use tokio::time::timeout;
 
 use common::{frame, free_port, start_fake_server, tempfile};
 use newkitine::network::spawn;
-use newkitine::network::{NetworkCommand, NetworkEvent};
+use newkitine::network::{AllowedResponse, NetworkCommand, NetworkEvent};
 use newkitine::protocol::{
     DistributedMessage, MessageWriter, PeerInitMessage, PeerMessage, ServerResponse,
 };
@@ -60,13 +60,7 @@ async fn login_peer_message_and_file_transfer() {
     let mut alice = connect_stack(server_addr, "alice").await;
     let mut bob = connect_stack(server_addr, "bob").await;
 
-    alice.handle.peer(
-        "bob",
-        PeerMessage::QueueUpload {
-            file: "Music\\song.mp3".into(),
-            legacy_client: false,
-        },
-    );
+    alice.handle.peer("bob", queue_upload());
     let (from_user, received) = wait_for(&mut bob.events, |event| match event {
         NetworkEvent::PeerMessage {
             username, message, ..
@@ -75,13 +69,7 @@ async fn login_peer_message_and_file_transfer() {
     })
     .await;
     assert_eq!(from_user, "alice");
-    assert_eq!(
-        received,
-        PeerMessage::QueueUpload {
-            file: "Music\\song.mp3".into(),
-            legacy_client: false
-        }
-    );
+    assert_eq!(received, queue_upload());
 
     let payload: Vec<u8> = (0u32..100_000)
         .flat_map(|value| value.to_le_bytes())
@@ -167,13 +155,7 @@ async fn indirect_connection_via_pierce_firewall() {
 
     registry.lock().await.get_mut("bob").unwrap().hidden = true;
 
-    alice.handle.peer(
-        "bob",
-        PeerMessage::PlaceInQueueRequest {
-            file: "Music\\song.mp3".into(),
-            legacy_client: false,
-        },
-    );
+    alice.handle.peer("bob", queue_request("Music\\song.mp3"));
 
     let (from_user, received) = wait_for(&mut bob.events, |event| match event {
         NetworkEvent::PeerMessage {
@@ -183,13 +165,7 @@ async fn indirect_connection_via_pierce_firewall() {
     })
     .await;
     assert_eq!(from_user, "alice");
-    assert_eq!(
-        received,
-        PeerMessage::PlaceInQueueRequest {
-            file: "Music\\song.mp3".into(),
-            legacy_client: false
-        }
-    );
+    assert_eq!(received, queue_request("Music\\song.mp3"));
 
     wait_for(&mut alice.events, |event| match event {
         NetworkEvent::PeerConnected {
@@ -208,19 +184,12 @@ struct ScriptedServer {
 
 impl ScriptedServer {
     async fn expect(&mut self, wanted: u32) -> Vec<u8> {
-        timeout(Duration::from_secs(10), async {
-            loop {
-                let size = self.stream.read_u32_le().await.unwrap() as usize;
-                let code = self.stream.read_u32_le().await.unwrap();
-                let mut payload = vec![0u8; size - 4];
-                self.stream.read_exact(&mut payload).await.unwrap();
-                if code == wanted {
-                    return payload;
-                }
+        loop {
+            let (code, payload) = read_frame(&mut self.stream, 4).await;
+            if code == wanted {
+                return payload;
             }
-        })
-        .await
-        .expect("timed out waiting for server request")
+        }
     }
 
     async fn send(&mut self, code: u32, payload: MessageWriter) {
@@ -316,24 +285,27 @@ async fn scripted_stack(username: &str, preamble: Option<(u32, MessageWriter)>) 
     }
 }
 
+async fn read_frame(stream: &mut TcpStream, code_len: usize) -> (u32, Vec<u8>) {
+    timeout(Duration::from_secs(10), async {
+        let size = stream.read_u32_le().await.unwrap() as usize;
+        let mut code = [0u8; 4];
+        stream.read_exact(&mut code[..code_len]).await.unwrap();
+        let mut payload = vec![0u8; size - code_len];
+        stream.read_exact(&mut payload).await.unwrap();
+        (u32::from_le_bytes(code), payload)
+    })
+    .await
+    .expect("timed out waiting for frame")
+}
+
 async fn read_peer_init(stream: &mut TcpStream) -> PeerInitMessage {
-    let size = stream.read_u32_le().await.unwrap() as usize;
-    let code = stream.read_u8().await.unwrap();
-    let mut payload = vec![0u8; size - 1];
-    stream.read_exact(&mut payload).await.unwrap();
-    PeerInitMessage::parse(code, &payload).unwrap()
+    let (code, payload) = read_frame(stream, 1).await;
+    PeerInitMessage::parse(code as u8, &payload).unwrap()
 }
 
 async fn read_peer_message(stream: &mut TcpStream) -> PeerMessage {
-    timeout(Duration::from_secs(10), async {
-        let size = stream.read_u32_le().await.unwrap() as usize;
-        let code = stream.read_u32_le().await.unwrap();
-        let mut payload = vec![0u8; size - 4];
-        stream.read_exact(&mut payload).await.unwrap();
-        PeerMessage::parse(code, &payload).unwrap()
-    })
-    .await
-    .expect("timed out waiting for peer message")
+    let (code, payload) = read_frame(stream, 4).await;
+    PeerMessage::parse(code, &payload).unwrap()
 }
 
 async fn write_peer_init(stream: &mut TcpStream, init: PeerInitMessage) {
@@ -501,15 +473,8 @@ async fn out_of_range_ports_are_not_truncated() {
 }
 
 async fn read_distributed_message(stream: &mut TcpStream) -> DistributedMessage {
-    timeout(Duration::from_secs(10), async {
-        let size = stream.read_u32_le().await.unwrap() as usize;
-        let code = stream.read_u8().await.unwrap();
-        let mut payload = vec![0u8; size - 1];
-        stream.read_exact(&mut payload).await.unwrap();
-        DistributedMessage::parse(code, &payload).unwrap()
-    })
-    .await
-    .expect("timed out waiting for distributed message")
+    let (code, payload) = read_frame(stream, 1).await;
+    DistributedMessage::parse(code as u8, &payload).unwrap()
 }
 
 async fn connect_distributed_child(listen_port: u16, username: &str) -> TcpStream {
@@ -629,7 +594,7 @@ async fn unsolicited_compressed_responses_are_dropped() {
 async fn search_result_connection_stays_open_while_data_is_pending() {
     let (server_addr, registry) = start_fake_server().await;
     let mut alice = connect_stack(server_addr, "alice").await;
-    alice.handle.send(NetworkCommand::AllowSearchToken(7));
+    alice.handle.allow(AllowedResponse::Search(7));
     let mut stream = raw_peer(&registry, "alice", "mallory").await;
 
     let follow_up = queue_upload().to_bytes();
@@ -651,7 +616,7 @@ async fn search_result_connection_stays_open_while_data_is_pending() {
 async fn idle_search_result_connection_is_closed() {
     let (server_addr, registry) = start_fake_server().await;
     let mut alice = connect_stack(server_addr, "alice").await;
-    alice.handle.send(NetworkCommand::AllowSearchToken(7));
+    alice.handle.allow(AllowedResponse::Search(7));
     let mut stream = raw_peer(&registry, "alice", "mallory").await;
 
     stream

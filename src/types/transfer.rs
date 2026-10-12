@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct TransferId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferDirection {
     Download,
@@ -27,9 +27,10 @@ impl TransferStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TransferSnapshot {
     pub id: TransferId,
+    #[serde(skip)]
     pub direction: TransferDirection,
     pub username: String,
     pub virtual_path: String,

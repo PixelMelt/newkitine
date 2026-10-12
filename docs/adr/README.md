@@ -51,3 +51,4 @@ To add one: next number, one decision per file, sections Context / Decision / Co
 | [0041](0041-download-recovery-resumes-recoverable-failures-only.md) | Download recovery resumes recoverable failures only | Accepted | Diverges: Nicotine+ re-enqueues every failed download when its uploader comes online |
 | [0042](0042-the-url-owns-location.md) | The URL owns location in the web UI | Accepted | No counterpart |
 | [0043](0043-every-mutating-call-reports-its-outcome.md) | Every mutating call in the web UI reports its outcome through one wrapper | Accepted | No counterpart |
+| [0044](0044-client-commands-are-closures-run-on-the-actor.md) | Client commands are closures run on the actor | Accepted | No counterpart |

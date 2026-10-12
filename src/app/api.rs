@@ -13,7 +13,7 @@ use super::{
 };
 
 pub fn require_login(app: &super::state::App) -> Result<(), axum::http::StatusCode> {
-    if app.projection.read().session.status().logged_in {
+    if app.projection.read().session.logged_in {
         Ok(())
     } else {
         Err(axum::http::StatusCode::CONFLICT)

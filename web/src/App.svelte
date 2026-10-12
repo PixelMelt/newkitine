@@ -177,18 +177,16 @@
     <span class="report {$shownReport ? $shownReport.kind : ''}" role="status" title={$shownReport?.text}>
       {$shownReport ? $shownReport.text : ''}
     </span>
-    {#if $shownReport}
-      {#if $shownReport.action}
-        <button
-          on:click={() => {
-            const { run } = $shownReport.action;
-            dismissReport();
-            run();
-          }}
-        >
-          {$shownReport.action.label}
-        </button>
-      {/if}
+    {#if $shownReport?.action}
+      <button
+        on:click={() => {
+          const { run } = $shownReport.action;
+          dismissReport();
+          run();
+        }}
+      >
+        {$shownReport.action.label}
+      </button>
     {/if}
   </div>
 

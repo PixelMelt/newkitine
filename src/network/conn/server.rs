@@ -86,33 +86,21 @@ async fn read_server_frames(
     mut reader: BufReader<OwnedReadHalf>,
     frames: mpsc::Sender<Result<ServerResponse, String>>,
 ) {
-    loop {
+    let error = loop {
         let size = match reader.read_u32_le().await {
             Ok(size) => size as usize,
-            Err(error) => {
-                let _ = frames.send(Err(error.to_string())).await;
-                return;
-            }
+            Err(error) => break error.to_string(),
         };
         if !(4..=MAX_SERVER_MESSAGE_SIZE).contains(&size) {
-            let _ = frames
-                .send(Err(format!("invalid server message size {size}")))
-                .await;
-            return;
+            break format!("invalid server message size {size}");
         }
         let code = match reader.read_u32_le().await {
             Ok(code) => code,
-            Err(error) => {
-                let _ = frames.send(Err(error.to_string())).await;
-                return;
-            }
+            Err(error) => break error.to_string(),
         };
         let payload = match read_payload(&mut reader, size - 4).await {
             Ok(payload) => payload,
-            Err(error) => {
-                let _ = frames.send(Err(error.to_string())).await;
-                return;
-            }
+            Err(error) => break error.to_string(),
         };
         match ServerResponse::parse(code, &payload) {
             Ok(message) => {
@@ -127,5 +115,6 @@ async fn read_server_frames(
                 warn!(code, %error, "ignoring malformed server message");
             }
         }
-    }
+    };
+    let _ = frames.send(Err(error)).await;
 }

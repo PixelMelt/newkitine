@@ -7,26 +7,24 @@
   import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { numeric } from '../lib/columns.js';
   import DataTable from '../lib/DataTable.svelte';
 
   const thingColumn = (label) => [{ key: 'thing', label, grow: 1, min: 100, text: (thing) => thing }];
   const recommendationColumns = [
     { key: 'item', label: 'Item', grow: 1, min: 160, text: (r) => r[0] },
-    {
-      key: 'rating', label: 'Rating', width: 84, align: 'end', desc: true,
-      text: (r) => formatCount(r[1]), sortValue: (r) => r[1],
-    },
+    numeric('rating', 'Rating', 84, (r) => r[1]),
   ];
   const similarColumns = [
     { key: 'username', label: 'User', grow: 1, min: 160, text: (u) => u.username },
-    {
-      key: 'rating', label: 'Rating', width: 84, align: 'end', desc: true,
-      text: (u) => (u.rating ? formatCount(u.rating) : ''), sortValue: (u) => u.rating,
-    },
+    numeric('rating', 'Rating', 84, (u) => u.rating, (n) => (n ? formatCount(n) : '')),
   ];
 
-  let liked = '';
-  let hated = '';
+  const own = [
+    ['liked', 'Things I Like', 'like', 'Like'],
+    ['hated', 'Things I Dislike', 'dislike', 'Dislike'],
+  ];
+  let entry = { liked: '', hated: '' };
   let populated = false;
 
   $: if ($route.tab === 'interests' && $status.logged_in && !populated) {
@@ -77,14 +75,9 @@
       failed: `Recommendations for "${thing}" not requested`,
     });
 
-  async function addLiked() {
-    const thing = liked.trim();
-    if (thing && (await add('liked', thing)) && liked.trim() === thing) liked = '';
-  }
-
-  async function addHated() {
-    const thing = hated.trim();
-    if (thing && (await add('hated', thing)) && hated.trim() === thing) hated = '';
+  async function addOwn(kind) {
+    const thing = entry[kind].trim();
+    if (thing && (await add(kind, thing)) && entry[kind].trim() === thing) entry[kind] = '';
   }
 
   const ownMenu = (kind) => (rows, point) =>
@@ -130,54 +123,32 @@
 
 <div class="split">
   <div class="side wide">
-    <h3>Things I Like</h3>
-    <div class="toolbar">
-      <input {...noAutofill}
-        class="fill"
-        placeholder="Add something you like…"
-        bind:value={liked}
-        on:keydown={onEnter(addLiked)}
+    {#each own as [kind, title, verb, column]}
+      <h3>{title}</h3>
+      <div class="toolbar">
+        <input {...noAutofill}
+          class="fill"
+          placeholder="Add something you {verb}…"
+          bind:value={entry[kind]}
+          on:keydown={onEnter(() => addOwn(kind))}
+        />
+        <button on:click={() => addOwn(kind)}>Add</button>
+      </div>
+      <DataTable
+        id={kind}
+        label="Things I {verb}"
+        rows={$interests[kind]}
+        key={(thing) => thing}
+        columns={thingColumn(column)}
+        headless
+        typeahead={(thing) => thing}
+        copyText={(thing) => thing}
+        empty="Nothing yet."
+        onactivate={(rows) => recommendItem(rows[0])}
+        onmenu={ownMenu(kind)}
+        ondelete={(rows) => removeAll(kind, rows)}
       />
-      <button on:click={addLiked}>Add</button>
-    </div>
-    <DataTable
-      id="liked"
-      label="Things I like"
-      rows={$interests.liked}
-      key={(thing) => thing}
-      columns={thingColumn('Like')}
-      headless
-      typeahead={(thing) => thing}
-      copyText={(thing) => thing}
-      empty="Nothing yet."
-      onactivate={(rows) => recommendItem(rows[0])}
-      onmenu={ownMenu('liked')}
-      ondelete={(rows) => removeAll('liked', rows)}
-    />
-    <h3>Things I Dislike</h3>
-    <div class="toolbar">
-      <input {...noAutofill}
-        class="fill"
-        placeholder="Add something you dislike…"
-        bind:value={hated}
-        on:keydown={onEnter(addHated)}
-      />
-      <button on:click={addHated}>Add</button>
-    </div>
-    <DataTable
-      id="hated"
-      label="Things I dislike"
-      rows={$interests.hated}
-      key={(thing) => thing}
-      columns={thingColumn('Dislike')}
-      headless
-      typeahead={(thing) => thing}
-      copyText={(thing) => thing}
-      empty="Nothing yet."
-      onactivate={(rows) => recommendItem(rows[0])}
-      onmenu={ownMenu('hated')}
-      ondelete={(rows) => removeAll('hated', rows)}
-    />
+    {/each}
   </div>
   <div class="main">
     <h3>{recommendationsTitle}</h3>

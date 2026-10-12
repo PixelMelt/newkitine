@@ -1,15 +1,15 @@
 <script>
   import { tick } from 'svelte';
   import X from '@lucide/svelte/icons/x';
-  import { focusPane } from './ui.js';
+  import { focusPane, go, forget } from './ui.js';
 
   export let tab;
   export let items;
   export let active;
   export let closeLabel = 'Close';
   export let onselect;
-  export let onclose = null;
-  export let onmenu = null;
+  export let onclose;
+  export let onmenu;
 
   function step(direction, wrap) {
     const index = items.findIndex((item) => item.id === active);
@@ -23,7 +23,7 @@
   async function stripKey(event, item) {
     if (event.key === 'ArrowLeft') step(-1, false);
     else if (event.key === 'ArrowRight') step(1, false);
-    else if (event.key === 'Delete' && onclose) onclose(item.id);
+    else if (event.key === 'Delete') onclose(item.id);
     else return;
     event.preventDefault();
     await tick();
@@ -37,10 +37,12 @@
     focusPane(tab);
   }
 
-  export function neighbour(id) {
+  export function leave(id, current) {
+    if (current !== id) return;
     const index = items.findIndex((item) => item.id === id);
     const next = items[index + 1] ?? items[index - 1];
-    return next ? next.id : null;
+    if (next) go(tab, next.id);
+    else forget(tab, id);
   }
 </script>
 
@@ -54,22 +56,20 @@
           aria-selected={item.id === active}
           tabindex={item.id === active ? 0 : -1}
           on:click={() => pick(item.id)}
-          on:auxclick={(e) => e.button === 1 && onclose && onclose(item.id)}
+          on:auxclick={(e) => e.button === 1 && onclose(item.id)}
           on:keydown={(e) => stripKey(e, item)}
-          on:contextmenu={(e) => onmenu && onmenu(e, item.id)}
+          on:contextmenu={(e) => onmenu(e, item.id)}
         >
           <span class="name">{item.label}</span>
           {#if item.count !== undefined}<span class="count">{item.count}</span>{/if}
         </button>
-        {#if onclose}
-          <button
-            class="close"
-            tabindex="-1"
-            title={closeLabel}
-            aria-label="{closeLabel} {item.label}"
-            on:click={() => onclose(item.id)}><X size={12} /></button
-          >
-        {/if}
+        <button
+          class="close"
+          tabindex="-1"
+          title={closeLabel}
+          aria-label="{closeLabel} {item.label}"
+          on:click={() => onclose(item.id)}><X size={12} /></button
+        >
       </span>
     {/each}
   </div>

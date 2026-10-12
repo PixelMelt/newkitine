@@ -27,6 +27,16 @@ pub(super) enum QueuedItem {
     FileInit(u32),
 }
 
+fn peer_messages(items: Vec<QueuedItem>) -> Vec<PeerMessage> {
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            QueuedItem::Peer(message) => Some(message),
+            QueuedItem::Frame(_) | QueuedItem::FileInit(_) => None,
+        })
+        .collect()
+}
+
 pub(super) struct Init {
     username: String,
     conn_type: ConnectionType,
@@ -105,12 +115,6 @@ impl Indirect {
         self.indirect_token
     }
 
-    fn next_init_id(&mut self) -> InitId {
-        let init_id = self.next_init_id;
-        self.next_init_id += 1;
-        init_id
-    }
-
     fn lookup_fresh_address(
         &self,
         username: &str,
@@ -150,61 +154,35 @@ impl Indirect {
         init.established
     }
 
-    fn insert(&mut self, init: Init) -> InitId {
-        let init_id = self.next_init_id();
-        if let Some(token) = init.indirect_token {
-            self.inits_by_token.insert(token, init_id);
-        }
-        if init.conn_type != ConnectionType::File {
-            self.inits_by_user
-                .insert((init.username.clone(), init.conn_type), init_id);
-        }
-        self.inits.insert(init_id, init);
-        init_id
-    }
-
-    fn register(
+    fn insert(
         &mut self,
         username: String,
         conn_type: ConnectionType,
-        items: Vec<QueuedItem>,
-    ) -> (InitId, u32) {
-        let indirect_token = self.next_indirect_token();
-        let init_id = self.insert(Init {
-            username,
-            conn_type,
-            indirect_token: Some(indirect_token),
-            queued: items,
-            conn_id: None,
-            established: false,
-            created: Instant::now(),
-        });
-        (init_id, indirect_token)
-    }
-
-    fn register_pierce(&mut self, username: String, conn_type: ConnectionType) -> InitId {
-        self.insert(Init {
-            username,
-            conn_type,
-            indirect_token: None,
-            queued: Vec::new(),
-            conn_id: None,
-            established: false,
-            created: Instant::now(),
-        })
-    }
-
-    fn pend_address(&mut self, username: String, init_id: InitId) {
-        self.inits_pending_address
-            .entry(username)
-            .or_default()
-            .push(init_id);
-    }
-
-    fn take_pending_address(&mut self, username: &str) -> Vec<InitId> {
-        self.inits_pending_address
-            .remove(username)
-            .unwrap_or_default()
+        indirect_token: Option<u32>,
+        queued: Vec<QueuedItem>,
+    ) -> InitId {
+        let init_id = self.next_init_id;
+        self.next_init_id += 1;
+        if let Some(token) = indirect_token {
+            self.inits_by_token.insert(token, init_id);
+        }
+        if conn_type != ConnectionType::File {
+            self.inits_by_user
+                .insert((username.clone(), conn_type), init_id);
+        }
+        self.inits.insert(
+            init_id,
+            Init {
+                username,
+                conn_type,
+                indirect_token,
+                queued,
+                conn_id: None,
+                established: false,
+                created: Instant::now(),
+            },
+        );
+        init_id
     }
 
     fn unpend_address(&mut self, username: &str, init_id: InitId) {
@@ -229,10 +207,6 @@ impl Indirect {
         );
     }
 
-    fn clear_conn(&mut self, init_id: InitId) {
-        self.inits.get_mut(&init_id).unwrap().conn_id = None;
-    }
-
     pub(super) fn mark_established(&mut self, init_id: InitId, conn_id: ConnId) -> bool {
         match self.inits.get_mut(&init_id) {
             Some(init) if init.conn_id == Some(conn_id) => {
@@ -243,7 +217,7 @@ impl Indirect {
         }
     }
 
-    fn establish_pierced(&mut self, init_id: InitId, conn_id: ConnId) -> Option<ConnId> {
+    fn establish(&mut self, init_id: InitId, conn_id: ConnId) -> Option<ConnId> {
         let init = self.inits.get_mut(&init_id).unwrap();
         init.established = true;
         let previous = init.conn_id.replace(conn_id);
@@ -277,15 +251,8 @@ impl Indirect {
             Some(prev) => (prev.queued, prev.conn_id),
             None => (Vec::new(), None),
         };
-        let init_id = self.insert(Init {
-            username,
-            conn_type,
-            indirect_token: None,
-            queued,
-            conn_id: Some(conn_id),
-            established: true,
-            created: Instant::now(),
-        });
+        let init_id = self.insert(username, conn_type, None, queued);
+        self.establish(init_id, conn_id);
         (init_id, previous_conn)
     }
 
@@ -333,14 +300,7 @@ impl Actor {
         items: Vec<QueuedItem>,
     ) {
         if !self.server.is_connected() {
-            let unsent = items
-                .into_iter()
-                .filter_map(|item| match item {
-                    QueuedItem::Peer(message) => Some(message),
-                    QueuedItem::Frame(_) | QueuedItem::FileInit(_) => None,
-                })
-                .collect();
-            self.emit_unsent(username, unsent);
+            self.emit_unsent(username, peer_messages(items));
             return;
         }
         if let Some(init_id) = self.indirect.existing_attempt(&username, conn_type) {
@@ -363,7 +323,10 @@ impl Actor {
             self.indirect
                 .lookup_fresh_address(&username, self.server.username())
         });
-        let (init_id, indirect_token) = self.indirect.register(username.clone(), conn_type, items);
+        let indirect_token = self.indirect.next_indirect_token();
+        let init_id =
+            self.indirect
+                .insert(username.clone(), conn_type, Some(indirect_token), items);
         self.send_to_server(ServerRequest::ConnectToPeer {
             token: indirect_token,
             user: username.clone(),
@@ -373,7 +336,11 @@ impl Actor {
         match addr {
             Some(addr) => self.connect_direct(init_id, addr),
             None => {
-                self.indirect.pend_address(username.clone(), init_id);
+                self.indirect
+                    .inits_pending_address
+                    .entry(username.clone())
+                    .or_default()
+                    .push(init_id);
                 self.send_to_server(ServerRequest::GetPeerAddress { user: username });
             }
         }
@@ -403,21 +370,18 @@ impl Actor {
         let mut controls = Vec::new();
         let mut batch = Vec::new();
         for item in queued {
-            match item {
-                QueuedItem::Peer(message) => batch.push(message),
-                QueuedItem::Frame(bytes) => {
-                    if !batch.is_empty() {
-                        controls.push(ConnControl::SendPeer(std::mem::take(&mut batch)));
-                    }
-                    controls.push(ConnControl::Send(bytes));
+            let control = match item {
+                QueuedItem::Peer(message) => {
+                    batch.push(message);
+                    continue;
                 }
-                QueuedItem::FileInit(token) => {
-                    if !batch.is_empty() {
-                        controls.push(ConnControl::SendPeer(std::mem::take(&mut batch)));
-                    }
-                    controls.push(ConnControl::SendFileInit(token));
-                }
+                QueuedItem::Frame(bytes) => ConnControl::Send(bytes),
+                QueuedItem::FileInit(token) => ConnControl::SendFileInit(token),
+            };
+            if !batch.is_empty() {
+                controls.push(ConnControl::SendPeer(std::mem::take(&mut batch)));
             }
+            controls.push(control);
         }
         if !batch.is_empty() {
             controls.push(ConnControl::SendPeer(batch));
@@ -456,22 +420,14 @@ impl Actor {
 
     fn fail_init(&mut self, init_id: InitId, is_offline: bool) {
         let init = self.indirect.remove_init(init_id).unwrap();
-        let unsent = init
-            .queued
-            .into_iter()
-            .filter_map(|item| match item {
-                QueuedItem::Peer(message) => Some(message),
-                _ => None,
-            })
-            .collect();
         self.emit(NetworkEvent::PeerConnectionError {
             username: init.username,
-            unsent,
+            unsent: peer_messages(init.queued),
             is_offline,
         });
     }
 
-    fn indirect_request_failed(&mut self, token: u32) {
+    pub(super) fn indirect_request_failed(&mut self, token: u32) {
         let Some(init_id) = self.indirect.retire_token(token) else {
             return;
         };
@@ -503,7 +459,7 @@ impl Actor {
             );
         }
         if init.indirect_token.is_some() {
-            self.indirect.clear_conn(init_id);
+            self.indirect.inits.get_mut(&init_id).unwrap().conn_id = None;
         } else {
             self.fail_init(init_id, false);
         }
@@ -530,8 +486,10 @@ impl Actor {
             debug!(username, "existing connection, ignoring indirect request");
             return;
         }
-        let init_id = (conn_type != ConnectionType::File)
-            .then(|| self.indirect.register_pierce(username.clone(), conn_type));
+        let init_id = (conn_type != ConnectionType::File).then(|| {
+            self.indirect
+                .insert(username.clone(), conn_type, None, Vec::new())
+        });
         let conn_id = self.spawn_outgoing_peer(
             addr,
             username,
@@ -546,17 +504,14 @@ impl Actor {
         }
     }
 
-    pub(super) fn handle_cant_connect(&mut self, token: u32) {
-        self.indirect_request_failed(token);
-    }
-
     pub(super) fn handle_peer_address(&mut self, user: &str, ip_address: Ipv4Addr, port: u32) {
         let user_offline = ip_address == Ipv4Addr::UNSPECIFIED;
         let addr = u16::try_from(port)
             .ok()
             .filter(|&port| port != 0)
             .map(|port| SocketAddrV4::new(ip_address, port));
-        for init_id in self.indirect.take_pending_address(user) {
+        let pending = self.indirect.inits_pending_address.remove(user);
+        for init_id in pending.unwrap_or_default() {
             match addr {
                 _ if user_offline => self.fail_init(init_id, true),
                 Some(addr) => self.connect_direct(init_id, addr),
@@ -653,7 +608,7 @@ impl Actor {
                 }
 
                 conn.init_id = Some(init_id);
-                if let Some(previous) = self.indirect.establish_pierced(init_id, conn_id) {
+                if let Some(previous) = self.indirect.establish(init_id, conn_id) {
                     self.close_conn(previous);
                 }
                 self.push_conn(

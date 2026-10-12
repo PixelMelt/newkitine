@@ -24,6 +24,7 @@ fn request_watch(net: &NetworkHandle, username: &str) {
     });
 }
 
+#[derive(Default)]
 pub(super) struct Users {
     pub buddies: HashSet<String>,
     pub banned: HashSet<String>,
@@ -49,12 +50,7 @@ impl Users {
             banned,
             ignored,
             ip_bans,
-            restrictions: HashMap::new(),
-            file_denials: HashMap::new(),
-            privileged: HashSet::new(),
-            login_username: String::new(),
-            watched: HashMap::new(),
-            unsent_watches: VecDeque::new(),
+            ..Self::default()
         }
     }
 
@@ -229,7 +225,7 @@ mod tests {
 
     #[test]
     fn file_denials_expire_and_clear() {
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        let mut users = Users::default();
         let later = Instant::now() + std::time::Duration::from_secs(60);
         users.deny_file("peer".into(), "a\\b.mp3".into(), later);
         users.deny_file("peer".into(), "a\\c.mp3".into(), Instant::now());
@@ -272,7 +268,7 @@ mod tests {
 
     #[test]
     fn privilege_revokes_on_false_status() {
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        let mut users = Users::default();
         users.set_privileged("peer", true);
         assert!(users.is_privileged("peer"));
         users.set_privileged("peer", false);
@@ -323,7 +319,7 @@ mod tests {
     #[test]
     fn watch_requests_are_paced_and_skip_dropped_users() {
         let (net, mut commands) = crate::network::test_channel();
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        let mut users = Users::default();
         for index in 0..WATCH_BATCH + 10 {
             users.watch(&format!("peer{index}"));
         }
@@ -338,7 +334,7 @@ mod tests {
     #[test]
     fn befriending_a_watched_uploader_refreshes_its_details() {
         let (net, mut commands) = crate::network::test_channel();
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        let mut users = Users::default();
         users.watch("uploader");
         users.send_watches(&net);
         sent_requests(&mut commands);
@@ -388,7 +384,7 @@ mod tests {
     #[test]
     fn returning_watched_users_come_online_once_and_refresh_their_stats() {
         let (net, mut commands) = crate::network::test_channel();
-        let mut users = Users::new(HashSet::new(), HashSet::new(), HashSet::new(), Vec::new());
+        let mut users = Users::default();
         users.watch("peer");
         users.send_watches(&net);
         sent_requests(&mut commands);

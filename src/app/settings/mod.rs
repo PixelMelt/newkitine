@@ -17,14 +17,11 @@ use crate::types::{
     SharedFolder, TransferConfig, TransferDirection,
 };
 
+use super::config::env_var;
 use super::contract::{AppEvent, SettingsPayload};
 use super::pushover::Keys;
 use super::session;
 use super::state::App;
-
-fn env_var(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
-}
 
 pub(in crate::app) fn apply_settings_env(settings: &mut Settings) -> Vec<&'static str> {
     let mut locked = Vec::new();
@@ -54,10 +51,10 @@ pub(in crate::app) fn apply_settings_env(settings: &mut Settings) -> Vec<&'stati
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Settings {
     pub server: String,
     pub username: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub password: String,
     pub listen_port: u16,
     pub description: String,
@@ -141,96 +138,35 @@ impl Default for Settings {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicSettings {
-    pub server: String,
-    pub username: String,
-    pub password_set: bool,
-    pub listen_port: u16,
-    pub description: String,
-    pub download_dir: PathBuf,
-    pub incomplete_dir: Option<PathBuf>,
-    pub shares: Vec<SharedFolder>,
-    pub upload_slots: usize,
-    pub queue_file_limit: usize,
-    pub upload_limit_kbps: u32,
-    pub download_limit_kbps: u32,
-    pub auto_reconnect: bool,
-    pub theme: String,
-    pub filter_level: FilterLevel,
-    pub abusive_message: String,
-    pub leech_message: String,
-    pub clear_verdict_on_message: bool,
-    pub max_search_results: usize,
-    pub min_search_chars: usize,
-    pub respond_to_searches: bool,
-    pub max_search_responses: usize,
-    pub scan_on_startup: bool,
-    pub rescan_daily: bool,
-    pub rescan_hour_utc: u8,
-    pub autoclear_downloads: bool,
-    pub autoclear_uploads: bool,
-    pub queue_size_limit_mb: u64,
-    pub banned_message: String,
-    pub download_username_subfolders: bool,
-    pub share_filters: Vec<String>,
-    pub pushover_token: String,
-    pub pushover_user_key: String,
-    pub pushover_private_messages: bool,
+    password_set: bool,
+    #[serde(flatten)]
+    settings: Settings,
 }
 
-impl From<&Settings> for PublicSettings {
-    fn from(settings: &Settings) -> Self {
+impl From<Settings> for PublicSettings {
+    fn from(mut settings: Settings) -> Self {
         Self {
-            server: settings.server.clone(),
-            username: settings.username.clone(),
-            password_set: !settings.password.is_empty(),
-            listen_port: settings.listen_port,
-            description: settings.description.clone(),
-            download_dir: settings.download_dir.clone(),
-            incomplete_dir: settings.incomplete_dir.clone(),
-            shares: settings.shares.clone(),
-            upload_slots: settings.upload_slots,
-            queue_file_limit: settings.queue_file_limit,
-            upload_limit_kbps: settings.upload_limit_kbps,
-            download_limit_kbps: settings.download_limit_kbps,
-            auto_reconnect: settings.auto_reconnect,
-            theme: settings.theme.clone(),
-            filter_level: settings.filter_level,
-            abusive_message: settings.abusive_message.clone(),
-            leech_message: settings.leech_message.clone(),
-            clear_verdict_on_message: settings.clear_verdict_on_message,
-            max_search_results: settings.max_search_results,
-            min_search_chars: settings.min_search_chars,
-            respond_to_searches: settings.respond_to_searches,
-            max_search_responses: settings.max_search_responses,
-            scan_on_startup: settings.scan_on_startup,
-            rescan_daily: settings.rescan_daily,
-            rescan_hour_utc: settings.rescan_hour_utc,
-            autoclear_downloads: settings.autoclear_downloads,
-            autoclear_uploads: settings.autoclear_uploads,
-            queue_size_limit_mb: settings.queue_size_limit_mb,
-            banned_message: settings.banned_message.clone(),
-            download_username_subfolders: settings.download_username_subfolders,
-            share_filters: settings.share_filters.clone(),
-            pushover_token: settings.pushover_token.clone(),
-            pushover_user_key: settings.pushover_user_key.clone(),
-            pushover_private_messages: settings.pushover_private_messages,
+            password_set: !std::mem::take(&mut settings.password).is_empty(),
+            settings,
         }
     }
 }
 
 impl Settings {
-    pub fn locked_differs(&self, other: &Settings, key: &'static str) -> bool {
-        match key {
-            "server" => self.server != other.server,
-            "username" => self.username != other.username,
-            "password" => self.password != other.password,
-            "listen_port" => self.listen_port != other.listen_port,
-            "download_dir" => self.download_dir != other.download_dir,
-            key => unreachable!("unknown locked settings key {key}"),
-        }
+    pub fn from_stored(data: &str) -> serde_json::Result<Self> {
+        let mut merged = serde_json::to_value(Self::default())?;
+        let stored: serde_json::Map<String, serde_json::Value> = serde_json::from_str(data)?;
+        merged.as_object_mut().unwrap().extend(stored);
+        serde_json::from_value(merged)
     }
 
-    pub fn copy_locked_from(&mut self, source: &Settings, key: &'static str) {
+    fn locked_differs(&self, other: &Settings, key: &'static str) -> bool {
+        let mut copy = self.clone();
+        copy.copy_locked_from(other, key);
+        copy != *self
+    }
+
+    fn copy_locked_from(&mut self, source: &Settings, key: &'static str) {
         match key {
             "server" => self.server = source.server.clone(),
             "username" => self.username = source.username.clone(),
@@ -473,7 +409,7 @@ impl SettingsState {
 
     pub fn payload(&self) -> SettingsPayload {
         SettingsPayload {
-            settings: PublicSettings::from(&self.effective()),
+            settings: self.effective().into(),
             locked: self.locked.clone(),
             gluetun: self.gluetun_enabled,
         }
@@ -548,6 +484,7 @@ mod tests {
     fn settings_json_round_trip() {
         let settings = Settings {
             username: "someone".into(),
+            password: "secret".into(),
             shares: vec![SharedFolder {
                 virtual_name: "Music".into(),
                 path: PathBuf::from("/data/shared"),
@@ -558,13 +495,15 @@ mod tests {
             ..Default::default()
         };
         let json = serde_json::to_string(&settings).unwrap();
-        let loaded: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(settings, loaded);
+        assert_eq!(settings, Settings::from_stored(&json).unwrap());
+        let public = serde_json::to_value(PublicSettings::from(settings)).unwrap();
+        assert_eq!(public["password_set"], true);
+        assert!(public.get("password").is_none());
     }
 
     #[test]
     fn stored_settings_without_the_new_messages_still_load() {
-        let loaded: Settings = serde_json::from_str(r#"{"username":"someone"}"#).unwrap();
+        let loaded = Settings::from_stored(r#"{"username":"someone"}"#).unwrap();
         assert_eq!(loaded.username, "someone");
         assert_eq!(loaded.abusive_message, Settings::default().abusive_message);
         assert_eq!(loaded.leech_message, Settings::default().leech_message);

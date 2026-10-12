@@ -12,6 +12,7 @@ use crate::types::{Recommendations, SimilarUser, USERNAME_LIMIT};
 
 use super::api;
 use super::contract::AppEvent;
+use super::projection::set_member;
 use super::state::App;
 
 #[derive(Default, Clone, serde::Serialize)]
@@ -26,32 +27,11 @@ pub struct InterestsView {
     pub similar_users_for: Option<String>,
 }
 
-#[derive(Default)]
-pub struct Interests {
-    view: InterestsView,
-}
-
-impl Interests {
-    pub fn load(liked: Vec<String>, hated: Vec<String>) -> Self {
-        Self {
-            view: InterestsView {
-                liked,
-                hated,
-                ..Default::default()
-            },
-        }
-    }
-
-    pub fn view(&self) -> &InterestsView {
-        &self.view
-    }
-}
-
 fn publish(app: &App, apply: impl FnOnce(&mut InterestsView)) {
     let mut data = app.projection.write();
-    apply(&mut data.interests.view);
+    apply(&mut data.interests);
     let event = AppEvent::Interests {
-        interests: data.interests.view.clone(),
+        interests: data.interests.clone(),
     };
     data.broadcast(event);
 }
@@ -65,58 +45,28 @@ pub async fn recommendations(
         app.client.request_global_recommendations().await;
         return;
     }
-    publish(app, |view| {
-        view.recommendations = recommendations;
-        view.unrecommendations = unrecommendations;
-        view.recommendations_for = None;
-        view.recommendations_global = false;
-    });
+    set_recommendations(app, recommendations, unrecommendations, None, false);
 }
 
-pub fn global_recommendations(
+pub fn set_recommendations(
     app: &App,
     recommendations: Recommendations,
     unrecommendations: Recommendations,
+    thing: Option<String>,
+    global: bool,
 ) {
     publish(app, |view| {
         view.recommendations = recommendations;
         view.unrecommendations = unrecommendations;
-        view.recommendations_for = None;
-        view.recommendations_global = true;
+        view.recommendations_for = thing;
+        view.recommendations_global = global;
     });
 }
 
-pub fn item_recommendations_received(
-    app: &App,
-    thing: String,
-    recommendations: Recommendations,
-    unrecommendations: Recommendations,
-) {
-    publish(app, |view| {
-        view.recommendations = recommendations;
-        view.unrecommendations = unrecommendations;
-        view.recommendations_for = Some(thing);
-        view.recommendations_global = false;
-    });
-}
-
-pub fn similar_users(app: &App, users: Vec<SimilarUser>) {
+pub fn similar_users(app: &App, users: Vec<SimilarUser>, thing: Option<String>) {
     publish(app, |view| {
         view.similar_users = users;
-        view.similar_users_for = None;
-    });
-}
-
-pub fn item_similar_users(app: &App, thing: String, usernames: Vec<String>) {
-    publish(app, |view| {
-        view.similar_users = usernames
-            .into_iter()
-            .map(|username| SimilarUser {
-                username,
-                rating: 0,
-            })
-            .collect();
-        view.similar_users_for = Some(thing);
+        view.similar_users_for = thing;
     });
 }
 
@@ -132,39 +82,24 @@ pub async fn load_interests(pool: &MySqlPool, kind: &str) -> Vec<String> {
         .collect()
 }
 
-async fn insert_interest(pool: &MySqlPool, kind: &str, thing: &str) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO interests (kind, thing) VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE thing = thing",
-    )
-    .bind(kind)
-    .bind(thing)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn delete_interest(pool: &MySqlPool, kind: &str, thing: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM interests WHERE kind = ? AND thing = ?")
-        .bind(kind)
-        .bind(thing)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub(super) fn router() -> Router<Arc<App>> {
     Router::new()
         .route("/api/interests", get(interests))
-        .route("/api/interests/add", post(add_interest))
-        .route("/api/interests/remove", post(remove_interest))
+        .route(
+            "/api/interests/add",
+            post(|app, body| set_interest(app, body, true)),
+        )
+        .route(
+            "/api/interests/remove",
+            post(|app, body| set_interest(app, body, false)),
+        )
         .route("/api/interests/refresh", post(refresh_interests))
         .route("/api/interests/item", post(item_recommendations))
 }
 
 async fn interests(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
     let data = app.projection.read();
-    Json(json!({ "interests": data.interests.view() }))
+    Json(json!({ "interests": data.interests }))
 }
 
 #[derive(Deserialize)]
@@ -178,74 +113,48 @@ pub(super) fn normalize_interest(thing: &str) -> Option<String> {
     (!thing.is_empty()).then_some(thing)
 }
 
-async fn add_interest(State(app): State<Arc<App>>, Json(body): Json<InterestBody>) -> StatusCode {
-    let _mutation = app.list_mutation.lock().await;
-    if !matches!(body.kind.as_str(), "liked" | "hated") {
-        return StatusCode::BAD_REQUEST;
-    }
-    let Some(thing) = normalize_interest(&body.thing) else {
-        return StatusCode::BAD_REQUEST;
-    };
-    if thing.len() > USERNAME_LIMIT {
-        return StatusCode::BAD_REQUEST;
-    }
-    if let Err(error) = insert_interest(&app.db, &body.kind, &thing).await {
-        return api::db_failed(error);
-    }
-    match body.kind.as_str() {
-        "liked" => app.client.add_liked_interest(&thing).await,
-        _ => app.client.add_hated_interest(&thing).await,
-    }
-    publish(&app, |view| {
-        let list = if body.kind == "liked" {
-            &mut view.liked
-        } else {
-            &mut view.hated
-        };
-        if !list.contains(&thing) {
-            list.push(thing);
-            list.sort();
-        }
-    });
-    StatusCode::ACCEPTED
-}
-
-async fn remove_interest(
+async fn set_interest(
     State(app): State<Arc<App>>,
     Json(body): Json<InterestBody>,
-) -> StatusCode {
+    add: bool,
+) -> Result<StatusCode, StatusCode> {
     let _mutation = app.list_mutation.lock().await;
-    if !matches!(body.kind.as_str(), "liked" | "hated") {
-        return StatusCode::BAD_REQUEST;
-    }
-    let Some(thing) = normalize_interest(&body.thing) else {
-        return StatusCode::BAD_REQUEST;
+    let liked = match body.kind.as_str() {
+        "liked" => true,
+        "hated" => false,
+        _ => return Err(StatusCode::BAD_REQUEST),
     };
-    if let Err(error) = delete_interest(&app.db, &body.kind, &thing).await {
-        return api::db_failed(error);
-    }
-    match body.kind.as_str() {
-        "liked" => app.client.remove_liked_interest(&thing).await,
-        _ => app.client.remove_hated_interest(&thing).await,
-    }
+    let thing = normalize_interest(&body.thing)
+        .filter(|thing| !add || thing.len() <= USERNAME_LIMIT)
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let statement = if add {
+        "INSERT INTO interests (kind, thing) VALUES (?, ?) ON DUPLICATE KEY UPDATE thing = thing"
+    } else {
+        "DELETE FROM interests WHERE kind = ? AND thing = ?"
+    };
+    sqlx::query(statement)
+        .bind(&body.kind)
+        .bind(&thing)
+        .execute(&app.db)
+        .await
+        .map_err(api::db_failed)?;
+    app.client.set_interest(&thing, !liked, add).await;
     publish(&app, |view| {
-        let list = if body.kind == "liked" {
+        let list = if liked {
             &mut view.liked
         } else {
             &mut view.hated
         };
-        list.retain(|item| item != &thing);
+        set_member(list, &thing, add);
     });
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
-async fn refresh_interests(State(app): State<Arc<App>>) -> StatusCode {
-    if let Err(status) = api::require_login(&app) {
-        return status;
-    }
+async fn refresh_interests(State(app): State<Arc<App>>) -> Result<StatusCode, StatusCode> {
+    api::require_login(&app)?;
     let no_interests = {
         let data = app.projection.read();
-        data.interests.view.liked.is_empty() && data.interests.view.hated.is_empty()
+        data.interests.liked.is_empty() && data.interests.hated.is_empty()
     };
     if no_interests {
         app.client.request_global_recommendations().await;
@@ -253,7 +162,7 @@ async fn refresh_interests(State(app): State<Arc<App>>) -> StatusCode {
         app.client.request_recommendations().await;
     }
     app.client.request_similar_users().await;
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Deserialize)]
@@ -264,13 +173,11 @@ struct ItemBody {
 async fn item_recommendations(
     State(app): State<Arc<App>>,
     Json(body): Json<ItemBody>,
-) -> StatusCode {
-    if let Err(status) = api::require_login(&app) {
-        return status;
-    }
+) -> Result<StatusCode, StatusCode> {
+    api::require_login(&app)?;
     app.client.request_item_recommendations(&body.thing).await;
     app.client.request_item_similar_users(&body.thing).await;
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[cfg(test)]

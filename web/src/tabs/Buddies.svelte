@@ -4,12 +4,13 @@
   import { route, openUserInfo, noAutofill, focusPane } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { act } from '../lib/act.js';
-  import { formatSpeed, formatCount, plural } from '../lib/format.js';
+  import { formatSpeed, plural } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenuAt } from '../lib/menu.js';
   import {
     userMenu, addBuddy, removeBuddies, ban, unbanAll, ignore, unignoreAll,
   } from '../lib/usermenu.js';
+  import { numeric } from '../lib/columns.js';
   import DataTable from '../lib/DataTable.svelte';
 
   const STATUS = {
@@ -22,22 +23,25 @@
       key: 'status', label: 'Status', width: 80, text: (b) => STATUS[b.status][0],
       sortValue: (b) => STATUS[b.status][1], class: (b) => (b.status === 'online' || b.status === 'away' ? '' : 'dim'),
     },
-    {
-      key: 'speed', label: 'Speed', width: 96, align: 'end', desc: true,
-      text: (b) => formatSpeed(b.stats.avgspeed), sortValue: (b) => b.stats.avgspeed,
-    },
-    {
-      key: 'files', label: 'Files', width: 84, align: 'end', desc: true,
-      text: (b) => formatCount(b.stats.files), sortValue: (b) => b.stats.files,
-    },
+    numeric('speed', 'Speed', 96, (b) => b.stats.avgspeed, formatSpeed),
+    numeric('files', 'Files', 84, (b) => b.stats.files),
     { key: 'privileged', label: 'Privileged', width: 84, text: (b) => (b.privileged ? 'Yes' : '') },
     { key: 'note', label: 'Note', grow: 2, min: 140, text: (b) => b.note },
   ];
   const nameColumn = (label) => [{ key: 'name', label, grow: 1, min: 100, text: (name) => name }];
 
-  let buddyName = '';
-  let banName = '';
-  let ignoreName = '';
+  const adders = { buddy: addBuddy, banned: ban, ignored: ignore };
+  const blockLists = [
+    {
+      kind: 'banned', title: 'Banned Users', label: 'Banned users', placeholder: 'Name to ban…',
+      verb: 'Ban', empty: 'Nobody is banned.', undo: 'Unban', removeAll: unbanAll,
+    },
+    {
+      kind: 'ignored', title: 'Ignored Users', label: 'Ignored users', placeholder: 'Name to ignore…',
+      verb: 'Ignore', empty: 'Nobody is ignored.', undo: 'Stop Ignoring', removeAll: unignoreAll,
+    },
+  ];
+  let names = { buddy: '', banned: '', ignored: '' };
   let ipPattern = '';
   let ipError = '';
   let editing = null;
@@ -47,13 +51,12 @@
   const byName = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' });
 
   $: list = [...$buddies.values()].sort((a, b) => byName(a.username, b.username));
-  $: banRows = [...$banned].sort(byName);
-  $: ignoreRows = [...$ignored].sort(byName);
+  $: blocked = { banned: [...$banned].sort(byName), ignored: [...$ignored].sort(byName) };
   $: if ($route.tab === 'buddies') loadIpBans();
 
-  async function submit(run, name, clear) {
-    const username = name.trim();
-    if (username && (await run(username))) clear(username);
+  async function submit(kind) {
+    const username = names[kind].trim();
+    if (username && (await adders[kind](username)) && names[kind].trim() === username) names[kind] = '';
   }
 
   async function editNote(buddy) {
@@ -121,10 +124,10 @@
 <div class="toolbar">
   <input {...noAutofill}
     placeholder="Add buddy…"
-    bind:value={buddyName}
-    on:keydown={onEnter(() => submit(addBuddy, buddyName, (sent) => buddyName.trim() === sent && (buddyName = '')))}
+    bind:value={names.buddy}
+    on:keydown={onEnter(() => submit('buddy'))}
   />
-  <button on:click={() => submit(addBuddy, buddyName, (sent) => buddyName.trim() === sent && (buddyName = ''))}>Add Buddy</button>
+  <button on:click={() => submit('buddy')}>Add Buddy</button>
   <span class="count">{plural(list.length, 'buddy', 'buddies')}</span>
 </div>
 
@@ -160,58 +163,34 @@
 />
 
 <div class="split short">
-  <div class="main">
-    <h3>Banned Users</h3>
-    <div class="toolbar">
-      <input {...noAutofill}
-        class="fill"
-        placeholder="Name to ban…"
-        bind:value={banName}
-        on:keydown={onEnter(() => submit(ban, banName, (sent) => banName.trim() === sent && (banName = '')))}
+  {#each blockLists as { kind, title, label, placeholder, verb, empty, undo, removeAll }}
+    <div class="main">
+      <h3>{title}</h3>
+      <div class="toolbar">
+        <input {...noAutofill}
+          class="fill"
+          {placeholder}
+          bind:value={names[kind]}
+          on:keydown={onEnter(() => submit(kind))}
+        />
+        <button on:click={() => submit(kind)}>{verb}</button>
+      </div>
+      <DataTable
+        id={kind}
+        {label}
+        rows={blocked[kind]}
+        key={(name) => name}
+        columns={nameColumn('User')}
+        headless
+        typeahead={(name) => name}
+        copyText={(name) => name}
+        {empty}
+        onactivate={(rows) => openUserInfo(rows[0])}
+        onmenu={removal(undo, removeAll, true)}
+        ondelete={removeAll}
       />
-      <button on:click={() => submit(ban, banName, (sent) => banName.trim() === sent && (banName = ''))}>Ban</button>
     </div>
-    <DataTable
-      id="banned"
-      label="Banned users"
-      rows={banRows}
-      key={(name) => name}
-      columns={nameColumn('User')}
-      headless
-      typeahead={(name) => name}
-      copyText={(name) => name}
-      empty="Nobody is banned."
-      onactivate={(rows) => openUserInfo(rows[0])}
-      onmenu={removal('Unban', unbanAll, true)}
-      ondelete={unbanAll}
-    />
-  </div>
-  <div class="main">
-    <h3>Ignored Users</h3>
-    <div class="toolbar">
-      <input {...noAutofill}
-        class="fill"
-        placeholder="Name to ignore…"
-        bind:value={ignoreName}
-        on:keydown={onEnter(() => submit(ignore, ignoreName, (sent) => ignoreName.trim() === sent && (ignoreName = '')))}
-      />
-      <button on:click={() => submit(ignore, ignoreName, (sent) => ignoreName.trim() === sent && (ignoreName = ''))}>Ignore</button>
-    </div>
-    <DataTable
-      id="ignored"
-      label="Ignored users"
-      rows={ignoreRows}
-      key={(name) => name}
-      columns={nameColumn('User')}
-      headless
-      typeahead={(name) => name}
-      copyText={(name) => name}
-      empty="Nobody is ignored."
-      onactivate={(rows) => openUserInfo(rows[0])}
-      onmenu={removal('Stop Ignoring', unignoreAll, true)}
-      ondelete={unignoreAll}
-    />
-  </div>
+  {/each}
   <div class="main">
     <h3>Banned IP Addresses</h3>
     <div class="toolbar">

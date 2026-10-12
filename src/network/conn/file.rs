@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use super::bandwidth::{Bandwidth, Grant};
-use super::{ConnControl, ConnEvent, PEER_IDLE_TIMEOUT, SharedLimits, SocketReader, write_all};
+use super::{
+    ConnControl, ConnEvent, FileEvent, PEER_IDLE_TIMEOUT, SharedLimits, SocketReader, write_all,
+};
 use crate::network::ConnId;
 use crate::protocol::{FileOffset, FileTransferInit};
 
@@ -27,7 +29,8 @@ pub(super) async fn run_file_loop(
                 match init_result {
                     Ok(token) => {
                         init_exchanged = true;
-                        if events.send(ConnEvent::FileInit { conn_id, token }).await.is_err() {
+                        let event = FileEvent::Init { token };
+                        if events.send(ConnEvent::File { conn_id, event }).await.is_err() {
                             return;
                         }
                     }
@@ -49,13 +52,11 @@ pub(super) async fn run_file_loop(
                             break Some("write failed".into());
                         }
                         let task = TransferTask { conn_id, events: &events, control: &mut control, limits: &limits };
-                        run_download(task, &mut reader, file, bytes_left).await;
-                        return;
+                        break run_download(task, &mut reader, file, bytes_left).await;
                     }
                     Some(ConnControl::Upload { file, size }) => {
                         let task = TransferTask { conn_id, events: &events, control: &mut control, limits: &limits };
-                        run_upload(task, &mut writer, &mut reader, file, size).await;
-                        return;
+                        break run_upload(task, &mut writer, &mut reader, file, size).await;
                     }
                     Some(ConnControl::Close) | None => break None,
                     Some(other) => unreachable!("invalid file control {other:?}"),
@@ -103,54 +104,45 @@ struct TransferTask<'a> {
     limits: &'a SharedLimits,
 }
 
+impl TransferTask<'_> {
+    async fn report(&self, event: FileEvent) {
+        let conn_id = self.conn_id;
+        let _ = self.events.send(ConnEvent::File { conn_id, event }).await;
+    }
+
+    async fn fail(&self, error: impl ToString) -> Option<String> {
+        self.report(FileEvent::Error(error.to_string())).await;
+        None
+    }
+}
+
 async fn run_download(
     task: TransferTask<'_>,
     reader: &mut SocketReader,
     file: std::fs::File,
     mut bytes_left: u64,
-) {
-    let TransferTask {
-        conn_id,
-        events,
-        control,
-        limits,
-    } = task;
+) -> Option<String> {
     let mut file = tokio::fs::File::from_std(file);
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
-    let _active = limits.download.join();
+    let limit = &task.limits.download;
+    let _active = limit.join();
     let error = loop {
         if bytes_left == 0 {
             if let Err(error) = file.flush().await {
-                let _ = events
-                    .send(ConnEvent::FileError {
-                        conn_id,
-                        error: error.to_string(),
-                    })
-                    .await;
-                break None;
+                break task.fail(error).await;
             }
-            let _ = events
-                .send(ConnEvent::DownloadProgress {
-                    conn_id,
-                    bytes_left: 0,
-                })
+            task.report(FileEvent::DownloadProgress { bytes_left: 0 })
                 .await;
-            let _ = events.send(ConnEvent::FileDone { conn_id }).await;
             break None;
         }
-        let Some(grant) = take_turn(
-            &limits.download,
-            control,
-            bytes_left.min(buffer.len() as u64),
-        )
-        .await
-        else {
+        let max_len = bytes_left.min(buffer.len() as u64);
+        let Some(grant) = take_turn(limit, task.control, max_len).await else {
             break None;
         };
         tokio::select! {
             biased;
-            ctrl = control.recv() => {
+            ctrl = task.control.recv() => {
                 match ctrl {
                     Some(ConnControl::Close) | None => break None,
                     Some(other) => unreachable!("invalid download control {other:?}"),
@@ -161,17 +153,13 @@ async fn run_download(
                     Ok(0) => break Some("connection closed".into()),
                     Ok(count) => {
                         if let Err(error) = file.write_all(&buffer[..count]).await {
-                            let _ = events.send(ConnEvent::FileError { conn_id, error: error.to_string() }).await;
-                            break None;
+                            break task.fail(error).await;
                         }
                         bytes_left -= count as u64;
-                        limits.download.charge(&grant, count as u64);
+                        limit.charge(&grant, count as u64);
                         if bytes_left > 0 && last_report.elapsed() >= Duration::from_secs(1) {
                             last_report = Instant::now();
-                            let _ = events.send(ConnEvent::DownloadProgress {
-                                conn_id,
-                                bytes_left,
-                            }).await;
+                            task.report(FileEvent::DownloadProgress { bytes_left }).await;
                         }
                     }
                     Err(error) => break Some(error.to_string()),
@@ -181,7 +169,7 @@ async fn run_download(
         }
     };
     let _ = file.flush().await;
-    let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
+    error
 }
 
 const UPLOAD_WRITE_PIECE: usize = 4096;
@@ -204,139 +192,65 @@ async fn run_upload(
     reader: &mut SocketReader,
     file: std::fs::File,
     size: u64,
-) {
-    let TransferTask {
-        conn_id,
-        events,
-        control,
-        limits,
-    } = task;
+) -> Option<String> {
     let offset = tokio::select! {
-        ctrl = control.recv() => match ctrl {
-            Some(ConnControl::Close) | None => {
-                let _ = events
-                    .send(ConnEvent::Closed {
-                        conn_id,
-                        error: None,
-                    })
-                    .await;
-                return;
-            }
+        ctrl = task.control.recv() => match ctrl {
+            Some(ConnControl::Close) | None => return None,
             Some(other) => unreachable!("invalid upload control {other:?}"),
         },
         offset = timeout(PEER_IDLE_TIMEOUT, reader.read_u64_le()) => offset,
     };
     let offset = match offset {
         Ok(Ok(offset)) => offset,
-        Err(_) => {
-            let _ = events
-                .send(ConnEvent::Closed {
-                    conn_id,
-                    error: Some("offset read timed out".into()),
-                })
-                .await;
-            return;
-        }
-        Ok(Err(error)) => {
-            let _ = events
-                .send(ConnEvent::Closed {
-                    conn_id,
-                    error: Some(error.to_string()),
-                })
-                .await;
-            return;
-        }
+        Err(_) => return Some("offset read timed out".into()),
+        Ok(Err(error)) => return Some(error.to_string()),
     };
-    let _ = events
-        .send(ConnEvent::FileOffsetReceived { conn_id, offset })
+    let mut bytes_sent = 0u64;
+    task.report(FileEvent::UploadProgress { offset, bytes_sent })
         .await;
 
     let mut file = tokio::fs::File::from_std(file);
     if let Err(error) = file.seek(SeekFrom::Start(offset)).await {
-        let _ = events
-            .send(ConnEvent::FileError {
-                conn_id,
-                error: error.to_string(),
-            })
-            .await;
-        let _ = events
-            .send(ConnEvent::Closed {
-                conn_id,
-                error: None,
-            })
-            .await;
-        return;
+        return task.fail(error).await;
     }
 
-    let mut bytes_sent = 0u64;
     let mut buffer = vec![0u8; 65536];
     let mut last_report = Instant::now();
-    let _active = limits.upload.join();
-    let error = loop {
+    let limit = &task.limits.upload;
+    let _active = limit.join();
+    loop {
         if offset + bytes_sent >= size {
-            let _ = events
-                .send(ConnEvent::UploadProgress {
-                    conn_id,
-                    offset,
-                    bytes_sent,
-                })
+            task.report(FileEvent::UploadProgress { offset, bytes_sent })
                 .await;
-            let _ = events.send(ConnEvent::FileDone { conn_id }).await;
-            break None;
+            return None;
         }
-        let remaining = size - offset - bytes_sent;
-        let Some(grant) =
-            take_turn(&limits.upload, control, remaining.min(buffer.len() as u64)).await
-        else {
-            break None;
-        };
+        let max_len = (size - offset - bytes_sent).min(buffer.len() as u64);
+        let grant = take_turn(limit, task.control, max_len).await?;
         let count = match file.read(&mut buffer[..grant.len]).await {
-            Ok(0) => {
-                let _ = events
-                    .send(ConnEvent::FileError {
-                        conn_id,
-                        error: "file truncated".into(),
-                    })
-                    .await;
-                break None;
-            }
+            Ok(0) => return task.fail("file truncated").await,
             Ok(count) => count,
-            Err(error) => {
-                let _ = events
-                    .send(ConnEvent::FileError {
-                        conn_id,
-                        error: error.to_string(),
-                    })
-                    .await;
-                break None;
-            }
+            Err(error) => return task.fail(error).await,
         };
         let written = tokio::select! {
             written = write_progressing(writer, &buffer[..count]) => written,
-            ctrl = control.recv() => match ctrl {
-                Some(ConnControl::Close) | None => break None,
+            ctrl = task.control.recv() => match ctrl {
+                Some(ConnControl::Close) | None => return None,
                 Some(other) => unreachable!("invalid upload control {other:?}"),
             },
         };
         match written {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => break Some("write failed".into()),
-            Err(_) => break Some("upload stalled".into()),
+            Ok(Err(_)) => return Some("write failed".into()),
+            Err(_) => return Some("upload stalled".into()),
         }
         bytes_sent += count as u64;
-        limits.upload.charge(&grant, count as u64);
+        limit.charge(&grant, count as u64);
         if last_report.elapsed() >= Duration::from_secs(1) {
             last_report = Instant::now();
-            let _ = events
-                .send(ConnEvent::UploadProgress {
-                    conn_id,
-                    offset,
-                    bytes_sent,
-                })
+            task.report(FileEvent::UploadProgress { offset, bytes_sent })
                 .await;
         }
-    };
-    let _ = events.send(ConnEvent::Closed { conn_id, error }).await;
+    }
 }
 
 #[cfg(test)]
@@ -389,8 +303,14 @@ mod tests {
         let mut saw_done = false;
         while let Ok(event) = events.try_recv() {
             match event {
-                ConnEvent::FileDone { .. } => saw_done = true,
-                ConnEvent::FileError { error, .. } => panic!("unexpected file error {error}"),
+                ConnEvent::Closed { error, .. } => {
+                    assert_eq!(error, None);
+                    saw_done = true;
+                }
+                ConnEvent::File {
+                    event: FileEvent::Error(error),
+                    ..
+                } => panic!("unexpected file error {error}"),
                 _ => {}
             }
         }
@@ -441,7 +361,10 @@ mod tests {
         init.extend_from_slice(&payload[..1_000]);
         harness.peer.write_all(&init).await.unwrap();
         match harness.events.recv().await.unwrap() {
-            ConnEvent::FileInit { token: 5, .. } => {}
+            ConnEvent::File {
+                event: FileEvent::Init { token: 5 },
+                ..
+            } => {}
             other => panic!("unexpected event {other:?}"),
         }
 

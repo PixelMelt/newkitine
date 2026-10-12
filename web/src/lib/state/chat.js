@@ -14,7 +14,7 @@ export const rooms = writable({ available: [], joined: new Map() });
 export const chatPartners = writable([]);
 export const conversations = writable(new Map());
 export const drafts = persisted('drafts', {}, isRecord);
-export const readMarks = persisted('readMarks', {}, isRecord);
+const readMarks = persisted('readMarks', {}, isRecord);
 
 export const roomKey = (name) => `room:${name}`;
 export const chatKey = (username) => `chat:${username}`;
@@ -108,7 +108,7 @@ function dropConversation(key) {
 	});
 }
 
-export function forgetChat(username) {
+function forgetChat(username) {
 	chatPartners.update((list) => list.filter((user) => user !== username));
 	dropConversation(chatKey(username));
 }
@@ -155,9 +155,7 @@ export function sendMessage(key, where) {
 }
 
 export function applySnapshot(msg) {
-	const joined = new Map(
-		Object.entries(msg.rooms.joined).map(([name, view]) => [name, { users: view.users }]),
-	);
+	const joined = new Map(Object.entries(msg.rooms.joined));
 	rooms.set({ available: msg.rooms.available, joined });
 	chatPartners.set(msg.chat_partners);
 	const open = new Set([...joined.keys()].map(roomKey).concat(msg.chat_partners.map(chatKey)));

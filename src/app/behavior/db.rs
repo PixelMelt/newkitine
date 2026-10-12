@@ -7,18 +7,6 @@ use super::policy::{
     is_search_scraper,
 };
 
-pub async fn has_downloaded_from(pool: &MySqlPool, username: &str) -> bool {
-    let count: i64 = sqlx::query(
-        "SELECT COUNT(*) FROM transfer_history WHERE direction = 'download' AND username = ?",
-    )
-    .bind(username)
-    .fetch_one(pool)
-    .await
-    .expect("downloaded-from check")
-    .get(0);
-    count > 0
-}
-
 pub async fn downloaded_from_any(pool: &MySqlPool, usernames: &[String]) -> HashSet<String> {
     if usernames.is_empty() {
         return HashSet::new();
@@ -73,60 +61,46 @@ pub async fn search_scrape_users(pool: &MySqlPool) -> Vec<(String, String)> {
     .collect()
 }
 
-const REPEAT_SCOPE: &str = "FROM transfer_history h
-     LEFT JOIN users_seen u ON u.username = h.username
-     WHERE h.direction = 'upload'
-       AND h.finished_at > GREATEST(?, COALESCE(u.counters_reset_at, 0))";
-
 pub struct RepeatDelivery {
     pub username: String,
     pub virtual_path: String,
     pub last_at: i64,
 }
 
-fn window_start(now: i64) -> i64 {
-    now - REPEAT_WINDOW_DAYS * SECS_PER_DAY
-}
-
-pub async fn repeat_deliveries(pool: &MySqlPool, now: i64) -> Vec<RepeatDelivery> {
-    sqlx::query(&format!(
-        "SELECT h.username, h.virtual_path, MAX(h.finished_at) {REPEAT_SCOPE}
+pub async fn repeat_deliveries(
+    pool: &MySqlPool,
+    now: i64,
+    only: Option<(&str, &str)>,
+) -> Vec<RepeatDelivery> {
+    let filter = match only {
+        Some(_) => "AND h.username = ? AND h.virtual_path = ?",
+        None => "",
+    };
+    let statement = format!(
+        "SELECT h.username, h.virtual_path, MAX(h.finished_at)
+         FROM transfer_history h
+         LEFT JOIN users_seen u ON u.username = h.username
+         WHERE h.direction = 'upload'
+           AND h.finished_at > GREATEST(?, COALESCE(u.counters_reset_at, 0)) {filter}
          GROUP BY h.username, h.virtual_path
          HAVING SUM(h.bytes) >= ? * MAX(h.size)"
-    ))
-    .bind(window_start(now))
-    .bind(REPEAT_DOWNLOAD_LIMIT)
-    .fetch_all(pool)
-    .await
-    .expect("repeat deliveries")
-    .into_iter()
-    .map(|row| RepeatDelivery {
-        username: row.get(0),
-        virtual_path: row.get(1),
-        last_at: row.get(2),
-    })
-    .collect()
-}
-
-pub async fn repeat_delivery(
-    pool: &MySqlPool,
-    username: &str,
-    virtual_path: &str,
-    now: i64,
-) -> Option<i64> {
-    sqlx::query(&format!(
-        "SELECT MAX(h.finished_at) {REPEAT_SCOPE}
-           AND h.username = ? AND h.virtual_path = ?
-         HAVING SUM(h.bytes) >= ? * MAX(h.size)"
-    ))
-    .bind(window_start(now))
-    .bind(username)
-    .bind(virtual_path)
-    .bind(REPEAT_DOWNLOAD_LIMIT)
-    .fetch_optional(pool)
-    .await
-    .expect("repeat delivery check")
-    .map(|row| row.get(0))
+    );
+    let mut query = sqlx::query(&statement).bind(now - REPEAT_WINDOW_DAYS * SECS_PER_DAY);
+    if let Some((username, virtual_path)) = only {
+        query = query.bind(username).bind(virtual_path);
+    }
+    query
+        .bind(REPEAT_DOWNLOAD_LIMIT)
+        .fetch_all(pool)
+        .await
+        .expect("repeat deliveries")
+        .into_iter()
+        .map(|row| RepeatDelivery {
+            username: row.get(0),
+            virtual_path: row.get(1),
+            last_at: row.get(2),
+        })
+        .collect()
 }
 
 pub async fn set_user_verdict(

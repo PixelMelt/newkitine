@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use tokio::sync::oneshot;
 use tracing::warn;
 
 use super::ClientActor;
@@ -8,8 +7,8 @@ use crate::client::transfers::destination_root;
 use crate::client::{
     AbortResult, ClientEvent, EnqueueResult, FOLDER_DOWNLOAD_FILE_LIMIT, RetryResult, TransferWork,
 };
+use crate::network::AllowedResponse;
 use crate::network::ConnId;
-use crate::network::NetworkCommand;
 use crate::types::{
     FileAttributes, FileInfo, FolderContents, Restriction, TransferDirection, TransferId,
     TransferStatus,
@@ -31,8 +30,7 @@ impl ClientActor {
         size: u64,
         attributes: FileAttributes,
         root: Option<String>,
-        ack: oneshot::Sender<EnqueueResult>,
-    ) {
+    ) -> EnqueueResult {
         let (result, events) = self.downloads.enqueue(
             &mut self.transfer_ids,
             &mut self.users,
@@ -45,7 +43,7 @@ impl ClientActor {
             root.as_deref(),
         );
         self.emit_transfers(events);
-        Self::ack(ack, result);
+        result
     }
 
     pub(super) fn handle_folder_contents_response(
@@ -88,36 +86,34 @@ impl ClientActor {
         self.emit_transfers(events);
     }
 
-    pub(super) fn retry_download(&mut self, id: TransferId, ack: oneshot::Sender<RetryResult>) {
+    pub(super) fn retry_download(&mut self, id: TransferId) -> RetryResult {
         let (result, events) = self.downloads.retry(&mut self.users, id);
         self.emit_transfers(events);
-        Self::ack(ack, result);
+        result
     }
 
     pub(super) fn abort_transfer(
         &mut self,
         direction: TransferDirection,
         id: TransferId,
-        ack: oneshot::Sender<AbortResult>,
-    ) {
+    ) -> AbortResult {
         let (result, events) = match direction {
             TransferDirection::Download => self.downloads.abort(id),
             TransferDirection::Upload => self.uploads.abort(id, &self.users),
         };
         self.emit_transfers(events);
-        Self::ack(ack, result);
+        result
     }
 
     pub(super) fn clear_transfers(
         &mut self,
         direction: TransferDirection,
-        statuses: Vec<TransferStatus>,
-        ack: oneshot::Sender<()>,
+        statuses: Option<&[TransferStatus]>,
     ) {
         let ids = match direction {
-            TransferDirection::Download => self.downloads.clear(&statuses),
+            TransferDirection::Download => self.downloads.clear(statuses),
             TransferDirection::Upload => {
-                let (ids, updates) = self.uploads.clear(&statuses, &self.users);
+                let (ids, updates) = self.uploads.clear(statuses, &self.users);
                 self.emit_transfers(updates);
                 ids
             }
@@ -125,22 +121,6 @@ impl ClientActor {
         if !ids.is_empty() {
             self.emit_transfer_work(TransferWork::Removed { direction, ids });
         }
-        Self::ack(ack, ());
-    }
-
-    pub(super) fn clear_all_transfers(
-        &mut self,
-        direction: TransferDirection,
-        ack: oneshot::Sender<()>,
-    ) {
-        let ids = match direction {
-            TransferDirection::Download => self.downloads.clear_all(),
-            TransferDirection::Upload => self.uploads.clear_all(),
-        };
-        if !ids.is_empty() {
-            self.emit_transfer_work(TransferWork::Removed { direction, ids });
-        }
-        Self::ack(ack, ());
     }
 
     pub(super) fn set_user_restriction(&mut self, username: String, restriction: Restriction) {
@@ -203,14 +183,14 @@ impl ClientActor {
             match message {
                 PeerMessage::SharedFileListRequest => {
                     self.net
-                        .send(NetworkCommand::DisallowSharedListUser(username.to_owned()));
+                        .disallow(AllowedResponse::SharedList(username.to_owned()));
                     self.emit(ClientEvent::BrowseFailed {
                         username: username.to_owned(),
                     });
                 }
                 PeerMessage::UserInfoRequest => {
                     self.net
-                        .send(NetworkCommand::DisallowUserInfoUser(username.to_owned()));
+                        .disallow(AllowedResponse::UserInfo(username.to_owned()));
                 }
                 PeerMessage::FolderContentsRequest { directory, .. } => {
                     let key = (username.to_owned(), directory.clone());

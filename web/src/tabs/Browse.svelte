@@ -8,12 +8,11 @@
   import { shortState } from '../lib/transferStatus.js';
   import { get, post } from '../lib/api.js';
   import { act, copy } from '../lib/act.js';
-  import {
-    formatSize, formatQuality, formatDuration, effectiveBitrate, plural,
-  } from '../lib/format.js';
+  import { formatSize, plural } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
-  import { openMenuAt } from '../lib/menu.js';
+  import { openMenuAt, copyPaths } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
+  import { numeric, quality, length } from '../lib/columns.js';
   import DataTable from '../lib/DataTable.svelte';
   import Tree from '../lib/Tree.svelte';
 
@@ -43,19 +42,9 @@
 
   const makeColumns = (index) => [
     { key: 'name', label: 'Filename', grow: 1, min: 200, tail: 12, text: (f) => f.name },
-    {
-      key: 'size', label: 'Size', width: 84, align: 'end', desc: true,
-      text: (f) => formatSize(f.size), sortValue: (f) => f.size,
-    },
-    {
-      key: 'quality', label: 'Quality', width: 124, desc: true,
-      text: (f) => formatQuality(f.attributes), sortValue: (f) => effectiveBitrate(f.attributes),
-    },
-    {
-      key: 'length', label: 'Length', width: 64, align: 'end', desc: true,
-      text: (f) => (f.attributes.length ? formatDuration(f.attributes.length) : ''),
-      sortValue: (f) => f.attributes.length ?? 0,
-    },
+    numeric('size', 'Size', 84, (f) => f.size, formatSize),
+    quality((f) => f.attributes),
+    length((f) => f.attributes),
     {
       key: 'state', label: 'Download', width: 80,
       text: (f) => (stateOf(index, f) ? shortState(stateOf(index, f)) : ''), class: () => 'dim',
@@ -63,10 +52,7 @@
   ];
   const folderColumns = [
     { key: 'directory', label: 'Folder', grow: 1, min: 160, tail: 24, text: (f) => f.directory },
-    {
-      key: 'file_count', label: 'Files', width: 60, align: 'end', desc: true,
-      text: (f) => f.file_count.toLocaleString(), sortValue: (f) => f.file_count,
-    },
+    numeric('file_count', 'Files', 60, (f) => f.file_count),
   ];
 
   $: columns = makeColumns($downloadIndex);
@@ -289,14 +275,7 @@
       },
       { label: 'Download Folder', action: () => downloadFolder(listing.dir, false) },
       { sep: true },
-      {
-        label: many ? `Copy ${files.length} File Paths` : 'Copy File Path',
-        action: () =>
-          copy(
-            files.map((f) => `${listing.dir}\\${f.name}`).join('\n'),
-            many ? 'file paths' : 'file path',
-          ),
-      },
+      copyPaths(files.map((f) => `${listing.dir}\\${f.name}`)),
       { sep: true },
       { label: 'User Actions', submenu: userMenu(viewing, { current: 'browse' }) },
     ]);
@@ -372,7 +351,6 @@
           nodes={visible}
           selected={selectedDir}
           {expanded}
-          primary
           onselect={(node) => selectFolder(node.path, node.file_count > 0)}
           ontoggle={toggle}
           onmenu={(node, point) => openMenuAt(point, folderItems(node.path))}

@@ -3,7 +3,7 @@ import { get, writable } from 'svelte/store';
 import { isRecord } from './persisted.js';
 import { openChat } from './state/chat.js';
 
-export const TABS = [
+const TABS = [
 	'search', 'downloads', 'uploads', 'browse', 'user', 'chat', 'rooms',
 	'interests', 'buddies', 'statistics', 'settings',
 ];

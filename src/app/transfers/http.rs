@@ -13,33 +13,45 @@ use crate::types::{FileAttributes, TransferDirection, TransferId, TransferStatus
 
 use crate::app::api;
 use crate::app::state::App;
+use crate::app::users;
 
 pub(in crate::app) fn router() -> Router<Arc<App>> {
-    Router::new()
-        .route("/api/downloads", get(list_downloads).post(enqueue_download))
+    let mut router = Router::new()
+        .route("/api/downloads", post(enqueue_download))
         .route("/api/downloads/folder", post(enqueue_folder_download))
         .route(
             "/api/downloads/folder/request",
             post(request_folder_download),
         )
-        .route("/api/downloads/abort", post(abort_download))
-        .route("/api/downloads/retry", post(retry_download))
-        .route("/api/downloads/clear", post(clear_downloads))
-        .route("/api/downloads/clear_all", post(clear_all_downloads))
-        .route("/api/uploads", get(list_uploads))
-        .route("/api/uploads/abort", post(abort_upload))
-        .route("/api/uploads/clear", post(clear_uploads))
-        .route("/api/uploads/clear_all", post(clear_all_uploads))
+        .route("/api/downloads/retry", post(retry_download));
+    for (direction, path) in [
+        (TransferDirection::Download, "/api/downloads"),
+        (TransferDirection::Upload, "/api/uploads"),
+    ] {
+        router = router
+            .route(path, get(move |app| list(app, direction)))
+            .route(
+                &format!("{path}/abort"),
+                post(move |app, body| abort(app, body, direction)),
+            )
+            .route(
+                &format!("{path}/clear"),
+                post(move |app, body| clear(app, body, direction)),
+            )
+            .route(
+                &format!("{path}/clear_all"),
+                post(move |app| clear_all(app, direction)),
+            );
+    }
+    router
 }
 
-async fn list_downloads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+async fn list(
+    State(app): State<Arc<App>>,
+    direction: TransferDirection,
+) -> Json<serde_json::Value> {
     let data = app.projection.read();
-    Json(json!({ "transfers": data.transfers.list(TransferDirection::Download) }))
-}
-
-async fn list_uploads(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    let data = app.projection.read();
-    Json(json!({ "transfers": data.transfers.list(TransferDirection::Upload) }))
+    Json(json!({ "transfers": data.transfers.list(direction) }))
 }
 
 #[derive(Deserialize)]
@@ -87,18 +99,13 @@ async fn enqueue_folder_download(
     State(app): State<Arc<App>>,
     Json(body): Json<FolderDownloadBody>,
 ) -> impl IntoResponse {
-    let (folders, private_folders) = {
-        let data = app.projection.read();
-        let Some(browse) = data.users.browse(&body.username) else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        (browse.folders.clone(), browse.private_folders.clone())
+    let Some(browse) = users::browse(&app, &body.username) else {
+        return StatusCode::NOT_FOUND.into_response();
     };
     let subdir_prefix = format!("{}\\", body.dir);
     let files: Vec<(String, u64, FileAttributes)> = {
-        folders
-            .iter()
-            .chain(private_folders.iter())
+        browse
+            .all()
             .filter(|folder| {
                 folder.directory == body.dir
                     || (body.recursive && folder.directory.starts_with(&subdir_prefix))
@@ -156,21 +163,15 @@ struct FolderRequestBody {
 async fn request_folder_download(
     State(app): State<Arc<App>>,
     Json(body): Json<FolderRequestBody>,
-) -> StatusCode {
-    if let Err(status) = api::require_login(&app) {
-        return status;
-    }
+) -> Result<StatusCode, StatusCode> {
+    api::require_login(&app)?;
     app.client.request_folder(&body.username, &body.dir).await;
-    StatusCode::ACCEPTED
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Deserialize)]
 struct TransferRef {
     id: TransferId,
-}
-
-async fn abort_download(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
-    abort(&app, TransferDirection::Download, body.id).await
 }
 
 async fn retry_download(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
@@ -181,8 +182,12 @@ async fn retry_download(State(app): State<Arc<App>>, Json(body): Json<TransferRe
     }
 }
 
-async fn abort(app: &App, direction: TransferDirection, id: TransferId) -> StatusCode {
-    match app.client.abort_transfer(direction, id).await {
+async fn abort(
+    State(app): State<Arc<App>>,
+    Json(body): Json<TransferRef>,
+    direction: TransferDirection,
+) -> StatusCode {
+    match app.client.abort_transfer(direction, body.id).await {
         AbortResult::Aborted => StatusCode::ACCEPTED,
         AbortResult::NotFound => StatusCode::NOT_FOUND,
     }
@@ -193,47 +198,21 @@ struct ClearBody {
     statuses: Vec<TransferStatus>,
 }
 
-fn clear_statuses(body: ClearBody) -> Option<Vec<TransferStatus>> {
+async fn clear(
+    State(app): State<Arc<App>>,
+    Json(body): Json<ClearBody>,
+    direction: TransferDirection,
+) -> StatusCode {
     if body.statuses.is_empty() || body.statuses.iter().any(|status| !status.is_cleared()) {
-        return None;
+        return StatusCode::BAD_REQUEST;
     }
-    Some(body.statuses)
-}
-
-async fn clear_downloads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {
-    let Some(statuses) = clear_statuses(body) else {
-        return StatusCode::BAD_REQUEST;
-    };
     app.client
-        .clear_transfers(TransferDirection::Download, statuses)
+        .clear_transfers(direction, Some(body.statuses))
         .await;
     StatusCode::ACCEPTED
 }
 
-async fn abort_upload(State(app): State<Arc<App>>, Json(body): Json<TransferRef>) -> StatusCode {
-    abort(&app, TransferDirection::Upload, body.id).await
-}
-
-async fn clear_uploads(State(app): State<Arc<App>>, Json(body): Json<ClearBody>) -> StatusCode {
-    let Some(statuses) = clear_statuses(body) else {
-        return StatusCode::BAD_REQUEST;
-    };
-    app.client
-        .clear_transfers(TransferDirection::Upload, statuses)
-        .await;
-    StatusCode::ACCEPTED
-}
-
-async fn clear_all_downloads(State(app): State<Arc<App>>) -> StatusCode {
-    app.client
-        .clear_all_transfers(TransferDirection::Download)
-        .await;
-    StatusCode::ACCEPTED
-}
-
-async fn clear_all_uploads(State(app): State<Arc<App>>) -> StatusCode {
-    app.client
-        .clear_all_transfers(TransferDirection::Upload)
-        .await;
+async fn clear_all(State(app): State<Arc<App>>, direction: TransferDirection) -> StatusCode {
+    app.client.clear_transfers(direction, None).await;
     StatusCode::ACCEPTED
 }

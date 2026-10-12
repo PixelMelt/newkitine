@@ -2,13 +2,14 @@
   import {
     rooms, conversations, unread, roomKey, joinRoom, leaveRoom, status,
   } from '../lib/stores.js';
-  import { route, go, forget, openUserInfo, noAutofill } from '../lib/ui.js';
+  import { route, go, openUserInfo, noAutofill } from '../lib/ui.js';
   import { copy } from '../lib/act.js';
   import { plural, fold, formatCount } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
   import { compareNames } from '../lib/sort.js';
+  import { numeric } from '../lib/columns.js';
   import Subtabs from '../lib/Subtabs.svelte';
   import DataTable from '../lib/DataTable.svelte';
   import MessageLog from '../lib/MessageLog.svelte';
@@ -21,10 +22,7 @@
 
   const roomColumns = [
     { key: 'name', label: 'Room', grow: 1, min: 200, text: (r) => r.name },
-    {
-      key: 'users', label: 'Users', width: 80, align: 'end', desc: true,
-      text: (r) => formatCount(r.users), sortValue: (r) => r.users,
-    },
+    numeric('users', 'Users', 80, (r) => r.users),
     { key: 'joined', label: '', width: 70, text: (r) => (r.joined ? 'Joined' : ''), class: () => 'dim' },
   ];
   const userColumns = [{ key: 'username', label: 'User', grow: 1, min: 100, text: (u) => u }];
@@ -62,11 +60,7 @@
   }
 
   function leave(room) {
-    const next = strip.neighbour(room);
-    if (selected === room) {
-      if (next) go('rooms', next);
-      else forget('rooms', room);
-    }
+    strip.leave(room, selected);
     leaveRoom(room);
   }
 
