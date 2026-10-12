@@ -4,7 +4,7 @@
     browses, browseFailure, browseLoad, downloadIndex, transferKey, queueDownloads, link,
     report,
   } from '../lib/stores.js';
-  import { route, go, openBrowse, noAutofill } from '../lib/ui.js';
+  import { route, go, openBrowse, noAutofill, focusPane } from '../lib/ui.js';
   import { shortState } from '../lib/transferStatus.js';
   import { get, post } from '../lib/api.js';
   import { act, copy } from '../lib/act.js';
@@ -246,7 +246,7 @@
 
   function revealFromFilter(rows) {
     clearFilter();
-    revealFolder(viewing, rows[0].directory);
+    revealFolder(viewing, rows[0].directory).then(() => focusPane('browse'));
   }
 
   const downloadFiles = (files) =>

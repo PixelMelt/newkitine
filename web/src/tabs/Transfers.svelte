@@ -1,7 +1,7 @@
 <script>
   import { tick } from 'svelte';
   import { downloads, uploads, isCleared, report } from '../lib/stores.js';
-  import { openBrowse, openUserInfo } from '../lib/ui.js';
+  import { openBrowse, openUserInfo, focusPane } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { act, actEach, copy } from '../lib/act.js';
   import {
@@ -185,6 +185,7 @@
   function cancelClear() {
     clearTimeout(confirmTimer);
     confirming = false;
+    focusPane(isDownload ? 'downloads' : 'uploads');
   }
 </script>
 

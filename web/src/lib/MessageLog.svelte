@@ -52,7 +52,12 @@
 
   function scrolled() {
     if (!node.clientHeight) return;
+    const movedUp = node.scrollTop < top;
     top = node.scrollTop;
+    if (pinned && !movedUp) {
+      settle();
+      return read();
+    }
     pinned = node.scrollHeight - node.scrollTop - node.clientHeight <= PIN_SLACK;
     read();
   }

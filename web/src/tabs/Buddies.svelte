@@ -1,7 +1,7 @@
 <script>
   import { tick } from 'svelte';
   import { buddies, banned, ignored, ipBans, loadIpBans } from '../lib/stores.js';
-  import { route, openUserInfo, noAutofill } from '../lib/ui.js';
+  import { route, openUserInfo, noAutofill, focusPane } from '../lib/ui.js';
   import { post } from '../lib/api.js';
   import { act } from '../lib/act.js';
   import { formatSpeed, formatCount, plural } from '../lib/format.js';
@@ -71,7 +71,10 @@
       () => post(`/buddies/${encodeURIComponent(username)}/note`, { note }),
       { failed: `Note for ${username} not saved` },
     );
-    if (saved && editing === username && noteText === note) editing = null;
+    if (saved && editing === username && noteText === note) {
+      editing = null;
+      focusPane('buddies');
+    }
   }
 
   function buddyMenu(rows, point) {

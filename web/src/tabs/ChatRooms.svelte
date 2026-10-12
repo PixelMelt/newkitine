@@ -95,6 +95,7 @@
     placeholder="Find or join room…"
     bind:value={roomName}
     on:focus={() => (listRequested = true)}
+    on:input={() => (listRequested = true)}
     on:keydown={onEnter(() => join(roomName.trim()))}
   />
   <button on:click={() => join(roomName.trim())}>Join</button>

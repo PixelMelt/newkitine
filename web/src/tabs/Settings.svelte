@@ -102,7 +102,8 @@
   onDestroy(
     settings.subscribe((value) => {
       if (!value.settings) return;
-      if (!draft || (!saving && !isDirty())) adopt(value.settings);
+      const typing = newShare.virtual_name.trim() || newShare.path.trim();
+      if (!draft || (!saving && !typing && !isDirty())) adopt(value.settings);
       else if (!saving) rebase(value.settings);
       if (value.gluetun || value.locked.includes('listen_port')) {
         draft.listen_port = value.settings.listen_port;

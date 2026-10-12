@@ -8,6 +8,7 @@ import { status } from './session.js';
 const ROOM_MESSAGE_LIMIT = 200;
 const ROOM_HISTORY = 100;
 const CHAT_HISTORY = 200;
+const CHAT_MESSAGE_LIMIT = 1000;
 
 export const rooms = writable({ available: [], joined: new Map() });
 export const chatPartners = writable([]);
@@ -80,7 +81,7 @@ async function loadChatHistory(username, read = true) {
 	const data = await apiGet(`/chats/${encodeURIComponent(username)}?limit=${CHAT_HISTORY}`);
 	if (!get(chatPartners).includes(username)) return;
 	seedReadMark(chatKey(username), data.messages, read);
-	merge(chatKey(username), data.messages);
+	merge(chatKey(username), data.messages, CHAT_MESSAGE_LIMIT);
 }
 
 function addPartner(username) {
@@ -176,7 +177,7 @@ export const handlers = {
 			readMarks.update((marks) => (key in marks ? marks : { ...marks, [key]: 0 }));
 			loadChatHistory(msg.username);
 		}
-		merge(key, [msg.message]);
+		merge(key, [msg.message], CHAT_MESSAGE_LIMIT);
 	},
 	chat_opened: (msg) => {
 		if (addPartner(msg.username)) loadChatHistory(msg.username);
