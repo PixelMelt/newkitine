@@ -1,8 +1,8 @@
 mod lists;
-mod migrations;
+mod schema;
 
 pub use lists::{add_to_list, load_list, remove_from_list};
-pub use migrations::init_schema;
+pub use schema::init_schema;
 
 use sqlx::MySqlPool;
 use sqlx::mysql::MySqlPoolOptions;
