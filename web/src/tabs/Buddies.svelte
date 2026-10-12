@@ -53,7 +53,7 @@
 
   async function submit(run, name, clear) {
     const username = name.trim();
-    if (username && (await run(username))) clear();
+    if (username && (await run(username))) clear(username);
   }
 
   async function editNote(buddy) {
@@ -95,7 +95,7 @@
       action: { label: 'Undo', run: () => removeIpBans([pattern]) },
     });
     if (added) {
-      ipPattern = '';
+      if (ipPattern.trim() === pattern) ipPattern = '';
       loadIpBans();
     }
   }
@@ -119,9 +119,9 @@
   <input {...noAutofill}
     placeholder="Add buddy…"
     bind:value={buddyName}
-    on:keydown={onEnter(() => submit(addBuddy, buddyName, () => (buddyName = '')))}
+    on:keydown={onEnter(() => submit(addBuddy, buddyName, (sent) => buddyName.trim() === sent && (buddyName = '')))}
   />
-  <button on:click={() => submit(addBuddy, buddyName, () => (buddyName = ''))}>Add Buddy</button>
+  <button on:click={() => submit(addBuddy, buddyName, (sent) => buddyName.trim() === sent && (buddyName = ''))}>Add Buddy</button>
   <span class="count">{plural(list.length, 'buddy', 'buddies')}</span>
 </div>
 
@@ -164,9 +164,9 @@
         class="fill"
         placeholder="Name to ban…"
         bind:value={banName}
-        on:keydown={onEnter(() => submit(ban, banName, () => (banName = '')))}
+        on:keydown={onEnter(() => submit(ban, banName, (sent) => banName.trim() === sent && (banName = '')))}
       />
-      <button on:click={() => submit(ban, banName, () => (banName = ''))}>Ban</button>
+      <button on:click={() => submit(ban, banName, (sent) => banName.trim() === sent && (banName = ''))}>Ban</button>
     </div>
     <DataTable
       id="banned"
@@ -190,9 +190,9 @@
         class="fill"
         placeholder="Name to ignore…"
         bind:value={ignoreName}
-        on:keydown={onEnter(() => submit(ignore, ignoreName, () => (ignoreName = '')))}
+        on:keydown={onEnter(() => submit(ignore, ignoreName, (sent) => ignoreName.trim() === sent && (ignoreName = '')))}
       />
-      <button on:click={() => submit(ignore, ignoreName, () => (ignoreName = ''))}>Ignore</button>
+      <button on:click={() => submit(ignore, ignoreName, (sent) => ignoreName.trim() === sent && (ignoreName = ''))}>Ignore</button>
     </div>
     <DataTable
       id="ignored"

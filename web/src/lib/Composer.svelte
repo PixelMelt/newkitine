@@ -1,5 +1,5 @@
 <script>
-  import { drafts, sendMessage, status } from './stores.js';
+  import { drafts, sendMessage, status, report } from './stores.js';
   import { noAutofill } from './ui.js';
   import { onEnter } from './keys.js';
 
@@ -32,7 +32,10 @@
     if (sending.has(target) || !$status.logged_in) return;
     sending.add(target);
     error = '';
-    const sent = await sendMessage(target, (message) => target === key && (error = message));
+    const sent = await sendMessage(target, (message) => {
+      if (target === key) error = message;
+      else report.error(message);
+    });
     sending.delete(target);
     if (sent && target === key) onsent();
   }

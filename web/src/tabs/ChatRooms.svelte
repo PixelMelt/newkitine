@@ -54,8 +54,9 @@
 
   async function join(room) {
     if (!room) return;
+    const typed = roomName;
     if ($rooms.joined.has(room) || (await joinRoom(room))) {
-      roomName = '';
+      if (roomName === typed) roomName = '';
       show(room);
     }
   }

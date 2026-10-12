@@ -44,22 +44,23 @@ impl Session {
 }
 
 impl ClientActor {
-    pub(super) fn connect_when_shares_load(&mut self) {
+    pub(super) fn connect(&mut self) {
         if self.sharing.is_loading_cached() {
             info!("waiting for the cached share index before connecting");
             self.session.connect_deferred = true;
+            self.session.reconnect_at = None;
         } else {
-            self.connect();
+            self.connect_now();
         }
     }
 
     pub(super) fn connect_if_deferred(&mut self) {
         if self.session.connect_deferred && !self.sharing.is_loading_cached() {
-            self.connect();
+            self.connect_now();
         }
     }
 
-    pub(super) fn connect(&mut self) {
+    fn connect_now(&mut self) {
         self.session.connect_deferred = false;
         self.session.connected = true;
         self.session.reconnect_at = None;
@@ -120,6 +121,7 @@ impl ClientActor {
         if self.config.login != old.login {
             if self.config.login.username.is_empty() {
                 info!("login credentials cleared, disconnecting");
+                self.session.connect_deferred = false;
                 self.session.reconnect_at = None;
                 self.session.reconnect_now = false;
                 if self.session.connected {

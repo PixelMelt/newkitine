@@ -78,11 +78,13 @@
     });
 
   async function addLiked() {
-    if (liked.trim() && (await add('liked', liked.trim()))) liked = '';
+    const thing = liked.trim();
+    if (thing && (await add('liked', thing)) && liked.trim() === thing) liked = '';
   }
 
   async function addHated() {
-    if (hated.trim() && (await add('hated', hated.trim()))) hated = '';
+    const thing = hated.trim();
+    if (thing && (await add('hated', thing)) && hated.trim() === thing) hated = '';
   }
 
   const ownMenu = (kind) => (rows, point) =>

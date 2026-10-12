@@ -63,6 +63,7 @@
   let newShare = { virtual_name: '', path: '', buddy_only: false };
   let invalid = Object.create(null);
   let saveError = '';
+  let saving = false;
   let savedAt = null;
   let discarded = null;
   let testStatus = null;
@@ -86,14 +87,25 @@
     version += 1;
   }
 
+  function rebase(server) {
+    for (const key of Object.keys(server)) {
+      if (key === 'shares' || key === 'share_filters') continue;
+      if (JSON.stringify(draft[key]) !== JSON.stringify(baseline[key])) continue;
+      draft[key] = structuredClone(server[key]);
+      baseline[key] = structuredClone(server[key]);
+    }
+  }
+
   const isDirty = () =>
     JSON.stringify(payloadOf(draft, shareFiltersText, removed)) !== JSON.stringify(baseline);
 
   onDestroy(
     settings.subscribe((value) => {
       if (!value.settings) return;
-      if (!draft || !isDirty()) adopt(value.settings);
-      else if (value.gluetun || value.locked.includes('listen_port')) {
+      if (!draft || (!saving && !isDirty())) adopt(value.settings);
+      else if (saving) return;
+      else rebase(value.settings);
+      if (value.gluetun || value.locked.includes('listen_port')) {
         draft.listen_port = value.settings.listen_port;
         baseline.listen_port = value.settings.listen_port;
       }
@@ -169,6 +181,7 @@
     if (!dirty) return true;
     const payload = structuredClone(payloadOf(draft, shareFiltersText, removed));
     const dropped = new Set(removed);
+    saving = true;
     const saved = await act(() => put('/settings', payload), {
       failed: 'Preferences not saved',
       where: (text, error) => {
@@ -181,6 +194,7 @@
         else if (/\bshare (name|filter)\b/.test(error.message)) go('settings', 'shares');
       },
     });
+    saving = false;
     if (!saved) return false;
     const sent = structuredClone(payload);
     draft.password_set = draft.password_set || Boolean(payload.password);

@@ -27,9 +27,18 @@
     const username = wanted;
     tick().then(() => ensure(username));
   }
+  $: forgetAnswered($userInfos);
   $: selected = users.includes(wanted) ? wanted : null;
   $: info = selected ? $userInfos.get(selected) : null;
   $: selection = new Set(selected ? [selected] : []);
+
+  function forgetAnswered(infos) {
+    const answered = Object.keys(requests).filter(
+      (username) => infos.get(username)?.received && !requests[username].failed,
+    );
+    for (const username of answered) delete requests[username];
+    if (answered.length) requests = requests;
+  }
 
   function ensure(username) {
     if ($closed.includes(username)) closed.update((list) => list.filter((u) => u !== username));

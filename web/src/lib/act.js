@@ -7,7 +7,7 @@ function explain(error, on) {
 	if (error.status === undefined) return { cause: "can't reach the Newkitine server" };
 	if (on[error.status]) return { cause: on[error.status] };
 	if (error.status === 409) return { cause: 'not logged in to Soulseek', action: connect };
-	if (error.status === 400 || error.status === 422) return { cause: error.message };
+	if ([400, 422, 502].includes(error.status)) return { cause: error.message };
 	console.error(error);
 	return { cause: `server error ${error.status}, see the server log` };
 }

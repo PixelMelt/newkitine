@@ -102,7 +102,7 @@ pub async fn flush_loop(app: Arc<App>) {
     }
 }
 
-async fn transfer_stats(pool: &MySqlPool) -> serde_json::Value {
+async fn transfer_stats(pool: &MySqlPool, utc_offset: i64) -> serde_json::Value {
     let mut totals = serde_json::Map::new();
     for direction in ["download", "upload"] {
         totals.insert(
@@ -176,9 +176,11 @@ async fn transfer_stats(pool: &MySqlPool) -> serde_json::Value {
 
     let mut weekday_uploads = [0i64; 7];
     for row in sqlx::query(
-        "SELECT CAST(WEEKDAY(FROM_UNIXTIME(finished_at)) AS UNSIGNED) AS d, COUNT(*)
+        "SELECT CAST(MOD(FLOOR((CAST(finished_at AS SIGNED) + ?) / 86400) + 3, 7) AS UNSIGNED) AS d,
+                COUNT(*)
          FROM transfer_history WHERE direction = 'upload' GROUP BY d",
     )
+    .bind(utc_offset)
     .fetch_all(pool)
     .await
     .expect("weekday uploads")
@@ -290,8 +292,22 @@ pub(super) fn router() -> Router<Arc<App>> {
         .route("/api/stats/verdicts", get(stats_verdicts))
 }
 
-async fn stats_transfers(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
-    Json(transfer_stats(&app.db).await)
+#[derive(Deserialize)]
+struct TransfersQuery {
+    #[serde(default)]
+    utc_offset: i64,
+}
+
+const UTC_OFFSET_MAX: i64 = 14 * 3600;
+
+async fn stats_transfers(
+    State(app): State<Arc<App>>,
+    Query(query): Query<TransfersQuery>,
+) -> axum::response::Response {
+    if query.utc_offset.abs() > UTC_OFFSET_MAX {
+        return axum::http::StatusCode::BAD_REQUEST.into_response();
+    }
+    Json(transfer_stats(&app.db, query.utc_offset).await).into_response()
 }
 
 #[derive(Deserialize)]

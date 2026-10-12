@@ -168,8 +168,16 @@
       listing = { username: user, dir, files: [] };
       return;
     }
-    const data = await get(`/users/${encode(user)}/files?dir=${encode(dir)}`);
-    if (user === viewing && dir === selectedDir) listing = { username: user, dir, files: data.files };
+    await act(() => get(`/users/${encode(user)}/files?dir=${encode(dir)}`), {
+      failed: `Files in "${dir}" not loaded`,
+      where: (text) => {
+        report.error(text);
+        if (user === viewing && dir === selectedDir) selectedDir = null;
+      },
+      then: (data) => {
+        if (user === viewing && dir === selectedDir) listing = { username: user, dir, files: data.files };
+      },
+    });
   }
 
   function reloadSameSecond(load) {

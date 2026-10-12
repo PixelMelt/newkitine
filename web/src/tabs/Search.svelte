@@ -192,9 +192,10 @@
   async function addWish() {
     const term = wishTerm.trim();
     if (!term) return;
-    if (await act(() => post('/wishlist', { term }), { failed: `"${term}" not added to wishlist` })) {
-      wishTerm = '';
-    }
+    const added = await act(() => post('/wishlist', { term }), {
+      failed: `"${term}" not added to wishlist`,
+    });
+    if (added && wishTerm.trim() === term) wishTerm = '';
   }
 
   function removeWish(term) {

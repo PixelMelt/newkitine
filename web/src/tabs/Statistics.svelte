@@ -85,7 +85,7 @@
   function refresh() {
     if (loading) return;
     failure = '';
-    load('/stats/transfers', 'Transfer statistics', (data) => (transfers = data));
+    load(`/stats/transfers?utc_offset=${-new Date().getTimezoneOffset() * 60}`, 'Transfer statistics', (data) => (transfers = data));
     load('/stats/peers?limit=1000', 'Peer statistics', (data) => (peers = data));
     load('/stats/verdicts', 'Peer verdicts', (data) => (verdicts = data.users));
   }
@@ -118,7 +118,7 @@
           act(() => post(`/users/${encodeURIComponent(row.username)}/clear_verdict`, {}), {
             failed: `Verdict on ${row.username} not cleared`,
             done: `Cleared the verdict on ${row.username}`,
-            then: refresh,
+            then: () => load('/stats/verdicts', 'Peer verdicts', (data) => (verdicts = data.users)),
           }),
       },
       {

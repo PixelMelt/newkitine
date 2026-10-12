@@ -92,7 +92,7 @@
     if (!targets.length) return;
     await actEach(
       targets.map((t) => post('/downloads/retry', { id: t.id })),
-      { failed: () => `${nameOf(targets)} not retried`, skip: [409] },
+      { failed: (count) => `${count === targets.length ? nameOf(targets) : plural(count, noun)} not retried`, skip: [409] },
     );
   }
 
@@ -101,7 +101,7 @@
     if (!targets.length) return;
     const result = await actEach(
       targets.map((t) => post(`${path}/abort`, { id: t.id })),
-      { failed: () => `${nameOf(targets)} not stopped` },
+      { failed: (count) => `${count === targets.length ? nameOf(targets) : plural(count, noun)} not stopped` },
     );
     if (result.ok) {
       report.done(

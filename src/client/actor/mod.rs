@@ -290,7 +290,7 @@ impl ClientActor {
                 if self.session.connected {
                     warn!("already connected, ignoring connect request");
                 } else {
-                    self.connect_when_shares_load();
+                    self.connect();
                 }
             }
             ClientCommand::Reconnect => self.reconnect(),
