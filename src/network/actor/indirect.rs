@@ -332,6 +332,17 @@ impl Actor {
         conn_type: ConnectionType,
         items: Vec<QueuedItem>,
     ) {
+        if !self.server.is_connected() {
+            let unsent = items
+                .into_iter()
+                .filter_map(|item| match item {
+                    QueuedItem::Peer(message) => Some(message),
+                    QueuedItem::Frame(_) | QueuedItem::FileInit(_) => None,
+                })
+                .collect();
+            self.emit_unsent(username, unsent);
+            return;
+        }
         if let Some(init_id) = self.indirect.existing_attempt(&username, conn_type) {
             if self.indirect.push_queued(init_id, items) {
                 self.flush_init_queue(init_id);
@@ -607,6 +618,9 @@ impl Actor {
                 }
             }
             PeerInitMessage::PierceFireWall { token } => {
+                if self.peers.get(conn_id).is_none() {
+                    return;
+                }
                 let Some(init_id) = self.indirect.retire_token(token) else {
                     debug!(token, "indirect connection attempt expired, closing");
                     self.close_conn(conn_id);

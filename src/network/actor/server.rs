@@ -46,6 +46,10 @@ impl Server {
         self.state.as_ref().map(|state| state.username.as_str())
     }
 
+    pub(super) fn is_connected(&self) -> bool {
+        self.state.is_some()
+    }
+
     pub(super) fn is_logged_in(&self) -> bool {
         self.state.as_ref().is_some_and(|state| state.logged_in)
     }
