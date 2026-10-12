@@ -304,7 +304,7 @@ async fn stats_transfers(
     State(app): State<Arc<App>>,
     Query(query): Query<TransfersQuery>,
 ) -> axum::response::Response {
-    if query.utc_offset.abs() > UTC_OFFSET_MAX {
+    if !(-UTC_OFFSET_MAX..=UTC_OFFSET_MAX).contains(&query.utc_offset) {
         return axum::http::StatusCode::BAD_REQUEST.into_response();
     }
     Json(transfer_stats(&app.db, query.utc_offset).await).into_response()

@@ -50,6 +50,7 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::LoggedIn { username, banner } => {
             session::logged_in(app, username, banner);
             app.client.request_room_list().await;
+            let _mutation = app.list_mutation.lock().await;
             for room in db::load_list(&app.db, "room").await {
                 app.client.join_room(&room).await;
             }

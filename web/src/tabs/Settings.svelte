@@ -103,8 +103,7 @@
     settings.subscribe((value) => {
       if (!value.settings) return;
       if (!draft || (!saving && !isDirty())) adopt(value.settings);
-      else if (saving) return;
-      else rebase(value.settings);
+      else if (!saving) rebase(value.settings);
       if (value.gluetun || value.locked.includes('listen_port')) {
         draft.listen_port = value.settings.listen_port;
         baseline.listen_port = value.settings.listen_port;

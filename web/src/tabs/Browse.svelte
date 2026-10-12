@@ -172,7 +172,9 @@
       failed: `Files in "${dir}" not loaded`,
       where: (text) => {
         report.error(text);
-        if (user === viewing && dir === selectedDir) selectedDir = null;
+        if (user !== viewing || dir !== selectedDir) return;
+        selectedDir = null;
+        if ($route.tab === 'browse') go('browse', user, null);
       },
       then: (data) => {
         if (user === viewing && dir === selectedDir) listing = { username: user, dir, files: data.files };
