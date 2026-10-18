@@ -1240,7 +1240,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1668,7 +1668,7 @@ dependencies = [
 [[package]]
 name = "soulseek"
 version = "0.1.0"
-source = "git+https://github.com/PixelMelt/libsoulseek#646b1b25f3bf7556659e89534c1d848ea72a9407"
+source = "git+https://github.com/PixelMelt/libsoulseek#d5eec812eb2458ba17df567160a2a7f0776bd318"
 dependencies = [
  "flate2",
  "libc",
