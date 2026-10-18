@@ -92,7 +92,7 @@ async fn run(
             config.ignored.into_iter().collect(),
             config.ip_bans.clone(),
         ),
-        sharing: Sharing::new(scan_tx, config.scan_cache),
+        sharing: Sharing::new(scan_tx, config.share_catalog),
         session: Session::new(),
         wishlist: Wishlist::default(),
         searches: HashMap::new(),

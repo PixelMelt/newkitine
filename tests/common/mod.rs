@@ -174,7 +174,7 @@ fn temp_path() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
-        "newkitine-test-{}-{}",
+        "soulseek-test-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ))
@@ -201,7 +201,7 @@ pub fn temp_dir() -> std::path::PathBuf {
 pub fn client_config(server: SocketAddr, username: &str) -> newkitine::client::ClientBootstrap {
     let download_dir = temp_dir();
     newkitine::client::ClientBootstrap {
-        scan_cache: download_dir.join("share-catalog.gz"),
+        share_catalog: download_dir.join("share-catalog.gz"),
         scan_on_startup: true,
         connect_on_startup: true,
         runtime: newkitine::types::RuntimeConfig {

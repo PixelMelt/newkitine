@@ -15,7 +15,7 @@ pub use observation::Observation;
 pub use search::SearchScope;
 pub use transfers::{AbortResult, EnqueueResult, RetryResult, TransferWork};
 
-pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
-pub const EVENT_QUEUE_CAPACITY: usize = 4096;
-pub const TRANSFER_QUEUE_CAPACITY: usize = 4096;
+const COMMAND_QUEUE_CAPACITY: usize = 1024;
+const EVENT_QUEUE_CAPACITY: usize = 4096;
+const TRANSFER_QUEUE_CAPACITY: usize = 4096;
 pub const FOLDER_DOWNLOAD_FILE_LIMIT: usize = 1000;

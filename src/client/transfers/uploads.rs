@@ -824,7 +824,7 @@ mod tests {
     const CONN: ConnId = 7;
 
     fn shares_of(tag: &str, names: &[&str]) -> SharesIndex {
-        let dir = std::env::temp_dir().join(format!("newkitine-{tag}-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("soulseek-{tag}-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for name in names {

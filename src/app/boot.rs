@@ -91,7 +91,7 @@ pub async fn run(config_path: PathBuf) {
     let transfer_views = transfers::bootstrap(&pool).await;
     let client_config = ClientBootstrap {
         runtime,
-        scan_cache: config_path.with_file_name("share-catalog.gz"),
+        share_catalog: config_path.with_file_name("share-catalog.gz"),
         scan_on_startup: settings.scan_on_startup,
         connect_on_startup: false,
         buddies: db::load_list(&pool, "buddy").await,

@@ -102,7 +102,7 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "newkitine-catalog-{}-{}.gz",
+            "soulseek-catalog-{}-{}.gz",
             std::process::id(),
             name
         ))

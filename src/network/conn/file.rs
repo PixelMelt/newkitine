@@ -266,7 +266,7 @@ mod tests {
 
     fn temp_path(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "newkitine-{label}-{}-{:?}",
+            "soulseek-{label}-{}-{:?}",
             std::process::id(),
             std::time::SystemTime::now()
         ))

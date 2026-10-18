@@ -5,7 +5,7 @@ use crate::types::{RuntimeConfig, TransferSnapshot};
 #[derive(Debug, Clone)]
 pub struct ClientBootstrap {
     pub runtime: RuntimeConfig,
-    pub scan_cache: PathBuf,
+    pub share_catalog: PathBuf,
     pub scan_on_startup: bool,
     pub connect_on_startup: bool,
     pub buddies: Vec<String>,

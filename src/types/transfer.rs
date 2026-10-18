@@ -22,7 +22,7 @@ pub enum TransferStatus {
 }
 
 impl TransferStatus {
-    pub fn is_cleared(self) -> bool {
+    pub fn is_terminal(self) -> bool {
         matches!(self, Self::Finished | Self::Aborted | Self::Failed)
     }
 }
@@ -30,7 +30,6 @@ impl TransferStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct TransferSnapshot {
     pub id: TransferId,
-    #[serde(skip)]
     pub direction: TransferDirection,
     pub username: String,
     pub virtual_path: String,

@@ -1,4 +1,6 @@
-use crate::types::{DenialMessages, FilterLevel, Restriction};
+use serde::{Deserialize, Serialize};
+
+use crate::types::Restriction;
 
 pub const SWEEP_SECS: u64 = 900;
 pub const CHECK_TIMEOUT_SECS: u64 = 120;
@@ -65,6 +67,20 @@ impl Verdict {
             other => panic!("unknown verdict {other}"),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterLevel {
+    Open,
+    Guarded,
+    Strict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DenialMessages {
+    pub abusive: String,
+    pub leech: String,
 }
 
 pub fn restriction_for(

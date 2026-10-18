@@ -7,8 +7,8 @@ use tokio::sync::mpsc;
 
 pub use api::{AllowedResponse, ConnId, NetworkCommand, NetworkEvent};
 
-pub const COMMAND_QUEUE_CAPACITY: usize = 1024;
-pub const EVENT_QUEUE_CAPACITY: usize = 4096;
+const COMMAND_QUEUE_CAPACITY: usize = 1024;
+const EVENT_QUEUE_CAPACITY: usize = 4096;
 
 #[derive(Clone)]
 pub struct NetworkHandle {

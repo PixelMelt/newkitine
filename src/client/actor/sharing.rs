@@ -53,7 +53,7 @@ pub(super) struct Sharing {
     pending: Option<ScanJob>,
     cancel: Arc<AtomicBool>,
     scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
-    scan_cache: PathBuf,
+    share_catalog: PathBuf,
     generation: u64,
     last_progress: u64,
     pub(super) excluded_phrases: Vec<String>,
@@ -64,7 +64,7 @@ pub(super) struct Sharing {
 impl Sharing {
     pub(super) fn new(
         scan_results: mpsc::UnboundedSender<(u64, ScanUpdate)>,
-        scan_cache: PathBuf,
+        share_catalog: PathBuf,
     ) -> Self {
         Self {
             index: None,
@@ -73,7 +73,7 @@ impl Sharing {
             pending: None,
             cancel: Arc::new(AtomicBool::new(false)),
             scan_results,
-            scan_cache,
+            share_catalog,
             generation: 0,
             last_progress: 0,
             excluded_phrases: Vec::new(),
@@ -121,7 +121,7 @@ impl ClientActor {
         let generation = self.sharing.generation;
         let shared_folders = self.config.shared_folders.clone();
         let share_filters = self.config.share_filters.clone();
-        let cache_path = self.sharing.scan_cache.clone();
+        let cache_path = self.sharing.share_catalog.clone();
         let cancel = self.sharing.cancel.clone();
         let results = self.sharing.scan_results.clone();
         let task = tokio::task::spawn_blocking({

@@ -1091,7 +1091,7 @@ mod tests {
 
     impl Harness {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("newkitine-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("soulseek-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             let (net, commands) = crate::network::test_channel();
             Self {

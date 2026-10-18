@@ -12,9 +12,9 @@ pub use description::{DescriptionContext, DescriptionTemplate, description_varia
 pub use file::{FileAttributes, FileInfo, FolderContents, UINT32_LIMIT};
 pub use interests::Recommendations;
 pub use settings::{
-    DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESPONSES, DEFAULT_MAX_SEARCH_RESULTS,
-    DEFAULT_MIN_SEARCH_CHARS, DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS,
-    DenialMessages, FilterLevel, LoginConfig, RuntimeConfig, SearchConfig, TransferConfig,
+    DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_MIN_SEARCH_CHARS,
+    DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, LoginConfig, RuntimeConfig,
+    SearchConfig, TransferConfig,
 };
 pub use share::SharedFolder;
 pub use transfer::{TransferDirection, TransferId, TransferSnapshot, TransferStatus};

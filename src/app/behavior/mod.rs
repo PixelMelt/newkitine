@@ -2,6 +2,7 @@ mod db;
 mod policy;
 mod state;
 
+pub use policy::{DenialMessages, FilterLevel};
 pub use state::Behavior;
 
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use axum::routing::post;
 use tokio::time::Instant;
 use tracing::info;
 
-use crate::types::{FilterLevel, Restriction};
+use crate::types::Restriction;
 
 use db::{
     downloaded_from_any, forgive_user, load_verdicts, repeat_deliveries, search_scrape_users,

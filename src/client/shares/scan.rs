@@ -377,7 +377,7 @@ mod tests {
     fn temp_base() -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let base = std::env::temp_dir().join(format!(
-            "newkitine-shares-{}-{}",
+            "soulseek-shares-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));

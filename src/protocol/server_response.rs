@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use super::wire::{MessageReader, ProtocolError};
 use crate::types::{Recommendations, SimilarUser, UserStats};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UserData {
     pub username: String,
     pub status: u32,

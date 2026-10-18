@@ -12,7 +12,7 @@ pub fn ip_matches(pattern: &str, ip: Ipv4Addr) -> bool {
     matched && parts.next().is_none()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserStatus {
     Offline,
     Away,
@@ -52,8 +52,7 @@ pub struct SimilarUser {
     pub rating: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Restriction {
     None,
     Hold,

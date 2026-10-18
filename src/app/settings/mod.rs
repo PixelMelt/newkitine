@@ -11,12 +11,12 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESPONSES, DEFAULT_MAX_SEARCH_RESULTS,
-    DEFAULT_MIN_SEARCH_CHARS, DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS,
-    DenialMessages, DescriptionTemplate, FilterLevel, LoginConfig, RuntimeConfig, SearchConfig,
-    SharedFolder, TransferConfig, TransferDirection,
+    DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_MIN_SEARCH_CHARS,
+    DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, DescriptionTemplate,
+    LoginConfig, RuntimeConfig, SearchConfig, SharedFolder, TransferConfig, TransferDirection,
 };
 
+use super::behavior::{DenialMessages, FilterLevel};
 use super::config::env_var;
 use super::contract::{AppEvent, SettingsPayload};
 use super::pushover::Keys;
@@ -89,8 +89,7 @@ pub struct Settings {
     pub pushover_private_messages: bool,
 }
 
-const MAX_QUEUE_SIZE_LIMIT_MB: u64 = 1 << 30;
-const MAX_UPLOAD_SLOTS: usize = 1_000_000;
+const DEFAULT_MAX_SEARCH_RESPONSES: usize = 500;
 const PATH_LIMIT: usize = 4096;
 const NAME_LIMIT: usize = 255;
 const MESSAGE_LIMIT: usize = 1024;
@@ -192,35 +191,11 @@ impl Settings {
     }
 
     pub fn runtime_config(&self) -> Result<RuntimeConfig, String> {
-        for share in &self.shares {
-            if share.virtual_name.is_empty() || share.virtual_name.contains(['/', '\\']) {
-                return Err(format!(
-                    "share name {:?} is invalid: remote clients rewrite slashes in \
-                     virtual paths and their download requests would no longer match",
-                    share.virtual_name
-                ));
-            }
-        }
-        for filter in &self.share_filters {
-            if filter.is_empty() || filter.contains(['/', '\\']) {
-                return Err(format!(
-                    "share filter {filter:?} is invalid: filters match exact file or \
-                     folder names and cannot be empty or contain path separators"
-                ));
-            }
-        }
         if self.max_search_responses == 0 || self.max_search_responses > 2000 {
             return Err(format!(
                 "max_search_responses {} is invalid: retained results per search are \
                  bounded to 1-2000",
                 self.max_search_responses
-            ));
-        }
-        if self.max_search_results == 0 || self.max_search_results > DEFAULT_MAX_SEARCH_RESULTS {
-            return Err(format!(
-                "max_search_results {} is invalid: the protocol answer cap is \
-                 1-{DEFAULT_MAX_SEARCH_RESULTS}",
-                self.max_search_results
             ));
         }
         if self.rescan_hour_utc > 23 {
@@ -267,22 +242,6 @@ impl Settings {
                  {MESSAGE_LIMIT} characters"
             ));
         }
-        if self.upload_slots == 0 || self.upload_slots > MAX_UPLOAD_SLOTS {
-            return Err(format!("upload_slots must be 1-{MAX_UPLOAD_SLOTS}"));
-        }
-        if self.queue_file_limit == 0 {
-            return Err("queue_file_limit must be at least 1".into());
-        }
-        if self.queue_size_limit_mb > MAX_QUEUE_SIZE_LIMIT_MB {
-            return Err(format!(
-                "queue_size_limit_mb {} is invalid: the limit is bounded to \
-                 0-{MAX_QUEUE_SIZE_LIMIT_MB}",
-                self.queue_size_limit_mb
-            ));
-        }
-        if self.banned_message.is_empty() {
-            return Err("banned_message must not be empty".into());
-        }
         if self.pushover_private_messages
             && (self.pushover_token.is_empty() || self.pushover_user_key.is_empty())
         {
@@ -292,7 +251,7 @@ impl Settings {
                     .into(),
             );
         }
-        Ok(RuntimeConfig {
+        let config = RuntimeConfig {
             login: LoginConfig {
                 server: self.resolve_server()?,
                 username: self.username.clone(),
@@ -319,7 +278,9 @@ impl Settings {
             },
             shared_folders: self.shares.clone(),
             share_filters: self.share_filters.clone(),
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -510,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn share_names_with_slashes_are_rejected() {
+    fn the_runtime_config_applies_the_library_rules() {
         let with_share = |name: &str| Settings {
             server: "127.0.0.1:2242".into(),
             shares: vec![SharedFolder {
@@ -520,12 +481,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        for name in ["/", "a/b", "a\\b", ""] {
-            assert!(
-                with_share(name).runtime_config().is_err(),
-                "{name:?} must be rejected"
-            );
-        }
+        assert!(with_share("a/b").runtime_config().is_err());
         assert!(with_share("Music").runtime_config().is_ok());
     }
 
@@ -538,30 +494,6 @@ mod tests {
         let invalid = [
             Settings {
                 rescan_hour_utc: 24,
-                ..base()
-            },
-            Settings {
-                max_search_results: 0,
-                ..base()
-            },
-            Settings {
-                max_search_results: 301,
-                ..base()
-            },
-            Settings {
-                banned_message: String::new(),
-                ..base()
-            },
-            Settings {
-                share_filters: vec![String::new()],
-                ..base()
-            },
-            Settings {
-                share_filters: vec!["a/b".into()],
-                ..base()
-            },
-            Settings {
-                share_filters: vec!["a\\b".into()],
                 ..base()
             },
             Settings {
@@ -580,7 +512,6 @@ mod tests {
         }
         let valid = Settings {
             rescan_hour_utc: 23,
-            share_filters: vec!["Thumbs.db".into(), "desktop.ini".into()],
             pushover_private_messages: true,
             pushover_token: "token".into(),
             pushover_user_key: "key".into(),

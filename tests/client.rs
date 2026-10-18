@@ -875,7 +875,7 @@ async fn removing_every_share_installs_an_empty_index_without_a_cache() {
     })
     .await;
 
-    std::fs::remove_file(&eve_config.scan_cache).unwrap();
+    std::fs::remove_file(&eve_config.share_catalog).unwrap();
     let mut runtime = eve_config.runtime.clone();
     runtime.shared_folders = Vec::new();
     eve.apply_config(runtime).await;

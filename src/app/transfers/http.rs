@@ -203,7 +203,7 @@ async fn clear(
     Json(body): Json<ClearBody>,
     direction: TransferDirection,
 ) -> StatusCode {
-    if body.statuses.is_empty() || body.statuses.iter().any(|status| !status.is_cleared()) {
+    if body.statuses.is_empty() || body.statuses.iter().any(|status| !status.is_terminal()) {
         return StatusCode::BAD_REQUEST;
     }
     app.client

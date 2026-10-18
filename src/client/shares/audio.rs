@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn id3_prefixed_file_is_scanned_after_the_tag() {
-        let path = std::env::temp_dir().join(format!("newkitine-xing-{}.mp3", std::process::id()));
+        let path = std::env::temp_dir().join(format!("soulseek-xing-{}.mp3", std::process::id()));
         let mut data = b"ID3\x04\x00\x00\x00\x00\x00\x0a".to_vec();
         data.extend([0xffu8; 10]);
         data.extend(frame(b"Xing", 0x03, 10, 1000));

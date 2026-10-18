@@ -33,7 +33,7 @@ pub struct FileInfo {
     pub attributes: FileAttributes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderContents {
     pub directory: String,
     pub files: Vec<FileInfo>,
