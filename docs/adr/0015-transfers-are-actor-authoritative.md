@@ -1,15 +1,15 @@
-# 15. Transfers are actor-authoritative; MySQL is a projection of them
+# 15. MySQL is a projection of the client actor's transfers
 
-Status: Accepted
+Status: Accepted (library half moved to libsoulseek ADR 0010)
 Nicotine+: No counterpart
 
 ## Context
 
-Transfer transitions originate on the network side (peer messages), where the actor must decide immediately. Durable-list ordering (ADR 0003) would route every transition through the app before acting.
+The client actor owns transfer state and emits authoritative snapshots on its `TransferWork` stream (libsoulseek ADR 0010). Durable-list ordering (ADR 0003) does not apply to them.
 
 ## Decision
 
-The client actor owns transfer state and emits authoritative `TransferSnapshot` transitions; the app persists them through one ordered worker, and a DB write failure is fatal (exit). The actor seeds from the DB at boot.
+The app persists the stream through one ordered worker, and a DB write failure is fatal (exit). Boot settles the stored transfers with `TransferSnapshot::settle_after_restart`, writes back the ones it changed, and seeds the actor from them through `ClientBootstrap.transfers`.
 
 ## Consequences
 

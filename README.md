@@ -4,6 +4,8 @@
 
 Vibecoded replacement for running a lighter nicotine-plus on a server, with a webui.
 
+The Soulseek client underneath is [libsoulseek](https://github.com/PixelMelt/libsoulseek).
+
 Very simple, probably unstable.
 
 Works good enough for me.

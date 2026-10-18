@@ -6,7 +6,7 @@
 # VPN itself stays up the whole time, so a connectivity healthcheck never fires.
 #
 # Reconnecting the tunnel forces a fresh lease on a different node. newkitine
-# then picks the new port up on its own: src/app/gluetun.rs polls
+# then picks the new port up on its own: src/gluetun.rs polls
 # GET /v1/portforward and hot-applies it, so no VPN_PORT_FORWARDING_UP_COMMAND
 # is needed here.
 #

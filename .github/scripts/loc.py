@@ -19,12 +19,9 @@ def lines(text):
 
 def classify(path, text):
     if path.startswith("src/") and path.endswith(".rs"):
-        module = path.split("/")[1].removesuffix(".rs")
         code, marker, tests = text.partition("#[cfg(test)]")
-        yield "Backend", module, lines(code)
-        yield "Tests", "unit", lines(marker + tests)
-    elif path.startswith("tests/") and path.endswith(".rs"):
-        yield "Tests", "integration", lines(text)
+        yield "Backend", None, lines(code)
+        yield "Tests", None, lines(marker + tests)
     elif path.startswith("web/src/") and path.endswith(".svelte"):
         yield "UI code", "components", lines(text)
     elif path.startswith("web/src/") and path.endswith(".js"):

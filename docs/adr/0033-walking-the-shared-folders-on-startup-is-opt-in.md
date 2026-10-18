@@ -1,6 +1,6 @@
 # 33. Walking the shared folders on startup is opt-in
 
-Status: Accepted (rewritten with ADR 0034)
+Status: Accepted (rewritten with libsoulseek ADR 0020)
 Nicotine+: Diverges: Nicotine+ defaults `rescanonstartup` to on
 
 ## Context
@@ -9,7 +9,7 @@ A full tree walk of a large share takes minutes.
 
 ## Decision
 
-`scan_on_startup` (default false) decides whether boot walks the disk. Boot always installs the cached catalog first (ADR 0034), so shares are served either way; the walk only picks up files changed since the last scan.
+`scan_on_startup` (default false) decides whether boot walks the disk. Boot always installs the cached catalog first (libsoulseek ADR 0020), so shares are served either way; the walk only picks up files changed since the last scan.
 
 ## Consequences
 

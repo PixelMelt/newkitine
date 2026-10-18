@@ -1,16 +1,16 @@
-# 40. The client actor owns outgoing search state
+# 40. The projection follows the client actor's search state
 
-Status: Accepted
-Nicotine+: Matches: Nicotine+ core keeps a `SearchRequest` per token with the sanitized term and included/excluded words, reuses one token per wish, and its search tab opens a wish's results on the first matching response
+Status: Accepted (library half moved to libsoulseek ADR 0026)
+Nicotine+: Matches: Nicotine+ shows a wish's results on the first match and keeps a search open after its wish is removed
 
 ## Context
 
-The actor sent the raw query, forgot it, and forwarded every response. Each wishlist run minted a token and a `SearchStarted`, so the projection grew one search per run and its 25-search cap evicted the user's own searches. Peers that answer loosely filled the results with files that did not contain the query's words.
+The client actor owns outgoing search state: it parses queries, filters responses and decides when a wish's search is shown (libsoulseek ADR 0026).
 
 ## Decision
 
-`client::search::SearchQuery` ports `_sanitize_search_term`: it produces the transmitted term and the included/excluded words. `Client::search` parses once and returns `None` for a term with nothing to send. The actor keeps one `ActiveSearch` (query, parsed filter, shown flag) per allowed token, inserted when a search starts or a wish runs and removed by `CancelSearch`. Responses are filtered against it before they become `ClientEvent::SearchResults`; a response left empty is dropped. Each wish holds one token for its lifetime. A wish run allows that token and sends `WishlistSearch`, but emits `SearchStarted` only when a filtered response first arrives while the wish is not shown; the app removing that search (close or eviction) cancels it, and the next matching run shows it again. Wishes run only once the server has sent a positive wishlist interval in the current session; zero leaves the schedule as it is and a disconnect clears it. The projection keeps one response per peer per search.
+The app never parses queries: a search the client returns no token for is rejected. The projection adds a search on `SearchStarted` and keeps one response per peer per search. Closing a search, or evicting it past the retention cap (ADR 0018), cancels it on the client, so the next matching wish run shows it again.
 
 ## Consequences
 
-A wish occupies at most one projection slot and only once it has matches. The app never parses queries. Removing a wish whose results are shown leaves the search open until it is closed, as in Nicotine+.
+A wish occupies at most one projection slot and only once it has matches. Removing a wish whose results are shown leaves the search open until it is closed, as in Nicotine+.

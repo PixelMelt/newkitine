@@ -13,4 +13,4 @@ Client events apply strictly in order on a single task, including their database
 
 ## Consequences
 
-Per-domain worker lanes were considered and rejected. A database slow enough to back up the event queue is the "app cannot keep up" condition that the fatal queue policy (ADR 0012) already covers.
+Per-domain worker lanes were considered and rejected. A database slow enough to back up the event queue is the "app cannot keep up" condition that the fatal queue policy (libsoulseek ADR 0007) already covers.

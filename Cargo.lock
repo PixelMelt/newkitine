@@ -983,18 +983,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
- "flate2",
- "libc",
- "lofty",
  "maxminddb",
- "md5",
- "postcard",
  "reqwest",
  "serde",
  "serde_json",
- "socket2",
+ "soulseek",
  "sqlx",
- "thiserror",
  "tokio",
  "toml",
  "tower-http",
@@ -1669,6 +1663,23 @@ checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "soulseek"
+version = "0.1.0"
+source = "git+https://github.com/PixelMelt/libsoulseek#646b1b25f3bf7556659e89534c1d848ea72a9407"
+dependencies = [
+ "flate2",
+ "libc",
+ "lofty",
+ "md5",
+ "postcard",
+ "serde",
+ "socket2",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

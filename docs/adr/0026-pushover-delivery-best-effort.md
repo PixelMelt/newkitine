@@ -13,4 +13,4 @@ Notifications feed a bounded channel drained by one worker; enqueue is `try_rese
 
 ## Consequences
 
-This deliberately differs from the internal event stream's panic-on-Full (ADR 0012). The event that triggered the notification is already persisted and projected before the notification is enqueued; nothing diverges when one is dropped.
+This deliberately differs from the internal event stream's panic-on-Full (libsoulseek ADR 0007). The event that triggered the notification is already persisted and projected before the notification is enqueued; nothing diverges when one is dropped.

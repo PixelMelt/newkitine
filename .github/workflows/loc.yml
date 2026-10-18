@@ -3,7 +3,7 @@ name: Line count
 on:
   push:
     branches: [master]
-    paths: [src/**, tests/**, web/src/**, docs/**, .github/scripts/loc.py]
+    paths: [src/**, web/src/**, docs/**, .github/scripts/loc.py]
 
 permissions:
   contents: write
