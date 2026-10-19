@@ -1,6 +1,6 @@
 # 32. The runtime config is parsed and validated at the settings boundary
 
-Status: Accepted (library half moved to libsoulseek ADR 0019)
+Status: Accepted (library half moved to libsoulseek ADR 0019; refined by ADR 0046)
 Nicotine+: No counterpart
 
 ## Context
@@ -9,7 +9,7 @@ The library takes a parsed `DescriptionTemplate` (libsoulseek ADR 0019) and owns
 
 ## Decision
 
-`Settings::runtime_config` parses the description and runs `RuntimeConfig::validate` after its own bounds, so the paths that build a runtime config are the only validation sites: `PUT /api/settings` with a 400 on error, boot with `eprintln` + exit, and the Gluetun forwarded-port update, which warns and retries on the next poll. The Settings page lists the description variables as prose; a test pins that text against `description_variables`.
+`Settings::runtime_config` parses the description and runs `RuntimeConfig::validate` after its own bounds, and `Settings::local_shares` runs the share rules (libsoulseek ADR 0032; ADR 0046), so the paths that build a runtime config are the only validation sites: `PUT /api/settings` with a 400 on error, boot with `eprintln` + exit, and the Gluetun forwarded-port update, which warns and retries on the next poll. The Settings page lists the description variables as prose; a test pins that text against `description_variables`.
 
 ## Consequences
 

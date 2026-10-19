@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
+use soulseek::storage::{LocalDownloads, LocalShares, SharedFolder};
 use soulseek::types::{
     DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_MIN_SEARCH_CHARS,
     DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, DescriptionTemplate,
-    LoginConfig, RuntimeConfig, SearchConfig, SharedFolder, TransferConfig, TransferDirection,
+    LoginConfig, RuntimeConfig, SearchConfig, TransferConfig, TransferDirection,
 };
 
 use super::behavior::{DenialMessages, FilterLevel};
@@ -260,32 +261,54 @@ impl Settings {
             description: DescriptionTemplate::parse(&self.description)?,
             auto_reconnect: self.auto_reconnect,
             transfers: TransferConfig {
-                download_dir: self.download_dir.clone(),
-                incomplete_dir: self.incomplete_dir(),
                 upload_slots: self.upload_slots,
                 queue_file_limit: self.queue_file_limit,
                 upload_limit_kbps: self.upload_limit_kbps,
                 download_limit_kbps: self.download_limit_kbps,
                 queue_size_limit_mb: self.queue_size_limit_mb,
                 banned_message: self.banned_message.clone(),
-                download_username_subfolders: self.download_username_subfolders,
             },
             search: SearchConfig {
                 max_search_results: self.max_search_results,
                 min_search_chars: self.min_search_chars,
                 respond_to_searches: self.respond_to_searches,
             },
-            shared_folders: self.shares.clone(),
-            share_filters: self.share_filters.clone(),
         };
         config.validate()?;
         Ok(config)
+    }
+
+    pub fn local_shares(&self, share_catalog: PathBuf) -> Result<LocalShares, String> {
+        LocalShares::new(
+            self.shares.clone(),
+            self.share_filters.clone(),
+            share_catalog,
+        )
+    }
+
+    pub fn local_downloads(&self) -> Result<LocalDownloads, String> {
+        LocalDownloads::new(
+            self.download_dir.clone(),
+            self.incomplete_dir(),
+            self.download_username_subfolders,
+        )
+    }
+
+    fn shares_differ(&self, other: &Settings) -> bool {
+        self.shares != other.shares || self.share_filters != other.share_filters
+    }
+
+    fn downloads_differ(&self, other: &Settings) -> bool {
+        self.download_dir != other.download_dir
+            || self.incomplete_dir() != other.incomplete_dir()
+            || self.download_username_subfolders != other.download_username_subfolders
     }
 }
 
 pub struct SettingsState {
     locked: Vec<&'static str>,
     gluetun_enabled: bool,
+    share_catalog: PathBuf,
     mutation: tokio::sync::Mutex<()>,
     inner: RwLock<Inner>,
 }
@@ -299,14 +322,22 @@ struct SettingsChange {
     stored: Settings,
     effective: Settings,
     runtime: RuntimeConfig,
+    shares: Option<LocalShares>,
+    downloads: Option<LocalDownloads>,
     behavior_changed: bool,
 }
 
 impl SettingsState {
-    pub fn new(stored: Settings, locked: Vec<&'static str>, live_port: Option<u16>) -> Self {
+    pub fn new(
+        stored: Settings,
+        locked: Vec<&'static str>,
+        live_port: Option<u16>,
+        share_catalog: PathBuf,
+    ) -> Self {
         Self {
             locked,
             gluetun_enabled: live_port.is_some(),
+            share_catalog,
             mutation: tokio::sync::Mutex::new(()),
             inner: RwLock::new(Inner { stored, live_port }),
         }
@@ -388,6 +419,8 @@ impl SettingsState {
             return Err("listen_port is managed by gluetun".into());
         }
         let runtime = effective.runtime_config()?;
+        let shares = effective.local_shares(self.share_catalog.clone())?;
+        let downloads = effective.local_downloads()?;
         let stored = {
             let inner = self.inner.read().unwrap();
             let mut stored = effective.clone();
@@ -403,6 +436,8 @@ impl SettingsState {
             || effective.abusive_message != old.abusive_message
             || effective.leech_message != old.leech_message;
         Ok(SettingsChange {
+            shares: effective.shares_differ(&old).then_some(shares),
+            downloads: effective.downloads_differ(&old).then_some(downloads),
             stored,
             effective,
             runtime,
@@ -470,9 +505,8 @@ mod tests {
     }
 
     #[test]
-    fn the_runtime_config_applies_the_library_rules() {
+    fn local_shares_apply_the_library_rules() {
         let with_share = |name: &str| Settings {
-            server: "127.0.0.1:2242".into(),
             shares: vec![SharedFolder {
                 virtual_name: name.into(),
                 path: PathBuf::from("/data/shared"),
@@ -480,8 +514,9 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(with_share("a/b").runtime_config().is_err());
-        assert!(with_share("Music").runtime_config().is_ok());
+        let catalog = || PathBuf::from("share-catalog.gz");
+        assert!(with_share("a/b").local_shares(catalog()).is_err());
+        assert!(with_share("Music").local_shares(catalog()).is_ok());
     }
 
     #[test]

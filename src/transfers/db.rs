@@ -37,7 +37,7 @@ pub(super) async fn upsert_transfer(
     .bind(column(snapshot.direction))
     .bind(&snapshot.username)
     .bind(&snapshot.virtual_path)
-    .bind(&snapshot.folder_path)
+    .bind(&snapshot.destination)
     .bind(snapshot.size)
     .bind(snapshot.bytes_done)
     .bind(column(snapshot.status))
@@ -75,7 +75,7 @@ pub async fn load_transfers(pool: &MySqlPool) -> Vec<TransferView> {
                 direction,
                 username,
                 virtual_path,
-                folder_path: row.get(11),
+                destination: row.get(11),
                 size: row.get(4),
                 bytes_done: row.get(5),
                 status,

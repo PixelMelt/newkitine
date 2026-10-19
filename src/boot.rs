@@ -80,17 +80,30 @@ pub async fn run(config_path: PathBuf) {
     if let Some(port) = gluetun_port {
         info!(port, "using forwarded port from gluetun");
     }
-    let settings_state = SettingsState::new(stored_settings, locked_settings, gluetun_port);
+    let share_catalog = config_path.with_file_name("share-catalog.gz");
+    let settings_state = SettingsState::new(
+        stored_settings,
+        locked_settings,
+        gluetun_port,
+        share_catalog.clone(),
+    );
     let settings = settings_state.effective();
 
-    let runtime = settings.runtime_config().unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(1)
-    });
+    let (runtime, shares, downloads) = settings
+        .runtime_config()
+        .and_then(|runtime| {
+            let shares = settings.local_shares(share_catalog)?;
+            Ok((runtime, shares, settings.local_downloads()?))
+        })
+        .unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(1)
+        });
     let transfer_views = transfers::bootstrap(&pool).await;
     let client_config = ClientBootstrap {
         runtime,
-        share_catalog: config_path.with_file_name("share-catalog.gz"),
+        shares: Arc::new(shares),
+        downloads: Arc::new(downloads),
         scan_on_startup: settings.scan_on_startup,
         connect_on_startup: false,
         buddies: db::load_list(&pool, "buddy").await,

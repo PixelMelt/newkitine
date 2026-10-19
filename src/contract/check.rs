@@ -106,7 +106,7 @@ fn transfer_view() -> TransferView {
             direction: TransferDirection::Download,
             username: "peer".into(),
             virtual_path: "Music\\song.mp3".into(),
-            folder_path: Some("/downloads/Music".into()),
+            destination: Some("/downloads/Music".into()),
             size: 10,
             bytes_done: 5,
             status: TransferStatus::Transferring,

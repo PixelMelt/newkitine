@@ -31,6 +31,12 @@ async fn apply_update(app: &Arc<App>, update: SettingsUpdate) -> Result<(), Appl
         .await
         .map_err(ApplyError::Db)?;
     app.client.apply_config(change.runtime).await;
+    if let Some(shares) = change.shares {
+        app.client.set_shares(Arc::new(shares)).await;
+    }
+    if let Some(downloads) = change.downloads {
+        app.client.set_downloads(Arc::new(downloads)).await;
+    }
     app.settings.commit(change.stored);
     if change.behavior_changed {
         behavior::apply_level(app).await;
