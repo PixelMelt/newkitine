@@ -29,6 +29,9 @@ use state::{Check, Peer, touch};
 use super::db::fatal;
 use super::state::{App, now};
 
+const REPEAT_DOWNLOAD_REASON: &str =
+    "Already sent to you several times; message me if your client is stuck";
+
 fn is_self(app: &App, username: &str) -> bool {
     app.projection.read().session.username == username
 }
@@ -371,7 +374,9 @@ pub async fn upload_delivered(app: &Arc<App>, username: &str, virtual_path: &str
 async fn deny_file(app: &Arc<App>, username: &str, virtual_path: &str, last_at: i64, now: i64) {
     let expires_at = last_at + REPEAT_WINDOW_DAYS * SECS_PER_DAY;
     let ttl = Duration::from_secs(expires_at.saturating_sub(now) as u64);
-    app.client.deny_file(username, virtual_path, ttl).await;
+    app.client
+        .deny_file(username, virtual_path, ttl, REPEAT_DOWNLOAD_REASON)
+        .await;
     info!(username, virtual_path, "repeat downloads capped");
 }
 

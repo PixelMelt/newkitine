@@ -1,7 +1,11 @@
 mod db;
 mod http;
+mod totals;
 
 pub(super) use http::router;
+#[cfg(test)]
+pub use totals::DirectionTotals;
+pub use totals::{TransferTotals, TransferTotalsSnapshot};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -112,10 +116,22 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
                     .await
                     .unwrap_or_else(|error| fatal(error));
                 tx.commit().await.unwrap_or_else(|error| fatal(error));
-                if delivered_bytes > 0 && direction == TransferDirection::Upload {
+                if delivered_bytes > 0 {
                     let snapshot = &view.snapshot;
-                    behavior::upload_delivered(&app, &snapshot.username, &snapshot.virtual_path)
+                    app.transfer_totals.record(
+                        direction,
+                        &snapshot.username,
+                        delivered_bytes,
+                        avg_speed_bps,
+                    );
+                    if direction == TransferDirection::Upload {
+                        behavior::upload_delivered(
+                            &app,
+                            &snapshot.username,
+                            &snapshot.virtual_path,
+                        )
                         .await;
+                    }
                 }
                 project(&app, view);
                 if app.settings.autoclear(direction) {

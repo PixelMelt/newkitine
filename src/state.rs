@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use soulseek::client::Client;
@@ -5,10 +6,12 @@ use sqlx::MySqlPool;
 
 use super::behavior::Behavior;
 use super::geo::Geo;
+use super::profile::Profile;
 use super::projection::Projection;
 use super::pushover::Notifier;
 use super::settings::SettingsState;
 use super::stats::StatsSink;
+use super::transfers::TransferTotals;
 
 pub fn now() -> i64 {
     SystemTime::now()
@@ -19,6 +22,8 @@ pub fn now() -> i64 {
 
 pub struct App {
     pub client: Client,
+    pub profile: Arc<Profile>,
+    pub transfer_totals: Arc<TransferTotals>,
     pub db: MySqlPool,
     pub projection: Projection,
     pub settings: SettingsState,

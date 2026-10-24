@@ -91,41 +91,26 @@ pub async fn flush_loop(app: Arc<App>) {
     }
 }
 
-async fn transfer_stats(pool: &MySqlPool, utc_offset: i64) -> serde_json::Value {
+async fn transfer_stats(app: &App, utc_offset: i64) -> serde_json::Value {
+    let snapshot = app.transfer_totals.snapshot();
     let mut totals = serde_json::Map::new();
-    for direction in ["download", "upload"] {
-        totals.insert(
-            direction.into(),
-            serde_json::json!({ "count": 0, "bytes": 0, "avg_speed_bps": 0 }),
-        );
-    }
-    for row in sqlx::query(
-        "SELECT direction, COUNT(*), CAST(SUM(COALESCE(bytes, size)) AS UNSIGNED),
-                CAST(COALESCE(AVG(speed_bps), 0) AS UNSIGNED)
-         FROM transfer_history GROUP BY direction",
-    )
-    .fetch_all(pool)
-    .await
-    .expect("transfer totals")
-    {
-        let direction: String = row.get(0);
-        totals.insert(
-            direction,
-            serde_json::json!({
-                "count": row.get::<i64, _>(1),
-                "bytes": row.get::<u64, _>(2),
-                "avg_speed_bps": row.get::<u64, _>(3),
-            }),
-        );
-    }
-
-    let unique_upload_users: i64 = sqlx::query(
-        "SELECT COUNT(DISTINCT username) FROM transfer_history WHERE direction = 'upload'",
-    )
-    .fetch_one(pool)
-    .await
-    .expect("unique upload users")
-    .get(0);
+    totals.insert(
+        "download".into(),
+        serde_json::json!({
+            "count": snapshot.downloads.count,
+            "bytes": snapshot.downloads.bytes,
+            "avg_speed_bps": snapshot.downloads.avg_speed_bps,
+        }),
+    );
+    totals.insert(
+        "upload".into(),
+        serde_json::json!({
+            "count": snapshot.uploads.count,
+            "bytes": snapshot.uploads.bytes,
+            "avg_speed_bps": snapshot.uploads.avg_speed_bps,
+        }),
+    );
+    let pool = &app.db;
 
     let mut weekday_uploads = [0i64; 7];
     for row in sqlx::query(
@@ -143,7 +128,7 @@ async fn transfer_stats(pool: &MySqlPool, utc_offset: i64) -> serde_json::Value 
 
     serde_json::json!({
         "totals": totals,
-        "unique_upload_users": unique_upload_users,
+        "unique_upload_users": snapshot.upload_users,
         "top_files": top_uploads(pool, "virtual_path").await,
         "top_users": top_uploads(pool, "username").await,
         "weekday_uploads": weekday_uploads,
@@ -280,7 +265,7 @@ async fn stats_transfers(
     if !(-UTC_OFFSET_MAX..=UTC_OFFSET_MAX).contains(&query.utc_offset) {
         return axum::http::StatusCode::BAD_REQUEST.into_response();
     }
-    Json(transfer_stats(&app.db, query.utc_offset).await).into_response()
+    Json(transfer_stats(&app, query.utc_offset).await).into_response()
 }
 
 #[derive(Deserialize)]

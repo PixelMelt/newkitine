@@ -432,6 +432,11 @@
               me.upload_speed.
             </p>
             <p class="hint">
+              Totals over every finished transfer: stats.uploads, stats.uploaded,
+              stats.upload_users, stats.downloads, stats.downloaded, stats.upload_speed. Sizes and
+              speeds read like 1.4 TiB and 512.0 KiB/s.
+            </p>
+            <p class="hint">
               Flags: user.is_buddy, user.is_ignored, user.is_banned, user.is_privileged.
             </p>
           {:else}

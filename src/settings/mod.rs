@@ -12,13 +12,14 @@ use serde::{Deserialize, Serialize};
 use soulseek::storage::{LocalDownloads, LocalShares, SharedFolder};
 use soulseek::types::{
     DEFAULT_BANNED_MESSAGE, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_MIN_SEARCH_CHARS,
-    DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, DescriptionTemplate,
-    LoginConfig, RuntimeConfig, SearchConfig, TransferConfig, TransferDirection,
+    DEFAULT_QUEUE_FILE_LIMIT, DEFAULT_SERVER, DEFAULT_UPLOAD_SLOTS, LoginConfig, RuntimeConfig,
+    SearchConfig, TransferConfig, TransferDirection,
 };
 
 use super::behavior::{DenialMessages, FilterLevel};
 use super::config::env_var;
 use super::contract::{AppEvent, SettingsPayload};
+use super::profile::DescriptionTemplate;
 use super::pushover::Keys;
 use super::session;
 use super::state::App;
@@ -258,7 +259,6 @@ impl Settings {
                 password: self.password.clone(),
                 listen_port: self.listen_port,
             },
-            description: DescriptionTemplate::parse(&self.description)?,
             auto_reconnect: self.auto_reconnect,
             transfers: TransferConfig {
                 upload_slots: self.upload_slots,
@@ -276,6 +276,10 @@ impl Settings {
         };
         config.validate()?;
         Ok(config)
+    }
+
+    pub fn description_template(&self) -> Result<DescriptionTemplate, String> {
+        DescriptionTemplate::parse(&self.description)
     }
 
     pub fn local_shares(&self, share_catalog: PathBuf) -> Result<LocalShares, String> {
@@ -322,6 +326,7 @@ struct SettingsChange {
     stored: Settings,
     effective: Settings,
     runtime: RuntimeConfig,
+    description: DescriptionTemplate,
     shares: Option<LocalShares>,
     downloads: Option<LocalDownloads>,
     behavior_changed: bool,
@@ -419,6 +424,7 @@ impl SettingsState {
             return Err("listen_port is managed by gluetun".into());
         }
         let runtime = effective.runtime_config()?;
+        let description = effective.description_template()?;
         let shares = effective.local_shares(self.share_catalog.clone())?;
         let downloads = effective.local_downloads()?;
         let stored = {
@@ -441,6 +447,7 @@ impl SettingsState {
             stored,
             effective,
             runtime,
+            description,
             behavior_changed,
         })
     }
@@ -555,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_description_template_fails_the_runtime_config() {
+    fn a_broken_description_template_fails_at_the_settings_boundary() {
         let with_description = |description: &str| Settings {
             server: "127.0.0.1:2242".into(),
             description: description.into(),
@@ -563,12 +570,12 @@ mod tests {
         };
         assert!(
             with_description("hi ${user.nope}")
-                .runtime_config()
+                .description_template()
                 .is_err()
         );
         assert!(
             with_description("${user.is_buddy?Hey buddy:Hi} ${user.name}")
-                .runtime_config()
+                .description_template()
                 .is_ok()
         );
     }
@@ -580,7 +587,7 @@ mod tests {
             "/web/src/tabs/Settings.svelte"
         ))
         .unwrap();
-        for name in soulseek::types::description_variables() {
+        for name in crate::profile::description_variables() {
             assert!(
                 page.contains(name),
                 "{name} is missing from the profile hint"

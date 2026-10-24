@@ -10,6 +10,7 @@ mod geo;
 mod gluetun;
 mod interests;
 mod peer_history;
+mod profile;
 mod projection;
 mod pushover;
 mod search;

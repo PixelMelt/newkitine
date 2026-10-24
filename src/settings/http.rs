@@ -31,6 +31,7 @@ async fn apply_update(app: &Arc<App>, update: SettingsUpdate) -> Result<(), Appl
         .await
         .map_err(ApplyError::Db)?;
     app.client.apply_config(change.runtime).await;
+    app.profile.set_template(change.description);
     if let Some(shares) = change.shares {
         app.client.set_shares(Arc::new(shares)).await;
     }

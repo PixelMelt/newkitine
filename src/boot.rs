@@ -9,13 +9,14 @@ use super::behavior::{self, Behavior};
 use super::chat::Chat;
 use super::config::{Bootstrap, GluetunConfig};
 use super::interests::{self, InterestsView};
+use super::profile::Profile;
 use super::projection::{AppData, Projection};
 use super::search::{self, SearchState};
 use super::session::Status;
 use super::settings::{self, Settings, SettingsState};
 use super::state::{App, now};
 use super::stats::{self, StatsSink};
-use super::transfers::{self, Transfers};
+use super::transfers::{self, TransferTotals, Transfers};
 use super::users::{self, UsersState};
 use super::{api, db, events, geo, gluetun, pushover};
 
@@ -89,21 +90,29 @@ pub async fn run(config_path: PathBuf) {
     );
     let settings = settings_state.effective();
 
-    let (runtime, shares, downloads) = settings
+    let (runtime, shares, downloads, description) = settings
         .runtime_config()
         .and_then(|runtime| {
             let shares = settings.local_shares(share_catalog)?;
-            Ok((runtime, shares, settings.local_downloads()?))
+            Ok((
+                runtime,
+                shares,
+                settings.local_downloads()?,
+                settings.description_template()?,
+            ))
         })
         .unwrap_or_else(|error| {
             eprintln!("{error}");
             std::process::exit(1)
         });
     let transfer_views = transfers::bootstrap(&pool).await;
+    let transfer_totals = Arc::new(TransferTotals::load(&pool).await);
+    let profile = Arc::new(Profile::new(description, transfer_totals.clone()));
     let client_config = ClientBootstrap {
         runtime,
         shares: Arc::new(shares),
         downloads: Arc::new(downloads),
+        profile: profile.clone(),
         scan_on_startup: settings.scan_on_startup,
         connect_on_startup: false,
         buddies: db::load_list(&pool, "buddy").await,
@@ -154,6 +163,8 @@ pub async fn run(config_path: PathBuf) {
     let (notifier, pushover_worker) = pushover::Notifier::new();
     let app = Arc::new(App {
         client,
+        profile,
+        transfer_totals,
         db: pool,
         projection: Projection::new(data),
         settings: settings_state,
