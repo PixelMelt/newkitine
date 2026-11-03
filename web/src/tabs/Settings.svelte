@@ -344,7 +344,8 @@
             <div class="form-row">
               <label for="set-{f.storage}">{f.label}</label>
               <div class="control">
-                <select id="set-{f.storage}" bind:value={draft[f.storage]}>
+                <select id="set-{f.storage}" value={draft[f.storage]}
+                  on:change={(event) => (draft[f.storage] = event.currentTarget.value)}>
                   {#each storages as [id, label]}
                     <option value={id} disabled={id === 'webdav' && !$settings.webdav}>{label}</option>
                   {/each}
