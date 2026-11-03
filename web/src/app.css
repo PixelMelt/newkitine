@@ -681,7 +681,9 @@ p {
 	border: 1px solid var(--border-soft);
 	padding: 6px;
 	margin: 0;
+	flex: 1;
 	min-height: 60px;
+	overflow-y: auto;
 	font: inherit;
 }
 
