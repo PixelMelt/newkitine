@@ -55,6 +55,7 @@ The Soulseek library moved to [libsoulseek](https://github.com/PixelMelt/libsoul
 | [0043](0043-every-mutating-call-reports-its-outcome.md) | Every mutating call in the web UI reports its outcome through one wrapper | Accepted | No counterpart |
 | 0044 | Client commands are closures run on the actor | Moved to [libsoulseek ADR 0028](https://github.com/PixelMelt/libsoulseek/blob/master/docs/adr/0028-client-commands-are-closures-run-on-the-actor.md) | No counterpart |
 | [0045](0045-the-soulseek-library-lives-in-libsoulseek.md) | The Soulseek library lives in libsoulseek | Accepted | No counterpart |
-| [0046](0046-settings-build-the-local-storage-and-replace-it-on-change.md) | Settings build the local storage and replace it on change | Accepted (refines ADR 0032) | No counterpart |
+| [0046](0046-settings-build-the-local-storage-and-replace-it-on-change.md) | Settings build the local storage and replace it on change | Accepted (refines ADR 0032; refined by ADR 0049) | No counterpart |
 | [0047](0047-newkitine-writes-the-profile-description.md) | newkitine writes the profile description | Accepted (supersedes ADR 0032 in part) | Matches: Nicotine+ owns profile text and banned-user wording |
 | [0048](0048-transfer-totals-live-in-memory-and-count-delivered-bytes.md) | Transfer totals live in memory and count delivered bytes | Accepted (supersedes ADR 0036 in part) | No counterpart |
+| [0049](0049-shares-and-downloads-can-live-on-webdav.md) | Shares and downloads can live on WebDAV | Accepted (refines ADR 0046) | Diverges: Nicotine+ shares and downloads local files only and always reads audio attributes |

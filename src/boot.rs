@@ -16,6 +16,7 @@ use super::session::Status;
 use super::settings::{self, Settings, SettingsState};
 use super::state::{App, now};
 use super::stats::{self, StatsSink};
+use super::storage::WebDav;
 use super::transfers::{self, TransferTotals, Transfers};
 use super::users::{self, UsersState};
 use super::{api, db, events, geo, gluetun, pushover};
@@ -55,8 +56,22 @@ async fn initial_gluetun_port(gluetun: &GluetunConfig) -> u16 {
     panic!("gluetun is configured but its forwarded port is unavailable: {last_error}");
 }
 
+fn or_exit<T>(result: Result<T, String>) -> T {
+    result.unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1)
+    })
+}
+
 pub async fn run(config_path: PathBuf) {
     let bootstrap = Bootstrap::load(&config_path);
+    let webdav = or_exit(
+        bootstrap
+            .webdav
+            .as_ref()
+            .map(|webdav| WebDav::new(&webdav.url, &webdav.username, &webdav.password))
+            .transpose(),
+    );
 
     let pool = connect_database(&bootstrap.database_url).await;
     db::init_schema(&pool).await;
@@ -81,37 +96,31 @@ pub async fn run(config_path: PathBuf) {
     if let Some(port) = gluetun_port {
         info!(port, "using forwarded port from gluetun");
     }
-    let share_catalog = config_path.with_file_name("share-catalog.gz");
     let settings_state = SettingsState::new(
         stored_settings,
         locked_settings,
         gluetun_port,
-        share_catalog.clone(),
+        config_path.with_file_name("share-catalog.gz"),
+        webdav,
     );
     let settings = settings_state.effective();
 
-    let (runtime, shares, downloads, description) = settings
-        .runtime_config()
-        .and_then(|runtime| {
-            let shares = settings.local_shares(share_catalog)?;
+    let (runtime, shares, downloads, description) =
+        or_exit(settings.runtime_config().and_then(|runtime| {
             Ok((
                 runtime,
-                shares,
-                settings.local_downloads()?,
+                settings_state.share_source(&settings)?,
+                settings_state.download_store(&settings)?,
                 settings.description_template()?,
             ))
-        })
-        .unwrap_or_else(|error| {
-            eprintln!("{error}");
-            std::process::exit(1)
-        });
+        }));
     let transfer_views = transfers::bootstrap(&pool).await;
     let transfer_totals = Arc::new(TransferTotals::load(&pool).await);
     let profile = Arc::new(Profile::new(description, transfer_totals.clone()));
     let client_config = ClientBootstrap {
         runtime,
-        shares: Arc::new(shares),
-        downloads: Arc::new(downloads),
+        shares,
+        downloads,
         profile: profile.clone(),
         scan_on_startup: settings.scan_on_startup,
         connect_on_startup: false,

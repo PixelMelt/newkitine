@@ -23,9 +23,13 @@ enum ApplyError {
 
 async fn apply_update(app: &Arc<App>, update: SettingsUpdate) -> Result<(), ApplyError> {
     let _mutation = app.settings.mutation.lock().await;
+    let unfinished_downloads = app.projection.read().transfers.unfinished_downloads();
     let change = app
         .settings
-        .stage_update(update.into_settings(&app.settings.effective()))
+        .stage_update(
+            update.into_settings(&app.settings.effective()),
+            unfinished_downloads,
+        )
         .map_err(ApplyError::Invalid)?;
     save_settings(&app.db, &serde_json::to_string(&change.stored).unwrap())
         .await
@@ -33,10 +37,10 @@ async fn apply_update(app: &Arc<App>, update: SettingsUpdate) -> Result<(), Appl
     app.client.apply_config(change.runtime).await;
     app.profile.set_template(change.description);
     if let Some(shares) = change.shares {
-        app.client.set_shares(Arc::new(shares)).await;
+        app.client.set_shares(shares).await;
     }
     if let Some(downloads) = change.downloads {
-        app.client.set_downloads(Arc::new(downloads)).await;
+        app.client.set_downloads(downloads).await;
     }
     app.settings.commit(change.stored);
     if change.behavior_changed {

@@ -1,6 +1,6 @@
 # 46. Settings build the local storage and replace it on change
 
-Status: Accepted (refines ADR 0032)
+Status: Accepted (refines ADR 0032; refined by ADR 0049)
 Nicotine+: No counterpart
 
 ## Context

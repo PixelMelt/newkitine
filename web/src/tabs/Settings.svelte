@@ -31,20 +31,30 @@
     ],
     shares: [
       { h: 'Shared Folders' },
+      { storage: 'share_storage', label: 'Storage' },
+      {
+        check: 'fast_scan', label: 'Fast scan',
+        hint: 'Lists files without reading them, so peers see no bitrate or duration. Required for WebDAV.',
+      },
       { custom: 'shares', keys: ['shares', 'share_filters'] },
       {
         check: 'scan_on_startup', label: 'Rescan shares on startup',
-        hint: 'The last scan is loaded from cache at startup either way. Turn this on to also walk the shared folders on every start.',
+        hint: 'Local shares load the last scan from cache at startup either way; turn this on to also walk the shared folders on every start. WebDAV shares are listed on every start regardless.',
       },
       { check: 'rescan_daily', label: 'Rescan shares every day' },
       { number: 'rescan_hour_utc', label: 'Daily rescan hour', min: 0, max: 23, unit: ':00 UTC' },
     ],
     downloads: [
       { h: 'Downloads' },
-      { text: 'download_dir', label: 'Download folder', long: true },
+      { storage: 'download_storage', label: 'Storage' },
       {
-        text: 'incomplete_dir', label: 'Unfinished files folder', long: true,
-        placeholder: (d) => `${d.download_dir}/incomplete`,
+        text: 'download_dir', long: true,
+        label: (d) => (d.download_storage === 'webdav' ? 'WebDAV download folder' : 'Download folder'),
+      },
+      {
+        text: 'incomplete_dir', long: true,
+        label: (d) => (d.download_storage === 'webdav' ? 'WebDAV unfinished folder' : 'Unfinished files folder'),
+        placeholder: (d) => `${d.download_dir}${/(^|\/)$/.test(d.download_dir) ? '' : '/'}incomplete`,
       },
       { number: 'download_limit_kbps', label: 'Download speed limit', min: 0, unit: 'KiB/s', hint: NO_LIMIT },
       { check: 'download_username_subfolders', label: 'Put finished downloads in a subfolder named after the uploader' },
@@ -92,7 +102,8 @@
     profile: [{ h: 'My Profile' }, { custom: 'profile', keys: ['description'] }],
     ui: [{ h: 'Appearance' }, { custom: 'theme', keys: ['theme'] }],
   };
-  const keysOf = (id) => fields[id].flatMap((f) => f.keys ?? f.text ?? f.number ?? f.check ?? []);
+  const keysOf = (id) =>
+    fields[id].flatMap((f) => f.keys ?? f.text ?? f.number ?? f.check ?? f.storage ?? []);
   const filterLevels = [
     ['open', 'Open', 'Never restricts anyone.'],
     ['guarded', 'Guarded', 'Blocks search flooding.'],
@@ -103,6 +114,12 @@
     ['light', 'Light'],
     ['catppuccin', 'Catppuccin'],
   ];
+  const storages = [
+    ['local', 'Local disk'],
+    ['webdav', 'WebDAV'],
+  ];
+  const NO_WEBDAV =
+    'To use WebDAV, add a [webdav] section with url, username and password to the config file or set NEWKITINE_WEBDAV_URL, then restart.';
   let draft = null;
   let version = 0;
   let baseline = null;
@@ -323,10 +340,23 @@
               </label>
               {#if f.hint}<span class="hint">{f.hint}</span>{/if}
             </div>
+          {:else if f.storage}
+            <div class="form-row">
+              <label for="set-{f.storage}">{f.label}</label>
+              <div class="control">
+                <select id="set-{f.storage}" bind:value={draft[f.storage]}>
+                  {#each storages as [id, label]}
+                    <option value={id} disabled={id === 'webdav' && !$settings.webdav}>{label}</option>
+                  {/each}
+                </select>
+                {#if !$settings.webdav}<span class="hint">{NO_WEBDAV}</span>
+                {:else if draft[f.storage] === 'webdav'}<span class="hint">Paths are on the WebDAV server and start with /.</span>{/if}
+              </div>
+            </div>
           {:else if f.text || f.number}
             {@const key = f.text ?? f.number}
             <div class="form-row">
-              <label for="set-{key}">{f.label}</label>
+              <label for="set-{key}">{typeof f.label === 'function' ? f.label(draft) : f.label}</label>
               <div class="control">
                 {#if f.number}
                   <NumberField id="set-{key}" min={f.min} max={f.max ?? null} unit={f.unit ?? ''}
@@ -352,7 +382,7 @@
           {:else if f.custom === 'shares'}
             <table class="editor">
               <thead>
-                <tr><th>Name shown to others</th><th class="grow">Folder on the server</th><th>Buddies only</th><th></th></tr>
+                <tr><th>Name shown to others</th><th class="grow">{draft.share_storage === 'webdav' ? 'Folder on the WebDAV server' : 'Folder on the server'}</th><th>Buddies only</th><th></th></tr>
               </thead>
               <tbody>
                 {#each draft.shares as share}
@@ -372,7 +402,7 @@
                 <tr>
                   <td><input type="text" {...noAutofill} placeholder="Music"
                     bind:value={newShare.virtual_name} on:keydown={onEnter(addShare)} /></td>
-                  <td class="grow"><input type="text" {...noAutofill} placeholder="/data/shared/music" bind:value={newShare.path} on:keydown={onEnter(addShare)} /></td>
+                  <td class="grow"><input type="text" {...noAutofill} placeholder={draft.share_storage === 'webdav' ? '/music' : '/data/shared/music'} bind:value={newShare.path} on:keydown={onEnter(addShare)} /></td>
                   <td><input type="checkbox" aria-label="New share is buddies only" bind:checked={newShare.buddy_only} /></td>
                   <td><button type="button" on:click={addShare}>Add</button></td>
                 </tr>

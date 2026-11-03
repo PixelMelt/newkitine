@@ -18,6 +18,7 @@ mod session;
 mod settings;
 mod state;
 mod stats;
+mod storage;
 mod transfers;
 mod users;
 

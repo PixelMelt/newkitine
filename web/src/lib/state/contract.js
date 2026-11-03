@@ -43,6 +43,7 @@ const pair = (a, b) => (v, path) => {
 };
 
 const direction = oneOf('download', 'upload');
+const storage = oneOf('local', 'webdav');
 
 const userStats = shape({
 	avgspeed: num,
@@ -172,8 +173,11 @@ const publicSettings = shape({
 	password_set: bool,
 	listen_port: num,
 	description: str,
+	download_storage: storage,
 	download_dir: str,
 	incomplete_dir: nullable(str),
+	share_storage: storage,
+	fast_scan: bool,
 	shares: list(shape({ virtual_name: str, path: str, buddy_only: bool })),
 	upload_slots: num,
 	queue_file_limit: num,
@@ -207,6 +211,7 @@ const settingsPayload = {
 	settings: publicSettings,
 	locked: list(str),
 	gluetun: bool,
+	webdav: bool,
 };
 
 const events = {

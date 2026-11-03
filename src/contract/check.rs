@@ -213,6 +213,7 @@ fn settings_payload() -> SettingsPayload {
         settings: Settings::default().into(),
         locked: vec!["server"],
         gluetun: true,
+        webdav: true,
     }
 }
 

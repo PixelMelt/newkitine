@@ -60,6 +60,16 @@ impl Transfers {
         list.sort_by_key(|view| std::cmp::Reverse(view.updated_at));
         list
     }
+
+    pub fn unfinished_downloads(&self) -> usize {
+        self.transfers
+            .values()
+            .filter(|view| {
+                view.snapshot.direction == TransferDirection::Download
+                    && view.snapshot.status != TransferStatus::Finished
+            })
+            .count()
+    }
 }
 
 pub async fn bootstrap(pool: &MySqlPool) -> Vec<TransferView> {
@@ -153,4 +163,42 @@ pub async fn run_worker(app: Arc<App>, mut work: mpsc::Receiver<TransferWork>) {
         }
     }
     tracing::error!("transfer stream ended, client actor is gone");
+}
+
+#[cfg(test)]
+mod tests {
+    use soulseek::types::FileAttributes;
+
+    use super::*;
+
+    fn view(id: u64, direction: TransferDirection, status: TransferStatus) -> TransferView {
+        TransferView::new(TransferSnapshot {
+            id: TransferId(id),
+            direction,
+            username: "peer".into(),
+            virtual_path: format!("Music\\{id}.mp3"),
+            destination: Some("/downloads".into()),
+            size: 10,
+            bytes_done: 0,
+            status,
+            failure_reason: None,
+            file_path: None,
+            queue_place: 0,
+            speed_bps: 0,
+            attributes: FileAttributes::default(),
+        })
+    }
+
+    #[test]
+    fn unfinished_downloads_count_every_download_not_finished() {
+        let transfers = Transfers::load(vec![
+            view(1, TransferDirection::Download, TransferStatus::Finished),
+            view(2, TransferDirection::Download, TransferStatus::Queued),
+            view(3, TransferDirection::Download, TransferStatus::Failed),
+            view(4, TransferDirection::Download, TransferStatus::Aborted),
+            view(5, TransferDirection::Upload, TransferStatus::Transferring),
+        ]);
+        assert_eq!(transfers.unfinished_downloads(), 3);
+        assert_eq!(Transfers::default().unfinished_downloads(), 0);
+    }
 }

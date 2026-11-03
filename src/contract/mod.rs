@@ -135,6 +135,7 @@ pub struct SettingsPayload {
     pub settings: PublicSettings,
     pub locked: Vec<&'static str>,
     pub gluetun: bool,
+    pub webdav: bool,
 }
 
 #[derive(Serialize)]

@@ -30,6 +30,14 @@ impl Default for GluetunConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WebDavConfig {
+    pub url: String,
+    pub username: String,
+    pub password: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Bootstrap {
@@ -38,6 +46,7 @@ pub struct Bootstrap {
     pub allow_public_bind: bool,
     pub geoip_db: Option<String>,
     pub gluetun: Option<GluetunConfig>,
+    pub webdav: Option<WebDavConfig>,
 }
 
 impl Default for Bootstrap {
@@ -48,6 +57,7 @@ impl Default for Bootstrap {
             allow_public_bind: false,
             geoip_db: None,
             gluetun: None,
+            webdav: None,
         }
     }
 }
@@ -91,6 +101,28 @@ impl Bootstrap {
             }
             bootstrap.gluetun = Some(gluetun);
         }
+        if let Some(url) = env_var("NEWKITINE_WEBDAV_URL") {
+            bootstrap.webdav.get_or_insert_default().url = url;
+        }
+        if let Some(username) = env_var("NEWKITINE_WEBDAV_USERNAME") {
+            bootstrap
+                .webdav_section("NEWKITINE_WEBDAV_USERNAME")
+                .username = username;
+        }
+        if let Some(password) = env_var("NEWKITINE_WEBDAV_PASSWORD") {
+            bootstrap
+                .webdav_section("NEWKITINE_WEBDAV_PASSWORD")
+                .password = password;
+        }
         bootstrap
+    }
+
+    fn webdav_section(&mut self, variable: &str) -> &mut WebDavConfig {
+        self.webdav.as_mut().unwrap_or_else(|| {
+            panic!(
+                "{variable} is set but no WebDAV server is configured: set \
+                 NEWKITINE_WEBDAV_URL or add a [webdav] section with its url"
+            )
+        })
     }
 }

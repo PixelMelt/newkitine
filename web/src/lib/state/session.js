@@ -23,7 +23,7 @@ export const status = writable({
 	privileges_secs: 0,
 	peer_connections: 0,
 });
-export const settings = writable({ settings: null, locked: [], gluetun: false });
+export const settings = writable({ settings: null, locked: [], gluetun: false, webdav: false });
 export const loginFailure = writable(null);
 export const shownReport = writable(null);
 
@@ -56,7 +56,12 @@ function applyStatus(next) {
 }
 
 function applySettings(payload) {
-	settings.set({ settings: payload.settings, locked: payload.locked, gluetun: payload.gluetun });
+	settings.set({
+		settings: payload.settings,
+		locked: payload.locked,
+		gluetun: payload.gluetun,
+		webdav: payload.webdav,
+	});
 	if (localStorage.getItem('theme') !== payload.settings.theme) {
 		previewTheme(payload.settings.theme);
 		localStorage.setItem('theme', payload.settings.theme);
