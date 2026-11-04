@@ -69,7 +69,7 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::SearchStarted { token, query } => {
             search::search_started(app, token, query).await;
         }
-        ClientEvent::SearchResults(result) => search::apply_results(app, result),
+        ClientEvent::SearchResults(result) => search::apply_results(app, result).await,
         ClientEvent::UserStatus {
             username,
             status,

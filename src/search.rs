@@ -99,7 +99,7 @@ pub async fn search_started(app: &App, token: u32, query: String) {
     }
 }
 
-pub fn apply_results(app: &App, result: SearchResult) {
+pub async fn apply_results(app: &App, result: SearchResult) {
     let token = result.token;
     let response = SearchResponseView {
         username: result.username,
@@ -109,20 +109,26 @@ pub fn apply_results(app: &App, result: SearchResult) {
         files: result.results,
     };
     let max_search_responses = app.settings.max_search_responses();
-    let mut data = app.projection.write();
-    let Some(index) = data
-        .search
-        .searches
-        .iter()
-        .position(|search| search.token == token)
-    else {
-        tracing::warn!(token, "results for a removed search, dropping");
-        return;
+    let full = {
+        let mut data = app.projection.write();
+        let Some(index) = data
+            .search
+            .searches
+            .iter()
+            .position(|search| search.token == token)
+        else {
+            tracing::warn!(token, "results for a removed search, dropping");
+            return;
+        };
+        let search = &mut data.search.searches[index];
+        if search.accepts(&response.username, max_search_responses) {
+            search.results.push(response.clone());
+            data.broadcast(AppEvent::SearchResults { token, response });
+        }
+        data.search.searches[index].results.len() >= max_search_responses
     };
-    let search = &mut data.search.searches[index];
-    if search.accepts(&response.username, max_search_responses) {
-        search.results.push(response.clone());
-        data.broadcast(AppEvent::SearchResults { token, response });
+    if full {
+        app.client.stop_search_results(token).await;
     }
 }
 
