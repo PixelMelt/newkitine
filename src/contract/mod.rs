@@ -8,7 +8,7 @@ use soulseek::types::{TransferDirection, TransferId};
 
 use crate::settings::PublicSettings;
 
-use super::chat::{ChatMessage, RoomEntry, RoomsView};
+use super::chat::{ChatMessage, RoomEntry, RoomUserView, RoomsView};
 use super::interests::InterestsView;
 use super::search::{SearchResponseView, SearchView};
 use super::session::Status;
@@ -108,14 +108,14 @@ pub enum AppEvent {
     },
     RoomJoined {
         room: String,
-        users: Vec<String>,
+        users: Vec<RoomUserView>,
     },
     RoomLeft {
         room: String,
     },
-    RoomUserJoined {
+    RoomUser {
         room: String,
-        username: String,
+        user: RoomUserView,
     },
     RoomUserLeft {
         room: String,

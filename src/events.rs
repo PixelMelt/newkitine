@@ -74,14 +74,20 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
             username,
             status,
             privileged,
-        } => users::user_status(app, username, status, privileged),
+        } => {
+            chat::room_user_status(app, &username, status);
+            users::user_status(app, username, status, privileged);
+        }
         ClientEvent::WatchedUser {
             username,
             exists,
             status,
             stats,
         } => users::watch_user(app, username, exists, status, stats).await,
-        ClientEvent::UserStats { username, stats } => users::user_stats(app, username, stats).await,
+        ClientEvent::UserStats { username, stats } => {
+            chat::room_user_stats(app, &username, &stats);
+            users::user_stats(app, username, stats).await;
+        }
         ClientEvent::UserInterests {
             username,
             liked,
@@ -123,11 +129,9 @@ async fn handle(app: &Arc<App>, event: ClientEvent) {
         ClientEvent::RoomList { rooms } => chat::room_list(app, rooms),
         ClientEvent::RoomJoined { room, users } => chat::room_joined(app, room, users).await,
         ClientEvent::RoomLeft { room } => chat::room_left(app, room).await,
-        ClientEvent::RoomUserJoined { room, username } => {
-            chat::room_user(app, room, username, true);
-        }
+        ClientEvent::RoomUserJoined { room, user } => chat::room_user_joined(app, room, user),
         ClientEvent::RoomUserLeft { room, username } => {
-            chat::room_user(app, room, username, false);
+            chat::room_user_left(app, room, username);
         }
         ClientEvent::Recommendations {
             recommendations,

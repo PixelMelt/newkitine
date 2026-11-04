@@ -409,6 +409,12 @@
   .cell.bad {
     color: var(--danger);
   }
+  .cell.online {
+    color: var(--online);
+  }
+  .cell.away {
+    color: var(--away);
+  }
   .datatable:focus .row.selected .cell.dim,
   .datatable:focus .row.selected .cell.bad {
     color: inherit;

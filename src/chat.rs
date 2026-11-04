@@ -8,7 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
-use soulseek::types::USERNAME_LIMIT;
+use soulseek::types::{USERNAME_LIMIT, UserData, UserStats, UserStatus};
 use sqlx::MySqlPool;
 use sqlx::Row;
 
@@ -16,8 +16,9 @@ use super::api;
 use super::behavior;
 use super::contract::AppEvent;
 use super::db;
-use super::projection::{ProjectionWriter, set_member};
+use super::projection::ProjectionWriter;
 use super::state::{App, now};
+use super::users::status_string;
 
 #[derive(Clone, serde::Serialize)]
 pub struct ChatMessage {
@@ -41,7 +42,24 @@ pub struct RoomEntry {
 
 #[derive(Default, Clone, serde::Serialize)]
 pub struct RoomView {
-    pub users: Vec<String>,
+    pub users: Vec<RoomUserView>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct RoomUserView {
+    pub username: String,
+    pub status: String,
+    pub stats: UserStats,
+    pub country: Option<String>,
+}
+
+fn room_user_view(user: UserData) -> RoomUserView {
+    RoomUserView {
+        username: user.username,
+        status: status_string(UserStatus::from_u32(user.status)).into(),
+        stats: user.stats,
+        country: user.country,
+    }
 }
 
 #[derive(Default)]
@@ -203,15 +221,15 @@ pub fn room_list(app: &App, rooms: Vec<(String, u32)>) {
     data.broadcast(event);
 }
 
-pub async fn room_joined(app: &App, room: String, users: Vec<String>) {
+pub async fn room_joined(app: &App, room: String, users: Vec<UserData>) {
     let _mutation = app.list_mutation.lock().await;
     db::add_to_list(&app.db, "room", &room)
         .await
         .unwrap_or_else(|error| db::fatal(error));
     let mut data = app.projection.write();
-    let mut usernames = users;
-    usernames.sort();
-    let view = RoomView { users: usernames };
+    let view = RoomView {
+        users: users.into_iter().map(room_user_view).collect(),
+    };
     data.broadcast(AppEvent::RoomJoined {
         room: room.clone(),
         users: view.users.clone(),
@@ -229,23 +247,69 @@ pub async fn room_left(app: &App, room: String) {
     data.broadcast(AppEvent::RoomLeft { room });
 }
 
-pub fn room_user(app: &App, room: String, username: String, joined: bool) {
+pub fn room_user_joined(app: &App, room: String, user: UserData) {
+    let mut data = app.projection.write();
+    let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
+        tracing::debug!(
+            room,
+            username = user.username,
+            "join of a room we have not joined, dropping"
+        );
+        return;
+    };
+    let user = room_user_view(user);
+    match view
+        .users
+        .iter_mut()
+        .find(|member| member.username == user.username)
+    {
+        Some(member) => *member = user.clone(),
+        None => view.users.push(user.clone()),
+    }
+    data.broadcast(AppEvent::RoomUser { room, user });
+}
+
+pub fn room_user_left(app: &App, room: String, username: String) {
     let mut data = app.projection.write();
     let Some(view) = data.chat.rooms.joined.get_mut(&room) else {
         tracing::debug!(
             room,
             username,
-            joined,
-            "membership change in a room we have not joined, dropping"
+            "leave of a room we have not joined, dropping"
         );
         return;
     };
-    set_member(&mut view.users, &username, joined);
-    data.broadcast(if joined {
-        AppEvent::RoomUserJoined { room, username }
-    } else {
-        AppEvent::RoomUserLeft { room, username }
-    });
+    view.users.retain(|member| member.username != username);
+    data.broadcast(AppEvent::RoomUserLeft { room, username });
+}
+
+pub fn room_user_stats(app: &App, username: &str, stats: &UserStats) {
+    update_room_user(app, username, |user| user.stats = stats.clone());
+}
+
+pub fn room_user_status(app: &App, username: &str, status: Option<UserStatus>) {
+    if matches!(status, Some(UserStatus::Online | UserStatus::Away)) {
+        update_room_user(app, username, |user| {
+            user.status = status_string(status).into();
+        });
+    }
+}
+
+fn update_room_user(app: &App, username: &str, apply: impl Fn(&mut RoomUserView)) {
+    let mut data = app.projection.write();
+    let mut updated = Vec::new();
+    for (room, view) in &mut data.chat.rooms.joined {
+        if let Some(user) = view.users.iter_mut().find(|user| user.username == username) {
+            apply(user);
+            updated.push(AppEvent::RoomUser {
+                room: room.clone(),
+                user: user.clone(),
+            });
+        }
+    }
+    for event in updated {
+        data.broadcast(event);
+    }
 }
 
 pub fn server_disconnected(data: &mut ProjectionWriter<'_>) {

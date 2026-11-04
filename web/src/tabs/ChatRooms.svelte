@@ -1,10 +1,12 @@
 <script>
   import {
-    rooms, conversations, unread, roomKey, joinRoom, leaveRoom, status,
+    rooms, conversations, unread, roomKey, joinRoom, leaveRoom, status, ignored,
   } from '../lib/stores.js';
   import { route, go, openUserInfo, noAutofill } from '../lib/ui.js';
   import { copy } from '../lib/act.js';
-  import { plural, fold, formatCount } from '../lib/format.js';
+  import {
+    plural, fold, formatCount, formatSpeed, countryFlag, countryName,
+  } from '../lib/format.js';
   import { onEnter } from '../lib/keys.js';
   import { openMenu, openMenuAt } from '../lib/menu.js';
   import { userMenu } from '../lib/usermenu.js';
@@ -25,14 +27,39 @@
     numeric('users', 'Users', 80, (r) => r.users),
     { key: 'joined', label: '', width: 70, text: (r) => (r.joined ? 'Joined' : ''), class: () => 'dim' },
   ];
-  const userColumns = [{ key: 'username', label: 'User', grow: 1, min: 100, text: (u) => u }];
+  const STATUS = { online: ['Online', 0], away: ['Away', 1], offline: ['Offline', 2], unknown: ['Unknown', 3] };
+
+  const statsHint = ({ stats }) =>
+    [
+      `Files: ${formatCount(stats.files)}`,
+      `Folders: ${formatCount(stats.dirs)}`,
+      `Speed: ${stats.avgspeed > 0 ? formatSpeed(stats.avgspeed) : 'Unknown'}`,
+    ].join('\n');
+
+  const byFiles = (a, b) => b.stats.files - a.stats.files || compareNames(a.username, b.username);
+
+  $: userColumns = [
+    {
+      key: 'status', label: '', width: 22, text: (u) => (STATUS[u.status][1] < 2 ? '●' : ''),
+      sortValue: (u) => STATUS[u.status][1], class: (u) => u.status, hint: (u) => STATUS[u.status][0],
+    },
+    {
+      key: 'country', label: '', width: 34, text: (u) => countryFlag(u.country),
+      sortValue: (u) => countryName(u.country), hint: (u) => countryName(u.country),
+    },
+    {
+      key: 'username', label: 'User', grow: 1, min: 90, text: (u) => u.username,
+      class: (u) => ($ignored.includes(u.username) ? 'dim' : ''),
+    },
+    { ...numeric('files', 'Files', 72, (u) => u.stats.files), hint: statsHint },
+  ];
 
   $: joinedNames = [...$rooms.joined.keys()].sort(compareNames);
   $: wanted = $route.items.rooms;
   $: selected = wanted ? ($rooms.joined.has(wanted) ? wanted : null) : (joinedNames[0] ?? null);
   $: showList = listRequested || !selected;
   $: current = selected ? $rooms.joined.get(selected) : null;
-  $: users = current && !showList ? [...current.users].sort(compareNames) : [];
+  $: users = current && !showList ? [...current.users].sort(byFiles) : [];
   $: needle = fold(roomName.trim());
   $: available = showList
     ? $rooms.available
@@ -152,21 +179,20 @@
         onsent={() => log.toBottom()}
       />
     </div>
-    <div class="side">
+    <div class="side roster">
       <span class="count">{plural(users.length, 'user')}</span>
       <DataTable
         id="room-users"
         label="Users in {selected}"
         rows={users}
-        key={(u) => u}
+        key={(u) => u.username}
         columns={userColumns}
-        headless
         viewKey={selected}
-        typeahead={(u) => u}
-        copyText={(u) => u}
+        typeahead={(u) => u.username}
+        copyText={(u) => u.username}
         empty="Nobody here."
-        onactivate={(rows) => openUserInfo(rows[0])}
-        onmenu={(rows, point) => openMenuAt(point, userMenu(rows[0], { primary: true }))}
+        onactivate={(rows) => openUserInfo(rows[0].username)}
+        onmenu={(rows, point) => openMenuAt(point, userMenu(rows[0].username, { primary: true }))}
       />
     </div>
   </div>
