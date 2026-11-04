@@ -145,8 +145,15 @@ const roomEntry = shape({
 	users: num,
 });
 
+const roomUserView = shape({
+	username: str,
+	status: str,
+	stats: userStats,
+	country: nullable(str),
+});
+
 const roomView = shape({
-	users: list(str),
+	users: list(roomUserView),
 });
 
 const roomsView = shape({
@@ -243,9 +250,9 @@ const events = {
 	chat_closed: shape({ rev: num, username: str }),
 	room_message: shape({ rev: num, room: str, message: chatMessage }),
 	room_list: shape({ rev: num, rooms: list(roomEntry) }),
-	room_joined: shape({ rev: num, room: str, users: list(str) }),
+	room_joined: shape({ rev: num, room: str, users: list(roomUserView) }),
 	room_left: shape({ rev: num, room: str }),
-	room_user_joined: shape({ rev: num, room: str, username: str }),
+	room_user: shape({ rev: num, room: str, user: roomUserView }),
 	room_user_left: shape({ rev: num, room: str, username: str }),
 	snapshot: shape({
 		rev: num,

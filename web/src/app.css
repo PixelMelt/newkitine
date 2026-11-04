@@ -19,6 +19,8 @@
 	--unread: #62a0ea;
 	--sender-self: #8ff0a4;
 	--sender-other: #99c1f1;
+	--online: #57e389;
+	--away: #f8e45c;
 	--shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
@@ -43,6 +45,8 @@
 	--unread: #1a5fb4;
 	--sender-self: #1a7f4f;
 	--sender-other: #1a5fb4;
+	--online: #26a269;
+	--away: #c88800;
 	--shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
@@ -67,6 +71,8 @@
 	--unread: #89b4fa;
 	--sender-self: #a6e3a1;
 	--sender-other: #89b4fa;
+	--online: #a6e3a1;
+	--away: #f9e2af;
 	--shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
@@ -492,6 +498,10 @@ p {
 
 .side.nav {
 	width: 160px;
+}
+
+.side.roster {
+	width: 280px;
 }
 
 .main {

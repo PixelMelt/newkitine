@@ -60,7 +60,7 @@
           on:keydown={(e) => stripKey(e, item)}
           on:contextmenu={(e) => onmenu(e, item.id)}
         >
-          <span class="name">{item.label}</span>
+          <span class="name" data-hovertext="">{item.label}</span>
           {#if item.count !== undefined}<span class="count">{item.count}</span>{/if}
         </button>
         <button

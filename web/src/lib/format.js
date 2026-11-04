@@ -61,6 +61,18 @@ export function effectiveBitrate({ bitrate, sample_rate, bit_depth }) {
 	return 0;
 }
 
+const regions = new Intl.DisplayNames([], { type: 'region' });
+const COUNTRY_CODE = /^[A-Z]{2}$/;
+
+export function countryFlag(code) {
+	if (!COUNTRY_CODE.test(code)) return '';
+	return String.fromCodePoint(...[...code].map((letter) => 0x1f1a5 + letter.charCodeAt(0)));
+}
+
+export function countryName(code) {
+	return COUNTRY_CODE.test(code) ? regions.of(code) : '';
+}
+
 export function formatSpeed(bytesPerSecond) {
 	return formatSize(bytesPerSecond) + '/s';
 }

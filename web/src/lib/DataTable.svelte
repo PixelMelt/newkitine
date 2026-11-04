@@ -253,17 +253,6 @@
     }
   }
 
-  function hint(event) {
-    const cell = event.target.closest('.cell');
-    if (!cell) return;
-    const text = cell.firstElementChild;
-    const parts = [];
-    if (text.scrollWidth > text.clientWidth) parts.push(cell.textContent);
-    if (cell.dataset.hint) parts.push(cell.dataset.hint);
-    if (parts.length) cell.title = parts.join('\n');
-    else cell.removeAttribute('title');
-  }
-
   function split(text, tail) {
     return text.length > tail * 2 ? [text.slice(0, -tail), text.slice(-tail)] : [text, ''];
   }
@@ -282,7 +271,6 @@
   on:scroll={() => (scrollTop = container.scrollTop)}
   on:keydown={keydown}
   on:mousedown={backgroundDown}
-  on:mouseover={hint}
 >
   {#if !headless}
   <div class="head" role="row" style:grid-template-columns={template} style:min-width="{minWidth}px">
@@ -291,6 +279,7 @@
         class="cell"
         class:end={column.align === 'end'}
         role="columnheader"
+        data-hovertext=""
         aria-sort={sort?.key === column.key ? (sort.dir === 1 ? 'ascending' : 'descending') : null}
         on:click={() => cycleSort(column)}
       >
@@ -320,7 +309,7 @@
                 class="cell {column.class ? column.class(row) : ''}"
                 class:end={column.align === 'end'}
                 role="gridcell"
-                data-hint={column.hint ? column.hint(row) : null}
+                data-hovertext={column.hint ? column.hint(row) : ''}
               >
                 {#if column.progress}
                   {@const fraction = column.progress(row)}
@@ -419,6 +408,12 @@
   }
   .cell.bad {
     color: var(--danger);
+  }
+  .cell.online {
+    color: var(--online);
+  }
+  .cell.away {
+    color: var(--away);
   }
   .datatable:focus .row.selected .cell.dim,
   .datatable:focus .row.selected .cell.bad {

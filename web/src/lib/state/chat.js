@@ -199,17 +199,17 @@ export const handlers = {
 		});
 		dropConversation(roomKey(msg.room));
 	},
-	room_user_joined: (msg) => {
+	room_user: (msg) => {
 		rooms.update((r) => {
 			const room = r.joined.get(msg.room);
-			if (!room.users.includes(msg.username)) room.users = [...room.users, msg.username];
+			room.users = [...room.users.filter((u) => u.username !== msg.user.username), msg.user];
 			return r;
 		});
 	},
 	room_user_left: (msg) => {
 		rooms.update((r) => {
 			const room = r.joined.get(msg.room);
-			room.users = room.users.filter((u) => u !== msg.username);
+			room.users = room.users.filter((u) => u.username !== msg.username);
 			return r;
 		});
 	},

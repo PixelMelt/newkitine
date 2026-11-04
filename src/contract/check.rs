@@ -7,7 +7,7 @@ use soulseek::types::{
 };
 
 use super::{AppEvent, Envelope, SettingsPayload, Snapshot};
-use crate::chat::{ChatMessage, RoomEntry, RoomView, RoomsView};
+use crate::chat::{ChatMessage, RoomEntry, RoomUserView, RoomView, RoomsView};
 use crate::interests::InterestsView;
 use crate::search::{SearchResponseView, SearchView};
 use crate::session::Status;
@@ -57,7 +57,7 @@ event_tags![
     (RoomList, "room_list"),
     (RoomJoined, "room_joined"),
     (RoomLeft, "room_left"),
-    (RoomUserJoined, "room_user_joined"),
+    (RoomUser, "room_user"),
     (RoomUserLeft, "room_user_left"),
 ];
 
@@ -177,6 +177,15 @@ fn message() -> ChatMessage {
     }
 }
 
+fn room_user_view() -> RoomUserView {
+    RoomUserView {
+        username: "peer".into(),
+        status: "online".into(),
+        stats: stats(),
+        country: Some("US".into()),
+    }
+}
+
 fn rooms_view() -> RoomsView {
     RoomsView {
         available: vec![RoomEntry {
@@ -186,7 +195,7 @@ fn rooms_view() -> RoomsView {
         joined: HashMap::from([(
             "indie".to_owned(),
             RoomView {
-                users: vec!["peer".into()],
+                users: vec![room_user_view()],
             },
         )]),
     }
@@ -306,14 +315,17 @@ fn fixture_events() -> Vec<AppEvent> {
         },
         AppEvent::RoomJoined {
             room: "indie".into(),
-            users: vec!["peer".into()],
+            users: vec![room_user_view()],
         },
         AppEvent::RoomLeft {
             room: "indie".into(),
         },
-        AppEvent::RoomUserJoined {
+        AppEvent::RoomUser {
             room: "indie".into(),
-            username: "peer".into(),
+            user: RoomUserView {
+                country: None,
+                ..room_user_view()
+            },
         },
         AppEvent::RoomUserLeft {
             room: "indie".into(),

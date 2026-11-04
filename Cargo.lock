@@ -1697,7 +1697,7 @@ dependencies = [
 [[package]]
 name = "soulseek"
 version = "0.4.0"
-source = "git+https://github.com/PixelMelt/libsoulseek#56ebc3bae9ed87ab3f5b19b8a4befd82d7f8149d"
+source = "git+https://github.com/PixelMelt/libsoulseek#29f3457dc419785efec1a9df0f84c80fa7055938"
 dependencies = [
  "flate2",
  "libc",
