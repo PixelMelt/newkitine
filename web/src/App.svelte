@@ -174,7 +174,7 @@
         <span class="speed"><ArrowUp size={12} /> {live ? formatSpeed($speedTotals.up) : '–'}</span>
       </span>
     {/if}
-    <span class="report {$shownReport ? $shownReport.kind : ''}" role="status" title={$shownReport?.text}>
+    <span class="report {$shownReport ? $shownReport.kind : ''}" role="status" data-hovertext="">
       {$shownReport ? $shownReport.text : ''}
     </span>
     {#if $shownReport?.action}

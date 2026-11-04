@@ -240,7 +240,7 @@
         on:click={() => click(index)}
       >
         {#if checks(list)}<span class="check">{#if item.checked}<Check size={12} />{/if}</span>{/if}
-        <span class="label">{item.label}</span>
+        <span class="label" data-hovertext="">{item.label}</span>
         {#if item.submenu}<span class="arrow"><ChevronRight size={14} /></span>{/if}
       </div>
     {/if}

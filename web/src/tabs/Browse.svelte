@@ -359,7 +359,7 @@
     </div>
     <div class="main">
       {#if selectedDir}
-        <span class="path" title={selectedDir}>{selectedDir}</span>
+        <span class="path" data-hovertext="">{selectedDir}</span>
         <DataTable
           id="browse-files"
           label="Files in {selectedDir}"
